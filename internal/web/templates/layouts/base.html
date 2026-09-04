@@ -1,0 +1,10 @@
+{{define "head"}}<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} · XPanel</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>{{end}}
+{{define "nav"}}<nav aria-label="主导航"><a href="/">仪表盘</a><a href="/users">用户</a><a href="/profiles">访问配置</a><a href="/audit">审计</a><a href="/settings">设置</a></nav>{{end}}
+{{define "messages"}}<div id="messages" aria-live="polite">{{with .Flash}}<p class="flash {{.Kind}}">{{.Message}}</p>{{end}}{{if .ErrorSummary}}<div class="error-summary" tabindex="-1" role="alert"><h2>请修正以下问题</h2><p>{{.ErrorSummary}}</p></div>{{end}}</div>{{end}}

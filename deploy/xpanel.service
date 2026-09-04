@@ -1,0 +1,24 @@
+[Unit]
+Description=XPanel Xray user management panel
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xpanel
+Group=xpanel
+ExecStart=/usr/local/bin/xpanel serve --config /etc/xpanel/xpanel.json
+Restart=on-failure
+RestartSec=5s
+RuntimeDirectory=xpanel
+StateDirectory=xpanel
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/xpanel
+
+[Install]
+WantedBy=multi-user.target

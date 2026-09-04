@@ -1,0 +1,23 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.5; }
+body { margin: 0; background: Canvas; color: CanvasText; }
+main, nav { max-width: 72rem; margin: auto; padding: 1rem; }
+nav { display: flex; flex-wrap: wrap; gap: 1rem; border-bottom: 1px solid GrayText; }
+.narrow { max-width: 32rem; }
+form { display: grid; gap: .6rem; }
+input, select, button { font: inherit; min-height: 2.75rem; padding: .35rem .55rem; }
+button, a { touch-action: manipulation; }
+:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
+.error-summary, .field-error { color: #a40000; }
+.error-summary { border: 2px solid currentColor; padding: .75rem; margin-bottom: 1rem; }
+.field-error:empty { display: none; }
+.status { font-weight: 700; }
+.print-hidden { overflow-wrap: anywhere; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border-bottom: 1px solid GrayText; padding: .5rem; text-align: left; vertical-align: top; }
+@media (max-width: 40rem) {
+  main, nav { padding: .75rem; }
+  table, thead, tbody, tr, th, td { display: block; }
+  thead { position: absolute; clip: rect(0 0 0 0); }
+  td::before { content: attr(data-label); font-weight: 700; display: block; }
+}
+@media print { .print-hidden, nav, button { display: none !important; } }

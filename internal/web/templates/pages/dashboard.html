@@ -1,0 +1,4 @@
+{{define "dashboard.html"}}{{template "head" .}}
+<body>{{template "nav" .}}<main><h1>XPanel 仪表盘</h1>{{template "messages" .}}<p>尚未登记用户。请先创建访问配置。</p>
+<form method="post" action="/logout">{{.CSRFField}}<input type="hidden" name="_request_id" value="{{.RequestID}}"><button type="submit">退出登录</button></form>
+</main></body></html>{{end}}

@@ -1,0 +1,35 @@
+{
+  "server": {
+    "listen": "127.0.0.1:8080",
+    "public_url": "https://panel.example.test",
+    "insecure_development": false,
+    "read_header_timeout": "5s",
+    "request_timeout": "15s",
+    "shutdown_timeout": "15s"
+  },
+  "storage": {
+    "database_path": "/var/lib/xpanel/xpanel.db",
+    "busy_timeout": "5s"
+  },
+  "security": {
+    "root_key_file": "/etc/xpanel/root.key",
+    "session_idle_timeout": "30m",
+    "session_absolute_timeout": "12h"
+  },
+  "xray": {
+    "api_endpoint": "127.0.0.1:10085",
+    "supported_version": "v26.3.27",
+    "rpc_timeout": "5s"
+  },
+  "workers": {
+    "traffic_interval": "5s",
+    "reconcile_interval": "15s",
+    "max_retry_interval": "30s"
+  },
+  "initial": {
+    "quota_timezone": "UTC"
+  },
+  "logging": {
+    "level": "info"
+  }
+}

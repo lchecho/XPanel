@@ -1,0 +1,2 @@
+{{define "error.html"}}{{template "head" .}}
+<body><main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}{{with index .Values "error_id"}}<p>错误编号：<code>{{.}}</code></p>{{end}}<p><a href="/">返回仪表盘</a></p></main></body></html>{{end}}

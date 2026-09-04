@@ -1,0 +1,37 @@
+{
+  "api": {
+    "listen": "127.0.0.1:10085",
+    "services": ["HandlerService", "StatsService"]
+  },
+  "stats": {},
+  "policy": {
+    "levels": {
+      "0": {
+        "statsUserUplink": true,
+        "statsUserDownlink": true
+      }
+    }
+  },
+  "inbounds": [
+    {
+      "tag": "ss2022-managed",
+      "listen": "0.0.0.0",
+      "port": 8388,
+      "protocol": "shadowsocks",
+      "settings": {
+        "method": "2022-blake3-aes-256-gcm",
+        "password": "REPLACE_WITH_32_BYTE_BASE64_SERVER_KEY",
+        "network": "tcp,udp",
+        "clients": [
+          {
+            "email": "xpanel-bootstrap-reserved",
+            "password": "REPLACE_WITH_32_BYTE_BASE64_BOOTSTRAP_KEY"
+          }
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {"protocol": "freedom", "tag": "direct"}
+  ]
+}

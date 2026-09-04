@@ -1,0 +1,13 @@
+{{define "login.html"}}{{template "head" .}}
+<body><main class="narrow"><h1>登录 XPanel</h1>{{template "messages" .}}
+<form method="post" action="/login">
+  {{.CSRFField}}
+  <input type="hidden" name="_request_id" value="{{.RequestID}}">
+  <label for="username">用户名</label>
+  <input id="username" name="username" autocomplete="username" value="{{index .Values "username"}}" required aria-describedby="username-error">
+  <span id="username-error" class="field-error">{{index .FieldErrors "username"}}</span>
+  <label for="password">密码</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required aria-describedby="password-error">
+  <span id="password-error" class="field-error">{{index .FieldErrors "password"}}</span>
+  <button type="submit">登录</button>
+</form></main></body></html>{{end}}

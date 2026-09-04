@@ -145,3 +145,186 @@ func (s *UserService) List(ctx context.Context, filter ports.UserFilter) ([]port
 	}
 	return s.store.ListUsers(ctx, filter)
 }
+
+// UpdateUserInput 描述编辑页提交的显示名称、配额策略与启用意图。
+type UpdateUserInput struct {
+	ID               domain.ID
+	DisplayName      string
+	LimitBytes       *int64
+	ResetDay         int
+	AdminEnabled     bool
+	ExpectedRevision domain.Revision
+	RequestID        domain.ID
+	ActorID          domain.ID
+}
+
+// UpdateUser 按 data-model §Atomic Transaction Boundaries 第 2 条提交编辑；期望存在状态变化时写入同步操作。
+// 调低配额至不高于当前用量立即封禁；调高或改为无限制且配额是唯一阻断原因时立即恢复（spec FR-009/FR-010）。
+func (s *UserService) UpdateUser(ctx context.Context, input UpdateUserInput) (bool, error) {
+	if !input.RequestID.Valid() {
+		return false, &domain.ValidationError{Field: "_request_id", Message: "invalid request identifier"}
+	}
+	if err := domain.ValidateQuotaPolicy(input.LimitBytes, input.ResetDay); err != nil {
+		return false, err
+	}
+	if replayed, err := s.commandReplayed(ctx, input.RequestID); err != nil || replayed {
+		return replayed, err
+	}
+	record, err := s.store.User(ctx, input.ID)
+	if err != nil {
+		return false, err
+	}
+	if record.User.Lifecycle == domain.LifecycleDeleted {
+		return false, &domain.InvalidStateError{Message: "user is deleted"}
+	}
+	if record.User.Revision != input.ExpectedRevision {
+		return false, &domain.ConflictError{Message: "user changed since the page was loaded"}
+	}
+	now := s.clock.Now().UTC()
+	renamed, err := domain.NewManagedUser(record.User.ID, input.DisplayName, now)
+	if err != nil {
+		return false, err
+	}
+	exceeded := domain.IsQuotaExceeded(input.LimitBytes, record.Cycle.AccountedUplinkBytes, record.Cycle.AccountedDownlinkBytes)
+	next := record.Allocation
+	next.AdminEnabled = input.AdminEnabled
+	next.QuotaState = domain.QuotaWithinLimit
+	if exceeded {
+		next.QuotaState = domain.QuotaExceeded
+	}
+	wasPresent := record.Allocation.DesiredPresent(record.User)
+	willBePresent := next.DesiredPresent(record.User)
+	actor := input.ActorID
+	limit := "unlimited"
+	if input.LimitBytes != nil {
+		limit = strconv.FormatInt(*input.LimitBytes, 10)
+	}
+	completed := now
+	update := ports.UserUpdateRecord{UserID: record.User.ID, ExpectedRevision: input.ExpectedRevision, DisplayName: renamed.DisplayName,
+		NormalizedName: renamed.NormalizedName, LimitBytes: input.LimitBytes, ResetDay: input.ResetDay, AdminEnabled: input.AdminEnabled,
+		QuotaState: next.QuotaState, Now: now,
+		Command: domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor, CommandType: domain.ActionUserUpdated,
+			TargetType: "user", TargetID: record.User.ID,
+			RequestFingerprint: domain.Fingerprint(domain.ActionUserUpdated, record.User.ID.String(), renamed.NormalizedName, limit,
+				strconv.Itoa(input.ResetDay), strconv.FormatBool(input.AdminEnabled), strconv.FormatInt(int64(input.ExpectedRevision), 10)),
+			State: domain.CommandCompleted, ResultReference: "/users/" + record.User.ID.String(), CreatedAt: now, CompletedAt: &completed}}
+	var operationID *domain.ID
+	if willBePresent != wasPresent {
+		opID, err := domain.NewID()
+		if err != nil {
+			return false, err
+		}
+		reason, phase := domain.SyncDisable, domain.SyncRemoveOld
+		switch {
+		case !willBePresent && exceeded && record.Allocation.QuotaState == domain.QuotaWithinLimit && input.AdminEnabled:
+			reason = domain.SyncQuotaBlock
+		case willBePresent && record.Allocation.QuotaState == domain.QuotaExceeded && record.Allocation.AdminEnabled:
+			reason, phase = domain.SyncQuotaRestore, domain.SyncAddDesired
+		case willBePresent:
+			reason, phase = domain.SyncEnable, domain.SyncAddDesired
+		}
+		version := record.Allocation.DesiredCredentialVersion
+		op := domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1, willBePresent, &version, reason, phase, now)
+		update.Operation = &op
+		operationID = &opID
+	}
+	audits := []struct {
+		action, summary string
+		when            bool
+	}{
+		{domain.ActionUserUpdated, "user profile or quota policy updated", true},
+		{domain.ActionUserDisabled, "administrator disabled access", record.Allocation.AdminEnabled && !input.AdminEnabled},
+		{domain.ActionUserEnabled, "administrator enabled access", !record.Allocation.AdminEnabled && input.AdminEnabled},
+		{domain.ActionQuotaExceeded, "quota lowered to or below current usage; removal requested", exceeded && record.Allocation.QuotaState == domain.QuotaWithinLimit},
+		{domain.ActionCycleRestored, "quota raised above current usage; access restore requested", !exceeded && record.Allocation.QuotaState == domain.QuotaExceeded},
+	}
+	for _, item := range audits {
+		if !item.when {
+			continue
+		}
+		auditID, err := domain.NewID()
+		if err != nil {
+			return false, err
+		}
+		update.Audits = append(update.Audits, domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor,
+			TargetType: "user", TargetID: record.User.ID, Action: item.action, Result: domain.AuditAccepted, CommandID: &input.RequestID,
+			OperationID: operationID, SafeSummary: item.summary})
+	}
+	replay, err := s.store.UpdateUser(ctx, update)
+	if err != nil {
+		return false, err
+	}
+	if !replay && update.Operation != nil && s.notify != nil {
+		s.notify()
+	}
+	return replay, nil
+}
+
+// ResetTrafficInput 描述手动重置本周期流量。
+type ResetTrafficInput struct {
+	ID        domain.ID
+	RequestID domain.ID
+	ActorID   domain.ID
+}
+
+// ResetTraffic 清零当前周期 accounted 用量；配额超限是唯一阻断原因时立即请求恢复（spec FR-032）。
+func (s *UserService) ResetTraffic(ctx context.Context, input ResetTrafficInput) (bool, error) {
+	if !input.RequestID.Valid() {
+		return false, &domain.ValidationError{Field: "_request_id", Message: "invalid request identifier"}
+	}
+	record, err := s.store.User(ctx, input.ID)
+	if err != nil {
+		return false, err
+	}
+	if record.User.Lifecycle == domain.LifecycleDeleted {
+		return false, &domain.InvalidStateError{Message: "user is deleted"}
+	}
+	now := s.clock.Now().UTC()
+	actor := input.ActorID
+	completed := now
+	eventID, err := domain.NewID()
+	if err != nil {
+		return false, err
+	}
+	auditID, err := domain.NewID()
+	if err != nil {
+		return false, err
+	}
+	reset := ports.QuotaResetRecord{AllocationID: record.Allocation.ID, CycleID: record.Cycle.ID, EventID: eventID, ActorID: input.ActorID, Now: now,
+		Command: domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor, CommandType: domain.ActionTrafficReset,
+			TargetType: "user", TargetID: record.User.ID, RequestFingerprint: domain.Fingerprint(domain.ActionTrafficReset, record.User.ID.String(), record.Cycle.ID.String()),
+			State: domain.CommandCompleted, ResultReference: "/users/" + record.User.ID.String(), CreatedAt: now, CompletedAt: &completed},
+		Audit: domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor, TargetType: "user",
+			TargetID: record.User.ID, Action: domain.ActionTrafficReset, Result: domain.AuditAccepted, CommandID: &input.RequestID,
+			SafeSummary: "current cycle accounted usage reset to zero"}}
+	if record.Allocation.QuotaState == domain.QuotaExceeded && record.Allocation.AdminEnabled {
+		opID, err := domain.NewID()
+		if err != nil {
+			return false, err
+		}
+		version := record.Allocation.DesiredCredentialVersion
+		op := domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1, true, &version,
+			domain.SyncQuotaRestore, domain.SyncAddDesired, now)
+		reset.Operation = &op
+		reset.Audit.OperationID = &opID
+	}
+	replay, err := s.store.ResetCycleTraffic(ctx, reset)
+	if err != nil {
+		return false, err
+	}
+	if !replay && reset.Operation != nil && s.notify != nil {
+		s.notify()
+	}
+	return replay, nil
+}
+
+// commandReplayed 在版本校验之前识别重复提交：同一 _request_id 直接返回原结果（http.md §General Rules）。
+func (s *UserService) commandReplayed(ctx context.Context, requestID domain.ID) (bool, error) {
+	var existing *domain.DomainCommand
+	err := s.store.WithReadTx(ctx, func(tx ports.ReadTx) error {
+		var inner error
+		existing, inner = tx.FindCommand(ctx, requestID)
+		return inner
+	})
+	return existing != nil, err
+}

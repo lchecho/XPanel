@@ -183,21 +183,21 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 ### Xray Adapter（统计）
 
-- [ ] T073 [US2] 实现 `internal/adapter/xray/stats.go` 【Xray 契约】：`ReadTraffic` 对最多 20 个身份逐个精确 `GetStats(reset=false)` 读取 `user>>><id>>>traffic>>>uplink|downlink`，`found=false` 与零值区分，格式错误映射稳定错误，从 `Probe` 获取 boot epoch
-- [ ] T074 [P] [US2] 编写 `internal/adapter/xray/stats_test.go`：bufconn StatsService stub，验证精确名称、`reset=false`、缺失/零/格式错误三种结果
+- [X] T073 [US2] 实现 `internal/adapter/xray/stats.go` 【Xray 契约】：`ReadTraffic` 对最多 20 个身份逐个精确 `GetStats(reset=false)` 读取 `user>>><id>>>traffic>>>uplink|downlink`，`found=false` 与零值区分，格式错误映射稳定错误，从 `Probe` 获取 boot epoch
+- [X] T074 [P] [US2] 编写 `internal/adapter/xray/stats_test.go`：bufconn StatsService stub，验证精确名称、`reset=false`、缺失/零/格式错误三种结果
 - [ ] T075 [US2] 编写 `tests/contract/xray/traffic_test.go` 【Xray 契约】：门禁 5–6（真实 AES-256 客户端使用 `server-key:user-key` 发送 TCP 与 UDP 流量，两方向精确计数器递增；移除用户后新握手被拒而已建立连接可继续）
 
 ### 应用服务
 
-- [ ] T076 [US2] 实现 `internal/application/traffic_service.go`：`CollectOnce`（读取活跃 allocation 与游标 → 事务外 RPC → 领域 delta 计算 → 单事务提交批次；RPC 失败标记陈旧并记录实例 `last_error_*`；首次越界产生 `quota_block`）
-- [ ] T077 [US2] 实现 `internal/application/quota_service.go`：`UpdateQuotaPolicy`（调低至不高于当前用量→立即 exceeded 并入队 remove；调高/无限→重算 within_limit，若 admin_enabled 且 active 则入队 add）、`ResetCurrentCycleTraffic`（需确认，原子边界 4，配额为唯一阻断时入队恢复）、`RolloverCycle`（原子边界 5，仅“仅因超限”者恢复）、审计 `quota_exceeded`/`traffic_reset`/`cycle_restored`
-- [ ] T078 [P] [US2] 编写 `internal/application/traffic_service_test.go` 与 `quota_service_test.go`：等于配额即封禁、调低即时封禁、调高即时恢复、手动禁用+超限不恢复、重置不改周期结束时间、DB 失败下一轮安全重读
+- [X] T076 [US2] 实现 `internal/application/traffic_service.go`：`CollectOnce`（读取活跃 allocation 与游标 → 事务外 RPC → 领域 delta 计算 → 单事务提交批次；RPC 失败标记陈旧并记录实例 `last_error_*`；首次越界产生 `quota_block`）
+- [X] T077 [US2] 实现 `internal/application/quota_service.go`：`UpdateQuotaPolicy`（调低至不高于当前用量→立即 exceeded 并入队 remove；调高/无限→重算 within_limit，若 admin_enabled 且 active 则入队 add）、`ResetCurrentCycleTraffic`（需确认，原子边界 4，配额为唯一阻断时入队恢复）、`RolloverCycle`（原子边界 5，仅“仅因超限”者恢复）、审计 `quota_exceeded`/`traffic_reset`/`cycle_restored`
+- [X] T078 [P] [US2] 编写 `internal/application/traffic_service_test.go` 与 `quota_service_test.go`：等于配额即封禁、调低即时封禁、调高即时恢复、手动禁用+超限不恢复、重置不改周期结束时间、DB 失败下一轮安全重读
 
 ### Worker
 
-- [ ] T079 [US2] 实现 `internal/worker/collector.go`：按 `traffic_interval` 定时（默认 5s，>5s 启动警告）调用 `CollectOnce`，RPC 不在写事务持锁期间执行，记录每轮耗时/用户数/陈旧状态【可观测性】
-- [ ] T080 [US2] 实现 `internal/worker/scheduler.go` 【重试/协调】：按周期 timezone_name 快照计算每个 allocation 的下一日/周期边界（边界定时器 + 每 60 秒兜底扫描），幂等关闭旧周期并打开新周期，停机后追赶多个漏执行边界并收敛到唯一 open 周期，触发恢复操作
-- [ ] T081 [P] [US2] 编写 `internal/worker/collector_test.go` 与 `scheduler_test.go`：fake Adapter + fake 时钟；越界在一轮内产生 remove 操作；周期切换仅恢复“仅超限”用户；停机追赶
+- [X] T079 [US2] 实现 `internal/worker/collector.go`：按 `traffic_interval` 定时（默认 5s，>5s 启动警告）调用 `CollectOnce`，RPC 不在写事务持锁期间执行，记录每轮耗时/用户数/陈旧状态【可观测性】
+- [X] T080 [US2] 实现 `internal/worker/scheduler.go` 【重试/协调】：按周期 timezone_name 快照计算每个 allocation 的下一日/周期边界（边界定时器 + 每 60 秒兜底扫描），幂等关闭旧周期并打开新周期，停机后追赶多个漏执行边界并收敛到唯一 open 周期，触发恢复操作
+- [X] T081 [P] [US2] 编写 `internal/worker/collector_test.go` 与 `scheduler_test.go`：fake Adapter + fake 时钟；越界在一轮内产生 remove 操作；周期切换仅恢复“仅超限”用户；停机追赶
 
 ### Web 页面
 

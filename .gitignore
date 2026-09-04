@@ -1,0 +1,29 @@
+# Go
+bin/
+*.exe
+*.test
+*.out
+vendor/
+coverage.*
+
+# XPanel runtime artifacts (never commit databases or key material)
+*.db
+*.db-wal
+*.db-shm
+*.db.backup*
+root.key
+xpanel.json
+!deploy/xpanel.example.json
+
+# Local tooling
+.claude/settings.local.json
+.env*
+*.log
+
+# OS / editors
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+.idea/

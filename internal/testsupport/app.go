@@ -43,6 +43,8 @@ type App struct {
 	Users       *application.UserService
 	Connections *application.ConnectionService
 	Settings    *application.SettingsService
+	Traffic     *application.TrafficService
+	Quota       *application.QuotaService
 	Sync        *worker.Synchronizer
 	Validator   *worker.ProfileValidator
 	Node        *sync.Mutex
@@ -53,6 +55,7 @@ type App struct {
 	Username    string
 	Password    string
 	Target      ports.InstanceTarget
+	AdminID     domain.ID
 }
 
 const (
@@ -102,7 +105,8 @@ func New(t *testing.T) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Auth.InitializeAdministrator(ctx, app.Username, []byte(app.Password)); err != nil {
+	app.AdminID, err = app.Auth.InitializeAdministrator(ctx, app.Username, []byte(app.Password))
+	if err != nil {
 		t.Fatal(err)
 	}
 	app.Profiles = application.NewProfileService(store, adapter, keyring, clock, target, func(id domain.ID) {
@@ -114,8 +118,10 @@ func New(t *testing.T) *App {
 		MaxRetryInterval: 30 * time.Second, LeaseDuration: 10 * time.Second, Random: func(n int64) int64 { return n - 1 }})
 	app.Users = application.NewUserService(store, keyring, clock, app.Sync.Wake)
 	app.Connections = application.NewConnectionService(store, keyring)
-	app.Settings = application.NewSettingsService(store)
+	app.Settings = application.NewSettingsService(store).WithClock(clock)
 	app.Validator = worker.NewProfileValidator(app.Profiles, store, nil, node, 15*time.Second)
+	app.Traffic = application.NewTrafficService(store, adapter, clock, target, 5*time.Second, app.Sync.Wake, nil)
+	app.Quota = application.NewQuotaService(store, clock, app.Sync.Wake, nil)
 
 	app.Sessions = scs.New()
 	webmiddleware.ConfigureSessions(app.Sessions, sqlite.NewSessionStore(db, 30*time.Minute, 12*time.Hour), 30*time.Minute, 12*time.Hour, false)
@@ -258,4 +264,30 @@ func NewID(t *testing.T) domain.ID {
 		t.Fatal(err)
 	}
 	return id
+}
+
+// Collect 执行一轮采集并断言成功。
+func (a *App) Collect() application.CollectionSummary {
+	a.T.Helper()
+	summary, err := a.Traffic.CollectOnce(context.Background())
+	if err != nil {
+		a.T.Fatal(err)
+	}
+	return summary
+}
+
+// Rollover 结算到期周期，返回切换次数。
+func (a *App) Rollover() int {
+	a.T.Helper()
+	count, err := a.Quota.RolloverDue(context.Background(), a.Clock.Now())
+	if err != nil {
+		a.T.Fatal(err)
+	}
+	return count
+}
+
+// SetTraffic 设置 fake Xray 中某分配的绝对计数。
+func (a *App) SetTraffic(record ports.UserRecord, uplink, downlink uint64) {
+	a.Adapter.SetCounter(record.Identity.StatisticsID, ports.Uplink, uplink)
+	a.Adapter.SetCounter(record.Identity.StatisticsID, ports.Downlink, downlink)
 }

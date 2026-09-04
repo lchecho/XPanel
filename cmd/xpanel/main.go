@@ -162,8 +162,12 @@ func runServe(args []string, stderr io.Writer) int {
 		MaxRetryInterval: cfg.Workers.MaxRetryInterval.Duration, OnProfileRecovered: requestValidation})
 	users := application.NewUserService(store, keyring, clock, synchronizer.Wake)
 	connections := application.NewConnectionService(store, keyring)
-	settings := application.NewSettingsService(store)
+	settings := application.NewSettingsService(store).WithClock(clock)
 	validator = worker.NewProfileValidator(profiles, store, logger, node, cfg.Workers.ReconcileInterval.Duration)
+	traffic := application.NewTrafficService(store, xrayClient, clock, target, cfg.Workers.TrafficInterval.Duration, synchronizer.Wake, logger)
+	quota := application.NewQuotaService(store, clock, synchronizer.Wake, logger)
+	collector := worker.NewCollector(traffic, cfg.Workers.TrafficInterval.Duration, logger)
+	scheduler := worker.NewScheduler(quota, clock, time.Minute, logger)
 
 	server, err := web.NewServer(cfg, web.RouteDependencies{Auth: auth, Profiles: profiles, Users: users, Connections: connections,
 		Settings: settings, Sessions: sessions, CSRFKey: keyring.CSRFKey(), Secure: !cfg.Server.InsecureDevelopment, Logger: logger})
@@ -175,7 +179,8 @@ func runServe(args []string, stderr io.Writer) int {
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()
 	var workers sync.WaitGroup
-	for _, run := range []func(context.Context){synchronizer.Run, validator.Run} {
+	// 启动顺序：synchronizer → validator → collector → scheduler，再开放 readiness（plan §Startup and shutdown order）。
+	for _, run := range []func(context.Context){synchronizer.Run, validator.Run, collector.Run, scheduler.Run} {
 		workers.Add(1)
 		go func(run func(context.Context)) { defer workers.Done(); run(workerCtx) }(run)
 	}

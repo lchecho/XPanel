@@ -201,13 +201,13 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 ### Web 页面
 
-- [ ] T082 [US2] 实现 `internal/web/templates/pages/user_edit.html` 并扩展 `internal/web/handlers/users.go`：`GET /users/{user_id}/edit`、`POST /users/{user_id}`（`_version`；配额为整数 + 单位选择（MiB/GiB/TiB）精确换算为字节或勾选“无限制”，空值未勾选、零/负值、超过 2^62 均 422；reset day 1–28 默认 1；启用意图）
-- [ ] T083 [US2] 实现 `internal/web/templates/pages/user_reset_traffic.html` 与 `GET/POST /users/{user_id}/reset-traffic`：说明仅清零本周期 accounted、保留 gross/lifetime/日趋势、不改变周期结束时间，POST 后 303
-- [ ] T084 [US2] 扩展 `internal/web/templates/pages/user_detail.html` 与 `internal/web/views/quota.go`：上行/下行/总量/剩余、无限配额与超过 100% 的显示规则、当前周期边界（面板时区）、数据最后更新时间、配额超限说明与“轮询检测、主要阻止新连接、已有连接可能少量超额”提示（FR-019）
-- [ ] T085 [US2] 实现 `internal/web/templates/pages/settings.html` 与 `internal/web/handlers/settings.go`：`GET /settings`、`POST /settings`（IANA 时区校验、`_version`、仅影响未来周期的说明、审计）
-- [ ] T086 [P] [US2] 编写 `internal/web/handlers/users_edit_test.go` 与 `settings_test.go`：字段级 422、409、重置确认页文案、时区非法拒绝
-- [ ] T087 [US2] 编写 `tests/e2e/quota_test.go`：小额配额 → fake 计数增长 → exceeded → fake Xray 中用户被移除；推进时钟到新周期 → 自动恢复；手动禁用者不恢复；调低再调高；手动重置后恢复且周期结束时间不变
-- [ ] T088 [US2] 在 `cmd/xpanel/main.go` 接线 collector 与 scheduler，并在 `traffic_interval>5s` 时输出配额超额风险启动警告
+- [X] T082 [US2] 实现 `internal/web/templates/pages/user_edit.html` 并扩展 `internal/web/handlers/users.go`：`GET /users/{user_id}/edit`、`POST /users/{user_id}`（`_version`；配额为整数 + 单位选择（MiB/GiB/TiB）精确换算为字节或勾选“无限制”，空值未勾选、零/负值、超过 2^62 均 422；reset day 1–28 默认 1；启用意图）
+- [X] T083 [US2] 实现 `internal/web/templates/pages/user_reset_traffic.html` 与 `GET/POST /users/{user_id}/reset-traffic`：说明仅清零本周期 accounted、保留 gross/lifetime/日趋势、不改变周期结束时间，POST 后 303
+- [X] T084 [US2] 扩展 `internal/web/templates/pages/user_detail.html` 与 `internal/web/views/quota.go`：上行/下行/总量/剩余、无限配额与超过 100% 的显示规则、当前周期边界（面板时区）、数据最后更新时间、配额超限说明与“轮询检测、主要阻止新连接、已有连接可能少量超额”提示（FR-019）
+- [X] T085 [US2] 实现 `internal/web/templates/pages/settings.html` 与 `internal/web/handlers/settings.go`：`GET /settings`、`POST /settings`（IANA 时区校验、`_version`、仅影响未来周期的说明、审计）
+- [X] T086 [P] [US2] 编写 `internal/web/handlers/users_edit_test.go` 与 `settings_test.go`：字段级 422、409、重置确认页文案、时区非法拒绝
+- [X] T087 [US2] 编写 `tests/e2e/quota_test.go`：小额配额 → fake 计数增长 → exceeded → fake Xray 中用户被移除；推进时钟到新周期 → 自动恢复；手动禁用者不恢复；调低再调高；手动重置后恢复且周期结束时间不变
+- [X] T088 [US2] 在 `cmd/xpanel/main.go` 接线 collector 与 scheduler，并在 `traffic_interval>5s` 时输出配额超额风险启动警告
 
 **Checkpoint**: US1 + US2 构成完整 P1 交付：创建、分享、计量、封禁、恢复、调额与手动重置
 

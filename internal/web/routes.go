@@ -82,6 +82,15 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 		protected.HandleFunc("POST /users", users.Create)
 		protected.HandleFunc("GET /users/{user_id}", users.Detail)
 		protected.HandleFunc("GET /users/{user_id}/connection", users.Connection)
+		protected.HandleFunc("GET /users/{user_id}/edit", users.EditForm)
+		protected.HandleFunc("POST /users/{user_id}", users.Update)
+		protected.HandleFunc("GET /users/{user_id}/reset-traffic", users.ResetForm)
+		protected.HandleFunc("POST /users/{user_id}/reset-traffic", users.Reset)
+	}
+	if deps.Settings != nil {
+		settings := &handlers.SettingsHandler{Base: base, Service: deps.Settings}
+		protected.HandleFunc("GET /settings", settings.Show)
+		protected.HandleFunc("POST /settings", settings.Update)
 	}
 	public.Handle("/", webmiddleware.RequireAuth(deps.Sessions, deps.Auth.SessionValid, protected))
 

@@ -249,3 +249,141 @@ func (h *UserHandler) capacityNotice(r *http.Request) string {
 	}
 	return "活跃访问分配已超过 " + strconv.Itoa(activeCapacity) + " 个的验收容量，性能目标不再承诺"
 }
+
+type userEditData struct {
+	User  views.UserView
+	Units []string
+}
+
+// EditForm 渲染编辑页：显示名称、配额、重置日与启用意图（http.md §Managed users）。
+func (h *UserHandler) EditForm(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "user_id")
+	if !ok {
+		h.Renderer.Error(w, http.StatusNotFound, "请求的资源不存在", "")
+		return
+	}
+	record, err := h.Service.User(r.Context(), id)
+	if err != nil {
+		h.Fail(w, r, err)
+		return
+	}
+	if record.User.Lifecycle == domain.LifecycleDeleted {
+		h.Renderer.Error(w, http.StatusConflict, "已删除的用户不能再编辑", "")
+		return
+	}
+	page := h.NewPage(r, "编辑用户："+record.User.DisplayName)
+	page.Version = int64(record.User.Revision)
+	page.Values = editValues(record)
+	page.Data = userEditData{User: views.NewUserView(record, h.Location(r)), Units: quotaUnits}
+	h.Renderer.Page(w, http.StatusOK, "user_edit.html", page)
+}
+
+func editValues(record ports.UserRecord) map[string]string {
+	values := map[string]string{"display_name": record.User.DisplayName, "reset_day": strconv.Itoa(record.Policy.ResetDay), "quota_unit": "GiB"}
+	if record.Allocation.AdminEnabled {
+		values["admin_enabled"] = "on"
+	}
+	if record.Policy.LimitBytes == nil {
+		values["unlimited"] = "on"
+		return values
+	}
+	limit := *record.Policy.LimitBytes
+	for _, unit := range []struct {
+		name string
+		size int64
+	}{{"TiB", 1 << 40}, {"GiB", 1 << 30}, {"MiB", 1 << 20}} {
+		if limit%unit.size == 0 {
+			values["quota_value"], values["quota_unit"] = strconv.FormatInt(limit/unit.size, 10), unit.name
+			return values
+		}
+	}
+	values["quota_value"], values["quota_unit"] = strconv.FormatInt((limit+(1<<20)-1)/(1<<20), 10), "MiB"
+	return values
+}
+
+// Update 处理编辑提交：`_version` 保护并发编辑，409 时回填当前值与新版本。
+func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "user_id")
+	if !ok {
+		h.Renderer.Error(w, http.StatusNotFound, "请求的资源不存在", "")
+		return
+	}
+	form, err := ParseCommandForm(r, h.SessionToken(r), "user_update", id.String())
+	if err != nil || form.Version == nil {
+		h.Renderer.Error(w, http.StatusBadRequest, "表单格式无效或缺少资源版本", "")
+		return
+	}
+	limit, err := parseQuota(form.Values)
+	if err != nil {
+		h.renderEditForm(w, r, id, form.Values, err)
+		return
+	}
+	resetDay, _ := strconv.Atoi(strings.TrimSpace(form.Values["reset_day"]))
+	_, err = h.Service.UpdateUser(r.Context(), application.UpdateUserInput{ID: id, DisplayName: form.Values["display_name"], LimitBytes: limit,
+		ResetDay: resetDay, AdminEnabled: form.Values["admin_enabled"] == "on", ExpectedRevision: domain.Revision(*form.Version),
+		RequestID: form.RequestID, ActorID: h.Actor(r)})
+	if err != nil {
+		h.renderEditForm(w, r, id, form.Values, err)
+		return
+	}
+	h.Flash(r, "success", "用户已更新；影响节点的变更会自动同步")
+	http.Redirect(w, r, "/users/"+id.String(), http.StatusSeeOther)
+}
+
+func (h *UserHandler) renderEditForm(w http.ResponseWriter, r *http.Request, id domain.ID, values map[string]string, cause error) {
+	failure := Classify(cause)
+	if failure.Status == http.StatusNotFound || failure.Status == http.StatusInternalServerError {
+		h.Fail(w, r, cause)
+		return
+	}
+	record, err := h.Service.User(r.Context(), id)
+	if err != nil {
+		h.Fail(w, r, err)
+		return
+	}
+	page := h.NewPage(r, "编辑用户："+record.User.DisplayName)
+	page.Values = values
+	page.ErrorSummary = failure.Message
+	if failure.Field != "" {
+		page.FieldErrors[failure.Field] = failure.Message
+	}
+	page.Version = int64(record.User.Revision)
+	page.Data = userEditData{User: views.NewUserView(record, h.Location(r)), Units: quotaUnits}
+	h.Renderer.Page(w, failure.Status, "user_edit.html", page)
+}
+
+// ResetForm 渲染手动重置确认页，说明只清零 accounted、保留 gross/lifetime/日趋势与周期边界。
+func (h *UserHandler) ResetForm(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "user_id")
+	if !ok {
+		h.Renderer.Error(w, http.StatusNotFound, "请求的资源不存在", "")
+		return
+	}
+	record, err := h.Service.User(r.Context(), id)
+	if err != nil {
+		h.Fail(w, r, err)
+		return
+	}
+	page := h.NewPage(r, "重置本周期流量："+record.User.DisplayName)
+	page.Data = views.NewUserView(record, h.Location(r))
+	h.Renderer.Page(w, http.StatusOK, "user_reset_traffic.html", page)
+}
+
+func (h *UserHandler) Reset(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "user_id")
+	if !ok {
+		h.Renderer.Error(w, http.StatusNotFound, "请求的资源不存在", "")
+		return
+	}
+	form, err := ParseCommandForm(r, h.SessionToken(r), "user_reset_traffic", id.String())
+	if err != nil {
+		h.Renderer.Error(w, http.StatusBadRequest, "表单格式无效", "")
+		return
+	}
+	if _, err := h.Service.ResetTraffic(r.Context(), application.ResetTrafficInput{ID: id, RequestID: form.RequestID, ActorID: h.Actor(r)}); err != nil {
+		h.Fail(w, r, err)
+		return
+	}
+	h.Flash(r, "success", "本周期用量已清零；若配额是唯一阻断原因，访问将自动恢复")
+	http.Redirect(w, r, "/users/"+id.String(), http.StatusSeeOther)
+}

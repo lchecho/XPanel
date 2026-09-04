@@ -232,6 +232,32 @@ func (s *Store) Settings(ctx context.Context) (ports.PanelSettingsRecord, error)
 	return settings, err
 }
 
+// UpdateSettings 按 revision 更新全局配额时区；新值只影响未来周期（data-model §PanelSettings）。
+func (s *Store) UpdateSettings(ctx context.Context, timezone string, expected domain.Revision, command domain.DomainCommand, audit domain.AuditEvent) (bool, error) {
+	replay := false
+	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
+		tx := write.(*txStore)
+		var err error
+		replay, err = commandReplay(ctx, tx, command)
+		if err != nil || replay {
+			return err
+		}
+		result, err := tx.tx.ExecContext(ctx, `UPDATE panel_settings SET quota_timezone=?,revision=revision+1,updated_at=? WHERE id=1 AND revision=?`,
+			timezone, millis(audit.OccurredAt), expected)
+		if err != nil {
+			return err
+		}
+		if rows, _ := result.RowsAffected(); rows != 1 {
+			return &domain.ConflictError{Message: "settings changed since the page was loaded"}
+		}
+		if err := tx.SaveCommand(ctx, command); err != nil {
+			return err
+		}
+		return tx.AppendAudit(ctx, audit)
+	})
+	return replay, err
+}
+
 func (s *Store) AppendAudit(ctx context.Context, event domain.AuditEvent) error {
 	return s.WithWriteTx(ctx, func(tx ports.WriteTx) error { return tx.AppendAudit(ctx, event) })
 }

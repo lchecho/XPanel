@@ -48,6 +48,7 @@ type Store interface {
 	DueCycles(context.Context, time.Time) ([]UserRecord, error)
 	NextCycleEnd(context.Context) (*time.Time, error)
 	RolloverCycle(context.Context, CycleRollover) error
+	UpdateSettings(context.Context, string, domain.Revision, domain.DomainCommand, domain.AuditEvent) (bool, error)
 	Close() error
 }
 

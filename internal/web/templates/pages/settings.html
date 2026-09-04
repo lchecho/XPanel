@@ -1,0 +1,14 @@
+{{define "settings.html"}}{{template "head" .}}
+<body>{{template "nav" .}}<main class="narrow"><h1>面板设置</h1>{{template "messages" .}}
+<p>当前配额时区：<strong>{{.Data.Timezone}}</strong>（版本 {{.Data.Revision}}）。所有用户的月度配额周期与每日汇总都使用这个时区。</p>
+<form method="post" action="/settings">
+  {{.CSRFField}}
+  <input type="hidden" name="_request_id" value="{{.RequestID}}">
+  <input type="hidden" name="_version" value="{{.Version}}">
+  <label for="quota_timezone">配额时区（IANA 名称，例如 Asia/Shanghai）</label>
+  <input id="quota_timezone" name="quota_timezone" value="{{index .Values "quota_timezone"}}" required aria-describedby="quota_timezone-hint quota_timezone-error">
+  <span id="quota_timezone-hint" class="hint">变更只从每个用户的下一个配额周期起生效，不会重写已经开始或结束的周期。</span>
+  <span id="quota_timezone-error" class="field-error">{{index .FieldErrors "quota_timezone"}}</span>
+  <button type="submit">保存</button>
+</form>
+{{template "footer" .}}</main></body></html>{{end}}

@@ -41,6 +41,13 @@ type Store interface {
 	AdvancePhase(context.Context, domain.ID, domain.SyncPhase, time.Time) error
 	MarkInstanceHealthy(context.Context, string, time.Time) error
 	MarkInstanceUnreachable(context.Context, string, string, time.Time) error
+	CollectionTargets(context.Context) ([]CollectionTarget, error)
+	CommitTrafficBatch(context.Context, TrafficBatch) error
+	UpdateUser(context.Context, UserUpdateRecord) (bool, error)
+	ResetCycleTraffic(context.Context, QuotaResetRecord) (bool, error)
+	DueCycles(context.Context, time.Time) ([]UserRecord, error)
+	NextCycleEnd(context.Context) (*time.Time, error)
+	RolloverCycle(context.Context, CycleRollover) error
 	Close() error
 }
 
@@ -162,4 +169,95 @@ type SyncWork struct {
 	Identity   domain.XrayUserIdentity
 	Profile    ProfileRecord
 	Credential domain.AccessCredential
+}
+
+// TrafficCursorRecord 是 traffic_cursors 表的一行。
+type TrafficCursorRecord struct {
+	AllocationID    domain.ID
+	BootEpoch       string
+	UplinkCounter   *int64
+	DownlinkCounter *int64
+	UplinkEpoch     int64
+	DownlinkEpoch   int64
+	LastObservedAt  *time.Time
+	LastSuccessAt   *time.Time
+	MissingSince    *time.Time
+}
+
+// CollectionTarget 是一次采集需要读取计数的分配及其当前游标、周期、策略与累计值。
+type CollectionTarget struct {
+	User          domain.ManagedUser
+	Allocation    domain.AccessAllocation
+	Identity      domain.XrayUserIdentity
+	ProfileTag    string
+	Policy        QuotaPolicyRecord
+	Cycle         QuotaCycleRecord
+	Cursor        TrafficCursorRecord
+	TotalUplink   int64
+	TotalDownlink int64
+}
+
+type ContinuityEventRecord struct {
+	ID           domain.ID
+	AllocationID domain.ID
+	Event        domain.ContinuityEvent
+	OccurredAt   time.Time
+}
+
+// TrafficUpdate 是采集批次中单个分配的写入内容（data-model §Atomic Transaction Boundaries 第 3 条）。
+type TrafficUpdate struct {
+	AllocationID  domain.ID
+	Cursor        TrafficCursorRecord
+	UplinkDelta   int64
+	DownlinkDelta int64
+	DayStartUTC   time.Time
+	LocalDate     string
+	Timezone      string
+	Events        []ContinuityEventRecord
+	MarkExceeded  bool
+	QuotaBlock    *domain.SynchronizationOperation
+	Audit         *domain.AuditEvent
+}
+
+type TrafficBatch struct {
+	ObservedAt time.Time
+	Updates    []TrafficUpdate
+}
+
+// UserUpdateRecord 描述编辑/启停/调额的单事务写入（data-model §Atomic Transaction Boundaries 第 2 条）。
+type UserUpdateRecord struct {
+	UserID           domain.ID
+	ExpectedRevision domain.Revision
+	DisplayName      string
+	NormalizedName   string
+	LimitBytes       *int64
+	ResetDay         int
+	AdminEnabled     bool
+	QuotaState       domain.QuotaState
+	Operation        *domain.SynchronizationOperation
+	Command          domain.DomainCommand
+	Audits           []domain.AuditEvent
+	Now              time.Time
+}
+
+// QuotaResetRecord 描述手动重置本周期流量（data-model §Atomic Transaction Boundaries 第 4 条）。
+type QuotaResetRecord struct {
+	AllocationID domain.ID
+	CycleID      domain.ID
+	EventID      domain.ID
+	ActorID      domain.ID
+	Command      domain.DomainCommand
+	Operation    *domain.SynchronizationOperation
+	Audit        domain.AuditEvent
+	Now          time.Time
+}
+
+// CycleRollover 描述周期切换（data-model §Atomic Transaction Boundaries 第 5 条）。
+type CycleRollover struct {
+	AllocationID domain.ID
+	OldCycleID   domain.ID
+	NewCycle     QuotaCycleRecord
+	Operation    *domain.SynchronizationOperation
+	Audit        *domain.AuditEvent
+	Now          time.Time
 }

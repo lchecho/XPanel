@@ -170,16 +170,16 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 ### 领域模型
 
-- [ ] T066 [P] [US2] 实现 `internal/domain/quota.go`：`QuotaPolicy` 校验（null 无限或 >0，reset_day 1–28）、`QuotaCycle`（gross/accounted 双计数）、周期边界计算（IANA 时区、reset day、`time.Date` 在 Location 中构造以正确处理夏令时）、配额判定（accounted 总和 ≥ limit → exceeded；无限永不超限）、调额/手动重置/新周期的状态转换规则
-- [ ] T067 [P] [US2] 实现 `internal/domain/traffic.go`：`TrafficCursor` 方向级 delta 规则（同 epoch 且不下降→差值；已确认新 boot epoch→当前值并记 `node_restart`；未确认下降→0、方向 epoch+1、记 `counter_decrease`；缺失→无 delta 并维护 `missing_since`；首个样本→当前值并记 `baseline`；单方向缺失只影响该方向；`observed_at` 早于游标的迟到样本整体丢弃；溢出按未确认下降处理并记 `overflow`）、`uint64`→有符号范围与求和溢出检查、按样本完成时间归属日期/周期、超过一个采集间隔的 `boundary_gap` 事件
-- [ ] T068 [P] [US2] 编写 `internal/domain/quota_test.go` 与 `traffic_test.go`：月份天数与 reset day 28、夏令时切换、恰好等于配额判超限、无限不封禁、四条 delta 规则、溢出拒绝、永不产生负增量
+- [X] T066 [P] [US2] 实现 `internal/domain/quota.go`：`QuotaPolicy` 校验（null 无限或 >0，reset_day 1–28）、`QuotaCycle`（gross/accounted 双计数）、周期边界计算（IANA 时区、reset day、`time.Date` 在 Location 中构造以正确处理夏令时）、配额判定（accounted 总和 ≥ limit → exceeded；无限永不超限）、调额/手动重置/新周期的状态转换规则
+- [X] T067 [P] [US2] 实现 `internal/domain/traffic.go`：`TrafficCursor` 方向级 delta 规则（同 epoch 且不下降→差值；已确认新 boot epoch→当前值并记 `node_restart`；未确认下降→0、方向 epoch+1、记 `counter_decrease`；缺失→无 delta 并维护 `missing_since`；首个样本→当前值并记 `baseline`；单方向缺失只影响该方向；`observed_at` 早于游标的迟到样本整体丢弃；溢出按未确认下降处理并记 `overflow`）、`uint64`→有符号范围与求和溢出检查、按样本完成时间归属日期/周期、超过一个采集间隔的 `boundary_gap` 事件
+- [X] T068 [P] [US2] 编写 `internal/domain/quota_test.go` 与 `traffic_test.go`：月份天数与 reset day 28、夏令时切换、恰好等于配额判超限、无限不封禁、四条 delta 规则、溢出拒绝、永不产生负增量
 
 ### 持久化
 
-- [ ] T069 [US2] 扩展 `internal/ports/store.go`：采集批次提交、周期开启/关闭、策略更新、重置事件、活跃 allocation 与游标读取接口
-- [ ] T070 [US2] 实现 `internal/persistence/sqlite/store_traffic.go`：一轮采集结果的单个短事务（所有返回用户的 cursor、totals、daily upsert、open cycle gross/accounted，首次越界写 `quota_block` remove 操作与 `quota_exceeded` 审计，continuity events），采集失败时仅更新 `missing_since` 不覆盖历史
-- [ ] T071 [US2] 实现 `internal/persistence/sqlite/store_quota.go`：按 revision 更新策略并重算 `quota_state`；手动重置事务（`QuotaResetEvent` 唯一 `command_id`、accounted 清零、状态、恢复操作、审计）；周期切换事务（关闭旧周期、创建新周期 `UNIQUE(allocation_id, starts_at_utc)`、清除配额阻断、恢复操作、审计）；历史周期与日聚合查询
-- [ ] T072 [P] [US2] 编写 `internal/persistence/sqlite/store_traffic_test.go` 与 `store_quota_test.go`：批次原子性（提交失败无部分写入）、周期切换重复执行幂等、手动重置保留 gross/lifetime/daily/边界
+- [X] T069 [US2] 扩展 `internal/ports/store.go`：采集批次提交、周期开启/关闭、策略更新、重置事件、活跃 allocation 与游标读取接口
+- [X] T070 [US2] 实现 `internal/persistence/sqlite/store_traffic.go`：一轮采集结果的单个短事务（所有返回用户的 cursor、totals、daily upsert、open cycle gross/accounted，首次越界写 `quota_block` remove 操作与 `quota_exceeded` 审计，continuity events），采集失败时仅更新 `missing_since` 不覆盖历史
+- [X] T071 [US2] 实现 `internal/persistence/sqlite/store_quota.go`：按 revision 更新策略并重算 `quota_state`；手动重置事务（`QuotaResetEvent` 唯一 `command_id`、accounted 清零、状态、恢复操作、审计）；周期切换事务（关闭旧周期、创建新周期 `UNIQUE(allocation_id, starts_at_utc)`、清除配额阻断、恢复操作、审计）；历史周期与日聚合查询
+- [X] T072 [P] [US2] 编写 `internal/persistence/sqlite/store_traffic_test.go` 与 `store_quota_test.go`：批次原子性（提交失败无部分写入）、周期切换重复执行幂等、手动重置保留 gross/lifetime/daily/边界
 
 ### Xray Adapter（统计）
 

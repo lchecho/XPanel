@@ -37,6 +37,9 @@ type Store interface {
 	ConfirmSync(context.Context, domain.ID, domain.Revision, int64, bool, time.Time) (bool, error)
 	RescheduleSync(context.Context, domain.ID, int, time.Time, string, string) error
 	FailSync(context.Context, domain.ID, string, string, time.Time) error
+	AdvancePhase(context.Context, domain.ID, domain.SyncPhase, time.Time) error
+	MarkInstanceHealthy(context.Context, string, time.Time) error
+	MarkInstanceUnreachable(context.Context, string, string, time.Time) error
 	Close() error
 }
 

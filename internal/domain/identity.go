@@ -105,6 +105,7 @@ const (
 	ActionTrafficReset             = "traffic_reset"
 	ActionCycleRestored            = "cycle_restored"
 	ActionSyncFailed               = "sync_failed"
+	ActionSyncSucceeded            = "sync_succeeded"
 	ActionProfileRegistered        = "profile_registered"
 	ActionProfileUpdated           = "profile_updated"
 	ActionProfileValidated         = "profile_validated"

@@ -168,6 +168,25 @@ func (s *Store) ConfirmSync(ctx context.Context, operationID domain.ID, revision
             WHERE allocation_id=? AND version=? AND state='pending'`, millis(now), allocationID, credentialVersion); err != nil {
 			return false, err
 		}
+		// 轮换确认后立即销毁旧版本凭证密文（data-model §Credential rotation 第 4 步）。
+		if _, err := tx.ExecContext(ctx, `UPDATE access_credentials SET state='destroyed',key_ciphertext=NULL,key_nonce=NULL,
+            key_encryption_version=NULL,retired_at=? WHERE allocation_id=? AND version<? AND state!='destroyed'`,
+			millis(now), allocationID, credentialVersion); err != nil {
+			return false, err
+		}
+	} else {
+		var lifecycle string
+		if err := tx.QueryRowContext(ctx, `SELECT u.lifecycle_state FROM access_allocations a JOIN managed_users u ON u.id=a.user_id WHERE a.id=?`,
+			allocationID).Scan(&lifecycle); err != nil {
+			return false, err
+		}
+		if lifecycle == string(domain.LifecycleDeleted) {
+			// 删除移除确认后销毁全部密钥（data-model §Atomic Transaction Boundaries 第 8 条）。
+			if _, err := tx.ExecContext(ctx, `UPDATE access_credentials SET state='destroyed',key_ciphertext=NULL,key_nonce=NULL,
+                key_encryption_version=NULL,retired_at=? WHERE allocation_id=? AND state!='destroyed'`, millis(now), allocationID); err != nil {
+				return false, err
+			}
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE access_allocations SET projection_state=?,observed_present=?,synced_revision=?,
         synced_credential_version=?,last_sync_at=?,last_sync_error_code=NULL,last_sync_error_summary=NULL,updated_at=? WHERE id=?`,
@@ -179,6 +198,20 @@ func (s *Store) ConfirmSync(ctx context.Context, operationID domain.ID, revision
 		return false, err
 	}
 	return true, tx.Commit()
+}
+
+// AdvancePhase 持久化轮换阶段推进（remove_old → add_desired），用于重启后从正确阶段恢复。
+func (s *Store) AdvancePhase(ctx context.Context, id domain.ID, phase domain.SyncPhase, now time.Time) error {
+	result, err := s.db.Write.ExecContext(ctx, `UPDATE synchronization_operations SET phase=?,lease_expires_at=? WHERE id=? AND state='leased'`,
+		phase, millis(now.Add(30*time.Second)), id.String())
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows != 1 {
+		return &domain.InvalidStateError{Message: "operation is no longer leased"}
+	}
+	return nil
 }
 
 func (s *Store) RescheduleSync(ctx context.Context, id domain.ID, attempts int, next time.Time, code, summary string) error {

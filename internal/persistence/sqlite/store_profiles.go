@@ -46,6 +46,21 @@ func (s *Store) SetInstanceHealth(ctx context.Context, health, bootEpoch, errorC
 	return nil
 }
 
+// MarkInstanceHealthy 记录一次成功的 Xray 交互；bootEpoch 为空时保留原值。
+func (s *Store) MarkInstanceHealthy(ctx context.Context, bootEpoch string, now time.Time) error {
+	_, err := s.db.Write.ExecContext(ctx, `UPDATE managed_xray_instances SET health_state='healthy',
+        boot_epoch=COALESCE(?,boot_epoch),last_success_at=?,last_error_code=NULL,last_error_summary=NULL,updated_at=? WHERE singleton=1`,
+		nullString(bootEpoch), millis(now), millis(now))
+	return err
+}
+
+// MarkInstanceUnreachable 记录 Xray 不可达，保留最后成功时间以供页面展示。
+func (s *Store) MarkInstanceUnreachable(ctx context.Context, code, summary string, now time.Time) error {
+	_, err := s.db.Write.ExecContext(ctx, `UPDATE managed_xray_instances SET health_state='unreachable',
+        last_error_code=?,last_error_summary=?,updated_at=? WHERE singleton=1`, nullString(code), nullString(summary), millis(now))
+	return err
+}
+
 func commandReplay(ctx context.Context, tx *txStore, command domain.DomainCommand) (bool, error) {
 	existing, err := tx.FindCommand(ctx, command.ID)
 	if err != nil {

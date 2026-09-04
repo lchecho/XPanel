@@ -144,8 +144,8 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 ### 同步 Worker
 
-- [ ] T056 [US1] 实现 `internal/worker/synchronizer.go` 【重试/协调】：单实例串行循环，由提交后通知立即唤醒并以 1 秒兜底轮询；短事务领取到期操作 → 事务外调用 Adapter → 独立短事务按 revision 确认；`deadline_exceeded`/未知结果先 `ListUsers` 读后写再决定确认或重放；`user_already_exists` 比对期望 revision 与凭证版本后选择成功或受控 remove/add 修复；有界退避重排；不可重试错误标记 `permanent_failed`；所属 profile 为 unverified/incompatible 时不领取操作，unreachable 时退避照常但不标记 permanent_failed，并按 data-model §Profile compatibility 触发漂移状态；更新 `projection_state` 与 `last_sync_*`；`sync_failed` 审计；slog 字段（allocation_id、operation_id、target_state、result、duration_ms）【可观测性】
-- [ ] T057 [P] [US1] 编写 `internal/worker/synchronizer_test.go`：成功确认、超时后读到已存在→确认、超时后不存在→重放、already-exists 修复、更高 revision supersede、退避时间表、进程重启后从租约/revision 恢复
+- [X] T056 [US1] 实现 `internal/worker/synchronizer.go` 【重试/协调】：单实例串行循环，由提交后通知立即唤醒并以 1 秒兜底轮询；短事务领取到期操作 → 事务外调用 Adapter → 独立短事务按 revision 确认；`deadline_exceeded`/未知结果先 `ListUsers` 读后写再决定确认或重放；`user_already_exists` 比对期望 revision 与凭证版本后选择成功或受控 remove/add 修复；有界退避重排；不可重试错误标记 `permanent_failed`；所属 profile 为 unverified/incompatible 时不领取操作，unreachable 时退避照常但不标记 permanent_failed，并按 data-model §Profile compatibility 触发漂移状态；更新 `projection_state` 与 `last_sync_*`；`sync_failed` 审计；slog 字段（allocation_id、operation_id、target_state、result、duration_ms）【可观测性】
+- [X] T057 [P] [US1] 编写 `internal/worker/synchronizer_test.go`：成功确认、超时后读到已存在→确认、超时后不存在→重放、already-exists 修复、更高 revision supersede、退避时间表、进程重启后从租约/revision 恢复
 
 ### Web 页面
 

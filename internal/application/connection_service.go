@@ -42,8 +42,7 @@ func (s *ConnectionService) BuildConnectionInfo(ctx context.Context, userID doma
 	if record.User.Lifecycle == domain.LifecycleDeleted {
 		return ConnectionInfo{}, &domain.InvalidStateError{Message: "connection information is unavailable for deleted users"}
 	}
-	if record.Credential.State != domain.CredentialActive || record.Allocation.SyncedCredentialVersion == nil ||
-		*record.Allocation.SyncedCredentialVersion != record.Credential.Version || record.Allocation.DesiredCredentialVersion != record.Credential.Version {
+	if record.Credential.State != domain.CredentialActive || record.Allocation.DesiredCredentialVersion != record.Credential.Version {
 		return ConnectionInfo{}, ErrConnectionPending
 	}
 	serverKey, err := s.keyring.Decrypt(record.Profile.ServerKeyCiphertext, record.Profile.ServerKeyNonce,

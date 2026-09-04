@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,12 +21,14 @@ import (
 	xrayadapter "xpanel/internal/adapter/xray"
 	"xpanel/internal/application"
 	"xpanel/internal/config"
+	"xpanel/internal/domain"
 	"xpanel/internal/logging"
 	"xpanel/internal/persistence/sqlite"
 	"xpanel/internal/ports"
 	"xpanel/internal/security"
 	"xpanel/internal/web"
 	webmiddleware "xpanel/internal/web/middleware"
+	"xpanel/internal/worker"
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
@@ -133,22 +136,52 @@ func runServe(args []string, stderr io.Writer) int {
 	webmiddleware.ConfigureSessions(sessions, sqlite.NewSessionStore(store.DB(), cfg.Security.SessionIdleTimeout.Duration,
 		cfg.Security.SessionAbsoluteTimeout.Duration), cfg.Security.SessionIdleTimeout.Duration,
 		cfg.Security.SessionAbsoluteTimeout.Duration, !cfg.Server.InsecureDevelopment)
-	server, err := web.NewServer(cfg, web.RouteDependencies{Auth: auth, Sessions: sessions,
-		CSRFKey: keyring.CSRFKey(), Secure: !cfg.Server.InsecureDevelopment})
+	target := ports.InstanceTarget{APIEndpoint: cfg.Xray.APIEndpoint, ExpectedVersion: cfg.Xray.SupportedVersion, RPCTimeout: cfg.Xray.RPCTimeout.Duration}
+	xrayClient, err := xrayadapter.New(target)
+	if err != nil {
+		logger.Error("initialize Xray API client", logging.FieldErrorKind, "invalid_argument")
+		return 3
+	}
+	defer xrayClient.Close()
+	instance, err := store.ManagedInstance(context.Background())
+	if err != nil {
+		logger.Error("load managed instance", logging.FieldErrorKind, "internal")
+		return 3
+	}
+	target.InstanceID = instance.ID
+	clock := ports.SystemClock{}
+	node := &sync.Mutex{}
+	var validator *worker.ProfileValidator
+	requestValidation := func(id domain.ID) {
+		if validator != nil {
+			validator.Enqueue(id)
+		}
+	}
+	profiles := application.NewProfileService(store, xrayClient, keyring, clock, target, requestValidation)
+	synchronizer := worker.NewSynchronizer(store, xrayClient, keyring, clock, logger, node, worker.SynchronizerOptions{
+		MaxRetryInterval: cfg.Workers.MaxRetryInterval.Duration, OnProfileRecovered: requestValidation})
+	users := application.NewUserService(store, keyring, clock, synchronizer.Wake)
+	connections := application.NewConnectionService(store, keyring)
+	settings := application.NewSettingsService(store)
+	validator = worker.NewProfileValidator(profiles, store, logger, node, cfg.Workers.ReconcileInterval.Duration)
+
+	server, err := web.NewServer(cfg, web.RouteDependencies{Auth: auth, Profiles: profiles, Users: users, Connections: connections,
+		Settings: settings, Sessions: sessions, CSRFKey: keyring.CSRFKey(), Secure: !cfg.Server.InsecureDevelopment, Logger: logger})
 	if err != nil {
 		logger.Error("initialize HTTP server", "error_kind", "internal")
 		return 3
 	}
-	target := ports.InstanceTarget{APIEndpoint: cfg.Xray.APIEndpoint, ExpectedVersion: cfg.Xray.SupportedVersion, RPCTimeout: cfg.Xray.RPCTimeout.Duration}
-	xrayClient, err := xrayadapter.New(target)
-	if err != nil {
-		logger.Warn("Xray API client is not ready", logging.FieldErrorKind, "instance_unavailable")
-	} else {
-		defer xrayClient.Close()
+
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+	var workers sync.WaitGroup
+	for _, run := range []func(context.Context){synchronizer.Run, validator.Run} {
+		workers.Add(1)
+		go func(run func(context.Context)) { defer workers.Done(); run(workerCtx) }(run)
 	}
 	server.SetReady(true)
-	logger.Info("XPanel ready", logging.FieldComponent, "server", "xray_endpoint", cfg.Xray.APIEndpoint,
-		"supported_version", cfg.Xray.SupportedVersion)
+	logger.Info("XPanel ready", logging.FieldComponent, "server", logging.FieldNodeID, instance.ID.String(),
+		"xray_endpoint", cfg.Xray.APIEndpoint, "supported_version", cfg.Xray.SupportedVersion, "listen", cfg.Server.Listen)
 
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
@@ -157,12 +190,16 @@ func runServe(args []string, stderr io.Writer) int {
 		<-shutdown
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout.Duration)
 		defer cancel()
+		// 优雅关闭：先停止接收请求，再取消后台 RPC，等待 worker 完成短事务并释放租约。
 		_ = server.Shutdown(ctx)
+		stopWorkers()
+		workers.Wait()
 	}()
 	if err := server.ListenAndServe(); err != nil {
 		logger.Error("HTTP server stopped", logging.FieldErrorKind, "internal")
 		return 4
 	}
+	workers.Wait()
 	return 0
 }
 

@@ -1,0 +1,20 @@
+{{define "user_detail.html"}}{{template "head" .}}
+<body>{{template "nav" .}}<main><h1>{{.Title}}</h1>{{template "messages" .}}
+{{with .Data.User}}
+<p>状态：{{template "state" .}}{{if not .ProfileCompatible}} <span class="badge">访问配置{{.ProfileStateLabel}}</span>{{end}}</p>
+{{if .QuotaExceeded}}<p class="notice">配额超限：系统已请求节点拒绝新连接。配额控制存在检测延迟，已建立的连接可能继续并造成少量超额。</p>{{end}}
+<dl>
+  <dt>访问配置</dt><dd><a href="/profiles/{{.ProfileID}}">{{.ProfileName}}</a></dd>
+  <dt>最后同步</dt><dd>{{if .LastSyncAt}}{{.LastSyncAt}}{{else}}尚未同步{{end}}</dd>
+  <dt>本周期用量</dt><dd>{{.Quota.UsedText}}（上行 {{.Quota.UplinkText}} / 下行 {{.Quota.DownlinkText}}）</dd>
+  <dt>配额</dt><dd>{{.Quota.LimitText}}{{if not .Quota.Unlimited}}，剩余 {{.Quota.RemainingText}}（{{.Quota.Percent}}%）{{if .Quota.OverageText}}，超额 {{.Quota.OverageText}}{{end}}{{end}}</dd>
+  <dt>当前周期</dt><dd>{{.Quota.CycleStart}} 至 {{.Quota.CycleEnd}}（每月 {{.Quota.ResetDay}} 日重置，时区 {{.Quota.Timezone}}）</dd>
+  <dt>创建时间</dt><dd>{{.CreatedAt}}</dd>
+</dl>
+{{end}}
+<div class="actions">
+  {{if .Data.ConnectionAvailable}}<a href="/users/{{.Data.User.ID}}/connection" class="button">查看连接信息</a>{{end}}
+  {{if .Data.ConnectionPending}}<p class="notice">连接信息将在节点确认凭证后可用。</p>{{end}}
+</div>
+<p><a href="/users">返回用户列表</a></p>
+{{template "footer" .}}</main></body></html>{{end}}

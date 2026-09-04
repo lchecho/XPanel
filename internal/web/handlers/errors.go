@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"html/template"
+	"log/slog"
 	"net/http"
 
 	"xpanel/internal/web/views"
@@ -9,12 +11,17 @@ import (
 
 type Renderer struct{ Templates *template.Template }
 
+// Page 先渲染到缓冲区，模板错误统一转为 500，避免向浏览器输出半截页面。
 func (r Renderer) Page(w http.ResponseWriter, status int, name string, data views.Page) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	if err := r.Templates.ExecuteTemplate(w, name, data); err != nil {
+	var buffer bytes.Buffer
+	if err := r.Templates.ExecuteTemplate(&buffer, name, data); err != nil {
+		slog.Default().Error("render template", "template", name, "error_kind", "internal", "detail", err.Error())
+		http.Error(w, "页面渲染失败", http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(buffer.Bytes())
 }
 
 func (r Renderer) Error(w http.ResponseWriter, status int, message, safeID string) {

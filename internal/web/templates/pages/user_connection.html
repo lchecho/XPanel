@@ -1,0 +1,16 @@
+{{define "user_connection.html"}}{{template "head" .}}
+<body>{{template "nav" .}}<main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}
+{{if .Data.Pending}}<p class="notice">连接信息尚不可用：凭证正在等待节点确认（创建或轮换完成后才会展示）。</p>{{else}}
+{{if .Data.Inactive}}<p class="notice">该用户当前不活跃（手动禁用或配额超限），以下信息暂时无法建立新连接。</p>{{end}}
+<dl>
+  <dt>服务器</dt><dd>{{.Data.Host}}</dd>
+  <dt>端口</dt><dd>{{.Data.Port}}</dd>
+  <dt>加密方式</dt><dd>{{.Data.Method}}</dd>
+  <dt>标签</dt><dd>{{.Data.Label}}</dd>
+  <dt>客户端密码</dt><dd><code class="print-hidden connection-secret">{{.Data.Password}}</code></dd>
+</dl>
+<label for="uri">ss:// 连接信息（可全选复制）</label>
+<textarea id="uri" class="print-hidden connection-secret" readonly rows="3">{{.Data.URI}}</textarea>
+{{end}}
+<p><a href="/users/{{.Data.User.ID}}">返回用户详情</a></p>
+{{template "footer" .}}</main></body></html>{{end}}

@@ -15,4 +15,7 @@ type Page struct {
 	FieldErrors   map[string]string
 	Values        map[string]string
 	Data          any
+	Timezone      string
+	Version       int64
+	Capacity      string
 }

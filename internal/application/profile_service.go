@@ -69,13 +69,23 @@ func (s *ProfileService) RegisterProfile(ctx context.Context, input ProfileInput
 		return "", err
 	}
 	record := ports.ProfileRecord{Profile: profile, ServerKeyCiphertext: ciphertext, ServerKeyNonce: nonce, KeyEncryptionVersion: 1}
-	if err := s.store.CreateProfile(ctx, record, command, audit); err != nil {
+	id, replay, err := s.store.CreateProfile(ctx, record, command, audit)
+	if err != nil {
 		return "", err
 	}
-	if s.notify != nil {
-		s.notify(profileID)
+	if !replay && s.notify != nil {
+		s.notify(id)
 	}
-	return profileID, nil
+	return id, nil
+}
+
+// List 返回未归档的访问配置；compatibleOnly 时只返回可作为新用户目标的配置。
+func (s *ProfileService) List(ctx context.Context, compatibleOnly bool) ([]ports.ProfileRecord, error) {
+	return s.store.Profiles(ctx, compatibleOnly)
+}
+
+func (s *ProfileService) Get(ctx context.Context, id domain.ID) (ports.ProfileRecord, error) {
+	return s.store.Profile(ctx, id)
 }
 
 func (s *ProfileService) UpdateProfile(ctx context.Context, id domain.ID, input ProfileInput) error {

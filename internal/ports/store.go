@@ -18,7 +18,7 @@ type Store interface {
 	Settings(context.Context) (PanelSettingsRecord, error)
 	SetInstanceHealth(context.Context, string, string, string, *time.Time, string, time.Time) error
 	AppendAudit(context.Context, domain.AuditEvent) error
-	CreateProfile(context.Context, ProfileRecord, domain.DomainCommand, domain.AuditEvent) error
+	CreateProfile(context.Context, ProfileRecord, domain.DomainCommand, domain.AuditEvent) (domain.ID, bool, error)
 	UpdateProfile(context.Context, ProfileRecord, RevisionMatch, domain.DomainCommand, domain.AuditEvent) error
 	Profile(context.Context, domain.ID) (ProfileRecord, error)
 	Profiles(context.Context, bool) ([]ProfileRecord, error)
@@ -27,6 +27,7 @@ type Store interface {
 	RegisterBootstrapIdentity(context.Context, domain.XrayUserIdentity) error
 	CreateUser(context.Context, UserCreateRecord) (domain.ID, bool, error)
 	User(context.Context, domain.ID) (UserRecord, error)
+	ListUsers(context.Context, UserFilter) ([]UserRecord, error)
 	Enqueue(context.Context, domain.SynchronizationOperation) error
 	LeaseDue(context.Context, string, time.Time, time.Duration) (*SyncWork, error)
 	ConfirmIfRevisionCurrent(context.Context, domain.ID, domain.Revision, int64, bool, time.Time) (bool, error)
@@ -98,6 +99,13 @@ type ProfileRecord struct {
 }
 
 type RevisionMatch struct{ Expected domain.Revision }
+
+// UserFilter 描述用户列表的搜索与筛选条件；Status 取值见 domain.DisplayState 与 "pending"。
+type UserFilter struct {
+	Query          string
+	Status         string
+	IncludeDeleted bool
+}
 
 type QuotaPolicyRecord struct {
 	AllocationID domain.ID

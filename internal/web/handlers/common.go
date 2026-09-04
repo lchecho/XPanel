@@ -1,0 +1,171 @@
+package handlers
+
+import (
+	"errors"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/alexedwards/scs/v2"
+	"github.com/gorilla/csrf"
+
+	"xpanel/internal/application"
+	"xpanel/internal/domain"
+	"xpanel/internal/logging"
+	webmiddleware "xpanel/internal/web/middleware"
+	"xpanel/internal/web/views"
+)
+
+const (
+	sessionFlashKind    = "flash_kind"
+	sessionFlashMessage = "flash_message"
+)
+
+// Base 汇集所有认证页面 handler 共享的依赖与辅助方法。
+type Base struct {
+	Sessions *scs.SessionManager
+	Renderer Renderer
+	Settings *application.SettingsService
+	Logger   *slog.Logger
+}
+
+// NewPage 构造认证页面的基础数据：CSRF 字段、一次性请求 ID、flash 消息与面板时区。
+func (b Base) NewPage(r *http.Request, title string) views.Page {
+	page := views.Page{Title: title, CSRFField: csrf.TemplateField(r), RequestID: NewRequestID(), Authenticated: true,
+		Values: map[string]string{}, FieldErrors: map[string]string{}, Timezone: b.Location(r).String()}
+	if b.Sessions != nil {
+		message := b.Sessions.PopString(r.Context(), sessionFlashMessage)
+		kind := b.Sessions.PopString(r.Context(), sessionFlashKind)
+		if message != "" {
+			if kind == "" {
+				kind = "success"
+			}
+			page.Flash = &views.Flash{Kind: kind, Message: message}
+		}
+	}
+	return page
+}
+
+// Flash 把一次性成功消息存入服务端 session，由下一次 GET 渲染（http.md §General Rules）。
+func (b Base) Flash(r *http.Request, kind, message string) {
+	if b.Sessions == nil {
+		return
+	}
+	b.Sessions.Put(r.Context(), sessionFlashKind, kind)
+	b.Sessions.Put(r.Context(), sessionFlashMessage, message)
+}
+
+func (b Base) Actor(r *http.Request) domain.ID {
+	if b.Sessions == nil {
+		return ""
+	}
+	return domain.ID(b.Sessions.GetString(r.Context(), webmiddleware.SessionAdministratorID))
+}
+
+func (b Base) SessionToken(r *http.Request) string {
+	if b.Sessions == nil {
+		return ""
+	}
+	return b.Sessions.Token(r.Context())
+}
+
+func (b Base) Location(r *http.Request) *time.Location {
+	if b.Settings == nil {
+		return time.UTC
+	}
+	return b.Settings.Location(r.Context())
+}
+
+func (b Base) logger() *slog.Logger {
+	if b.Logger == nil {
+		return slog.Default()
+	}
+	return b.Logger
+}
+
+// Failure 描述一次业务错误在页面上的呈现方式。
+type Failure struct {
+	Status  int
+	Field   string
+	Message string
+}
+
+// Classify 把领域错误映射为 HTTP 状态、字段与管理员可见文案（http.md §Response Semantics）。
+func Classify(err error) Failure {
+	var validation *domain.ValidationError
+	if errors.As(err, &validation) {
+		return Failure{Status: http.StatusUnprocessableEntity, Field: validation.Field, Message: fieldMessage(validation.Field, validation.Message)}
+	}
+	var conflict *domain.ConflictError
+	if errors.As(err, &conflict) {
+		return Failure{Status: http.StatusConflict, Message: conflictMessage(conflict.Message)}
+	}
+	var state *domain.InvalidStateError
+	if errors.As(err, &state) {
+		return Failure{Status: http.StatusConflict, Message: conflictMessage(state.Message)}
+	}
+	var notFound *domain.NotFoundError
+	if errors.As(err, &notFound) {
+		return Failure{Status: http.StatusNotFound, Message: "请求的资源不存在"}
+	}
+	return Failure{Status: http.StatusInternalServerError, Message: "请求暂时无法完成"}
+}
+
+var fieldMessages = map[string]string{
+	"display_name":            "显示名称需为 1–64 个字符、不含控制字符",
+	"name":                    "名称需为 1–64 个字符、不含控制字符",
+	"inbound_tag":             "入站标签不能为空且不能包含控制字符",
+	"public_host":             "公开地址无效",
+	"public_port":             "端口必须在 1 到 65535 之间",
+	"method":                  "加密方式只支持 2022-blake3-aes-128-gcm 与 2022-blake3-aes-256-gcm",
+	"network":                 "网络能力只能是 tcp、udp 或 tcp_udp",
+	"server_key":              "服务端密钥与所选加密方式不匹配（需为标准 Base64 的 16 或 32 字节）",
+	"bootstrap_statistics_id": "保留初始用户标识无效或使用了面板保留前缀",
+	"reset_day":               "重置日必须在 1 到 28 之间",
+	"limit_bytes":             "配额必须为正整数且不超过 2^62 字节，或勾选“无限制”",
+	"quota":                   "配额必须为正整数且不超过 2^62 字节，或勾选“无限制”",
+	"profile_id":              "请选择一个兼容的访问配置",
+	"_request_id":             "表单已过期，请刷新页面后重试",
+	"_version":                "资源版本无效，请刷新页面后重试",
+}
+
+func fieldMessage(field, fallback string) string {
+	if message, ok := fieldMessages[field]; ok {
+		return message
+	}
+	return fallback
+}
+
+var conflictMessages = map[string]string{
+	"user name already exists":                                "显示名称已被使用，请更换后重试",
+	"profile already exists":                                  "访问配置名称或入站标签已存在",
+	"request identifier was reused with different input":      "该请求已提交过且内容不同，请刷新页面后重新操作",
+	"profile changed since the page was loaded":               "访问配置已被修改，页面显示的是最新状态，请核对后重新提交",
+	"profile changed or still has managed users":              "访问配置仍有受管用户或已被修改",
+	"profile is not compatible":                               "所选访问配置当前不兼容，不能创建用户",
+	"connection information is unavailable for deleted users": "已删除用户不再提供连接信息",
+}
+
+func conflictMessage(message string) string {
+	if translated, ok := conflictMessages[message]; ok {
+		return translated
+	}
+	return "当前状态不允许该操作：" + message
+}
+
+// Fail 渲染非表单错误（404/409/500），500 只暴露安全错误编号。
+func (b Base) Fail(w http.ResponseWriter, r *http.Request, err error) {
+	failure := Classify(err)
+	if failure.Status == http.StatusInternalServerError {
+		id := NewRequestID()
+		b.logger().Error("request failed", logging.FieldRequestID, id, logging.FieldErrorKind, "internal", "path", r.URL.Path)
+		b.Renderer.Error(w, failure.Status, failure.Message, id)
+		return
+	}
+	b.Renderer.Error(w, failure.Status, failure.Message, "")
+}
+
+func pathID(r *http.Request, name string) (domain.ID, bool) {
+	id := domain.ID(r.PathValue(name))
+	return id, id.Valid()
+}

@@ -45,7 +45,7 @@ func seedProfile(t *testing.T, store *Store, now time.Time) ports.ProfileRecord 
 	audit := domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor,
 		TargetType: "profile", TargetID: profile.ID, Action: domain.ActionProfileRegistered,
 		Result: domain.AuditSucceeded, CommandID: &commandID, SafeSummary: "profile registered"}
-	if err := store.CreateProfile(ctx, record, command, audit); err != nil {
+	if _, _, err := store.CreateProfile(ctx, record, command, audit); err != nil {
 		t.Fatal(err)
 	}
 	return record

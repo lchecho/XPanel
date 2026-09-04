@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"xpanel/internal/domain"
@@ -216,5 +217,52 @@ func setBool(target **bool, source sql.NullInt64) {
 	if source.Valid {
 		value := source.Int64 != 0
 		*target = &value
+	}
+}
+
+// ListUsers 按规范化名称模糊匹配并可按派生状态筛选；状态判定在 Go 中完成（≤20 用户）。
+func (s *Store) ListUsers(ctx context.Context, filter ports.UserFilter) ([]ports.UserRecord, error) {
+	query := userSelect + ` WHERE (? = '' OR u.normalized_name LIKE ?) AND (? = 1 OR u.deleted_at IS NULL) ORDER BY u.normalized_name, u.id`
+	normalized, _ := domain.NormalizeDisplayName(filter.Query)
+	pattern := "%" + strings.ReplaceAll(strings.ReplaceAll(normalized, "%", ""), "_", "") + "%"
+	if strings.TrimSpace(filter.Query) == "" {
+		normalized = ""
+	}
+	rows, err := s.db.Read.QueryContext(ctx, query, normalized, pattern, boolInt(filter.IncludeDeleted))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []ports.UserRecord
+	for rows.Next() {
+		record, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		if !matchesStatus(record, filter.Status) {
+			continue
+		}
+		result = append(result, record)
+	}
+	return result, rows.Err()
+}
+
+func matchesStatus(record ports.UserRecord, status string) bool {
+	state := record.Allocation.DisplayState(record.User)
+	switch status {
+	case "":
+		return true
+	case "pending":
+		return record.User.Lifecycle != domain.LifecycleDeleted && record.Allocation.PendingSync()
+	case string(domain.DisplayActive):
+		return state == domain.DisplayActive
+	case string(domain.DisplayDisabled):
+		return state == domain.DisplayDisabled || state == domain.DisplayDisabling
+	case string(domain.DisplayQuotaExceeded):
+		return state == domain.DisplayQuotaExceeded || state == domain.DisplayQuotaDisabling
+	case string(domain.DisplayDeleted):
+		return state == domain.DisplayDeleted
+	default:
+		return false
 	}
 }

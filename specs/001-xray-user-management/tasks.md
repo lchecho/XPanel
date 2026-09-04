@@ -149,14 +149,14 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 ### Web 页面
 
-- [ ] T058 [US1] 实现 `internal/web/views/format.go`、`internal/web/views/profile.go`、`internal/web/views/user.go`：字节格式化（IEC 1024 进制，≥1 MiB 两位小数四舍五入）、时间按面板时区 `YYYY-MM-DD HH:MM:SS` 格式化、状态标签文案与派生（data-model §AccessAllocation 表）、稳定错误/事件→固定中文句子映射表（http.md §Response Semantics）、`pending_sync` 标记
-- [ ] T059 [US1] 实现 `internal/web/templates/pages/profiles_list.html`、`profile_form.html`、`profile_detail.html` 与 `internal/web/handlers/profiles.go`：`GET /profiles`、`GET /profiles/new`、`POST /profiles`（303）、`GET /profiles/{profile_id}`、`GET /profiles/{profile_id}/edit`（密钥字段恒为空）、`POST /profiles/{profile_id}`（`_version`）、`POST /profiles/{profile_id}/revalidate`；422 字段错误、409 版本冲突、兼容状态与安全原因展示
-- [ ] T060 [US1] 实现 `internal/web/templates/pages/user_form.html` 与 `internal/web/handlers/users.go`（创建部分）：`GET /users/new`（仅 compatible profile 可选，无兼容 profile 时显示零状态引导）、`POST /users`（校验、幂等、303 到 `/users/{user_id}`）
-- [ ] T061 [US1] 实现 `internal/web/templates/pages/user_detail.html`（US1 部分）与 `GET /users/{user_id}`：显示名称、profile、派生状态、`pending_sync`/同步错误摘要、最后同步时间、连接信息页链接
-- [ ] T062 [US1] 实现 `internal/web/templates/pages/user_connection.html` 与 `GET /users/{user_id}/connection`：`no-store`；仅凭证确认后展示；禁用/超限附“不活跃”警示；轮换中标记不可用/待确认；无脚本可用的只读文本块供复制；密钥不作为独立字段记录；客户端密码加 print-hidden 类
-- [ ] T063 [P] [US1] 编写 `internal/web/handlers/profiles_test.go` 与 `users_create_test.go`：模板渲染、422/409、未认证 303 且正文不含连接信息、服务端密钥永不回显、连接页 `Cache-Control: no-store`
-- [ ] T064 [US1] 编写 `tests/e2e/create_user_test.go`：登录 → 登记 profile → 验证 compatible → 创建用户 → 等待 fake Xray 出现用户 → 打开连接信息；不兼容 profile 创建被拒；fake Xray 离线时创建显示待同步并在恢复后收敛；未登录访问被拒
-- [ ] T065 [US1] 在 `cmd/xpanel/main.go` 接线 synchronizer 与 profile 验证任务；启动时记录节点标识、Xray 端点与受支持版本【可观测性】
+- [X] T058 [US1] 实现 `internal/web/views/format.go`、`internal/web/views/profile.go`、`internal/web/views/user.go`：字节格式化（IEC 1024 进制，≥1 MiB 两位小数四舍五入）、时间按面板时区 `YYYY-MM-DD HH:MM:SS` 格式化、状态标签文案与派生（data-model §AccessAllocation 表）、稳定错误/事件→固定中文句子映射表（http.md §Response Semantics）、`pending_sync` 标记
+- [X] T059 [US1] 实现 `internal/web/templates/pages/profiles_list.html`、`profile_form.html`、`profile_detail.html` 与 `internal/web/handlers/profiles.go`：`GET /profiles`、`GET /profiles/new`、`POST /profiles`（303）、`GET /profiles/{profile_id}`、`GET /profiles/{profile_id}/edit`（密钥字段恒为空）、`POST /profiles/{profile_id}`（`_version`）、`POST /profiles/{profile_id}/revalidate`；422 字段错误、409 版本冲突、兼容状态与安全原因展示
+- [X] T060 [US1] 实现 `internal/web/templates/pages/user_form.html` 与 `internal/web/handlers/users.go`（创建部分）：`GET /users/new`（仅 compatible profile 可选，无兼容 profile 时显示零状态引导）、`POST /users`（校验、幂等、303 到 `/users/{user_id}`）
+- [X] T061 [US1] 实现 `internal/web/templates/pages/user_detail.html`（US1 部分）与 `GET /users/{user_id}`：显示名称、profile、派生状态、`pending_sync`/同步错误摘要、最后同步时间、连接信息页链接
+- [X] T062 [US1] 实现 `internal/web/templates/pages/user_connection.html` 与 `GET /users/{user_id}/connection`：`no-store`；仅凭证确认后展示；禁用/超限附“不活跃”警示；轮换中标记不可用/待确认；无脚本可用的只读文本块供复制；密钥不作为独立字段记录；客户端密码加 print-hidden 类
+- [X] T063 [P] [US1] 编写 `internal/web/handlers/profiles_test.go` 与 `users_create_test.go`：模板渲染、422/409、未认证 303 且正文不含连接信息、服务端密钥永不回显、连接页 `Cache-Control: no-store`
+- [X] T064 [US1] 编写 `tests/e2e/create_user_test.go`：登录 → 登记 profile → 验证 compatible → 创建用户 → 等待 fake Xray 出现用户 → 打开连接信息；不兼容 profile 创建被拒；fake Xray 离线时创建显示待同步并在恢复后收敛；未登录访问被拒
+- [X] T065 [US1] 在 `cmd/xpanel/main.go` 接线 synchronizer 与 profile 验证任务；启动时记录节点标识、Xray 端点与受支持版本【可观测性】
 
 **Checkpoint**: US1 可独立演示：登记配置、创建用户、投影到 Xray、分享连接信息、离线待同步与恢复
 

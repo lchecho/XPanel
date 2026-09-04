@@ -137,3 +137,11 @@ func initialCycleBounds(now time.Time, timezone string, resetDay int) (time.Time
 func (s *UserService) User(ctx context.Context, id domain.ID) (ports.UserRecord, error) {
 	return s.store.User(ctx, id)
 }
+
+// List 按名称与派生状态筛选用户；已删除用户仅在显式要求时返回。
+func (s *UserService) List(ctx context.Context, filter ports.UserFilter) ([]ports.UserRecord, error) {
+	if filter.Status == string(domain.DisplayDeleted) {
+		filter.IncludeDeleted = true
+	}
+	return s.store.ListUsers(ctx, filter)
+}

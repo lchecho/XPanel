@@ -1,0 +1,251 @@
+package handlers
+
+import (
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"xpanel/internal/application"
+	"xpanel/internal/domain"
+	"xpanel/internal/ports"
+	"xpanel/internal/web/views"
+)
+
+// 功能入口：UserHandler 提供受管用户的列表、创建、详情与连接信息页面。
+// 职责：解析表单并调用 UserService/ConnectionService；不负责生成密钥或访问 Xray。
+// 约束：连接信息只在凭证被 Xray 确认后展示，且页面 no-store；密钥不作为独立字段记录。
+type UserHandler struct {
+	Base
+	Service     *application.UserService
+	Profiles    *application.ProfileService
+	Connections *application.ConnectionService
+}
+
+const activeCapacity = 20
+
+var quotaUnits = []string{"MiB", "GiB", "TiB"}
+
+type userFormData struct {
+	Profiles     []views.ProfileView
+	NoCompatible bool
+	Units        []string
+}
+
+type userListData struct {
+	Users    []views.UserView
+	Query    string
+	Status   string
+	Statuses []statusOption
+	Total    int
+}
+
+type statusOption struct{ Value, Label string }
+
+var statusOptions = []statusOption{{"", "全部（不含已删除）"}, {"active", "已启用"}, {"disabled", "手动禁用"},
+	{"quota_exceeded", "配额超限"}, {"pending", "待同步"}, {"deleted", "已删除"}}
+
+type userDetailData struct {
+	User                views.UserView
+	ConnectionAvailable bool
+	ConnectionPending   bool
+}
+
+type connectionData struct {
+	User     views.UserView
+	Pending  bool
+	Inactive bool
+	Host     string
+	Port     int
+	Method   string
+	Label    string
+	Password string
+	URI      string
+}
+
+func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	status := r.URL.Query().Get("status")
+	if !validStatus(status) {
+		status = ""
+	}
+	records, err := h.Service.List(r.Context(), ports.UserFilter{Query: query, Status: status, IncludeDeleted: r.URL.Query().Get("deleted") == "1"})
+	if err != nil {
+		h.Fail(w, r, err)
+		return
+	}
+	page := h.NewPage(r, "用户")
+	page.Capacity = h.capacityNotice(r)
+	page.Data = userListData{Users: views.NewUserViews(records, h.Location(r)), Query: query, Status: status,
+		Statuses: statusOptions, Total: len(records)}
+	h.Renderer.Page(w, http.StatusOK, "users_list.html", page)
+}
+
+func validStatus(status string) bool {
+	for _, option := range statusOptions {
+		if option.Value == status {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *UserHandler) NewForm(w http.ResponseWriter, r *http.Request) {
+	page := h.NewPage(r, "创建用户")
+	page.Values["reset_day"] = "1"
+	page.Values["quota_unit"] = "GiB"
+	data, err := h.formData(r)
+	if err != nil {
+		h.Fail(w, r, err)
+		return
+	}
+	page.Capacity = h.capacityNotice(r)
+	page.Data = data
+	h.Renderer.Page(w, http.StatusOK, "user_form.html", page)
+}
+
+func (h *UserHandler) formData(r *http.Request) (userFormData, error) {
+	records, err := h.Profiles.List(r.Context(), true)
+	if err != nil {
+		return userFormData{}, err
+	}
+	return userFormData{Profiles: views.NewProfileViews(records, h.Location(r)), NoCompatible: len(records) == 0, Units: quotaUnits}, nil
+}
+
+func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
+	form, err := ParseCommandForm(r, h.SessionToken(r), "user_create", "")
+	if err != nil {
+		h.Renderer.Error(w, http.StatusBadRequest, "表单格式无效", "")
+		return
+	}
+	input := application.CreateUserInput{DisplayName: form.Values["display_name"], ProfileID: domain.ID(form.Values["profile_id"]),
+		RequestID: form.RequestID, ActorID: h.Actor(r)}
+	if !input.ProfileID.Valid() {
+		h.renderUserForm(w, r, form.Values, &domain.ValidationError{Field: "profile_id", Message: "profile is required"})
+		return
+	}
+	input.ResetDay, _ = strconv.Atoi(strings.TrimSpace(form.Values["reset_day"]))
+	limit, err := parseQuota(form.Values)
+	if err != nil {
+		h.renderUserForm(w, r, form.Values, err)
+		return
+	}
+	input.LimitBytes = limit
+	id, _, err := h.Service.CreateUser(r.Context(), input)
+	if err != nil {
+		h.renderUserForm(w, r, form.Values, err)
+		return
+	}
+	h.Flash(r, "success", "用户已创建，正在同步到节点")
+	http.Redirect(w, r, "/users/"+id.String(), http.StatusSeeOther)
+}
+
+// parseQuota 把“整数 + 单位”或“无限制”转换为字节；空值未勾选、零/负值与溢出均为字段错误。
+func parseQuota(values map[string]string) (*int64, error) {
+	if values["unlimited"] == "on" || values["unlimited"] == "1" {
+		return nil, nil
+	}
+	raw := strings.TrimSpace(values["quota_value"])
+	if raw == "" {
+		return nil, &domain.ValidationError{Field: "quota", Message: "quota is required unless unlimited is selected"}
+	}
+	amount, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || amount <= 0 {
+		return nil, &domain.ValidationError{Field: "quota", Message: "quota must be a positive integer"}
+	}
+	var multiplier int64
+	switch values["quota_unit"] {
+	case "MiB":
+		multiplier = 1 << 20
+	case "GiB":
+		multiplier = 1 << 30
+	case "TiB":
+		multiplier = 1 << 40
+	default:
+		return nil, &domain.ValidationError{Field: "quota", Message: "quota unit is invalid"}
+	}
+	if amount > (1<<62)/multiplier {
+		return nil, &domain.ValidationError{Field: "quota", Message: "quota exceeds the supported maximum"}
+	}
+	bytes := amount * multiplier
+	return &bytes, nil
+}
+
+func (h *UserHandler) renderUserForm(w http.ResponseWriter, r *http.Request, values map[string]string, cause error) {
+	failure := Classify(cause)
+	if failure.Status == http.StatusNotFound || failure.Status == http.StatusInternalServerError {
+		h.Fail(w, r, cause)
+		return
+	}
+	page := h.NewPage(r, "创建用户")
+	page.Values = values
+	page.ErrorSummary = failure.Message
+	if failure.Field != "" {
+		page.FieldErrors[failure.Field] = failure.Message
+	}
+	data, err := h.formData(r)
+	if err != nil {
+		h.Fail(w, r, err)
+		return
+	}
+	page.Capacity = h.capacityNotice(r)
+	page.Data = data
+	h.Renderer.Page(w, failure.Status, "user_form.html", page)
+}
+
+func (h *UserHandler) Detail(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "user_id")
+	if !ok {
+		h.Renderer.Error(w, http.StatusNotFound, "请求的资源不存在", "")
+		return
+	}
+	record, err := h.Service.User(r.Context(), id)
+	if err != nil {
+		h.Fail(w, r, err)
+		return
+	}
+	page := h.NewPage(r, "用户："+record.User.DisplayName)
+	page.Version = int64(record.User.Revision)
+	confirmed := record.Credential.State == domain.CredentialActive && record.Allocation.DesiredCredentialVersion == record.Credential.Version
+	page.Data = userDetailData{User: views.NewUserView(record, h.Location(r)),
+		ConnectionAvailable: confirmed && record.User.Lifecycle != domain.LifecycleDeleted,
+		ConnectionPending:   !confirmed && record.User.Lifecycle != domain.LifecycleDeleted}
+	h.Renderer.Page(w, http.StatusOK, "user_detail.html", page)
+}
+
+func (h *UserHandler) Connection(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "user_id")
+	if !ok {
+		h.Renderer.Error(w, http.StatusNotFound, "请求的资源不存在", "")
+		return
+	}
+	record, err := h.Service.User(r.Context(), id)
+	if err != nil {
+		h.Fail(w, r, err)
+		return
+	}
+	page := h.NewPage(r, "连接信息："+record.User.DisplayName)
+	data := connectionData{User: views.NewUserView(record, h.Location(r))}
+	info, err := h.Connections.BuildConnectionInfo(r.Context(), id)
+	switch {
+	case errors.Is(err, application.ErrConnectionPending):
+		data.Pending = true
+	case err != nil:
+		h.Fail(w, r, err)
+		return
+	default:
+		data.Host, data.Port, data.Method, data.Label = info.Host, info.Port, info.Method, info.Label
+		data.Password, data.URI, data.Inactive = info.Password.Reveal(), info.URI.Reveal(), info.Inactive
+	}
+	page.Data = data
+	h.Renderer.Page(w, http.StatusOK, "user_connection.html", page)
+}
+
+// capacityNotice 在活跃分配超过验收容量时返回提示文案（spec Assumptions）。
+func (h *UserHandler) capacityNotice(r *http.Request) string {
+	records, err := h.Service.List(r.Context(), ports.UserFilter{})
+	if err != nil || len(records) <= activeCapacity {
+		return ""
+	}
+	return "活跃访问分配已超过 " + strconv.Itoa(activeCapacity) + " 个的验收容量，性能目标不再承诺"
+}

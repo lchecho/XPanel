@@ -75,12 +75,20 @@ func commandReplay(ctx context.Context, tx *txStore, command domain.DomainComman
 	return true, nil
 }
 
-func (s *Store) CreateProfile(ctx context.Context, record ports.ProfileRecord, command domain.DomainCommand, audit domain.AuditEvent) error {
-	return s.WithWriteTx(ctx, func(write ports.WriteTx) error {
+func (s *Store) CreateProfile(ctx context.Context, record ports.ProfileRecord, command domain.DomainCommand, audit domain.AuditEvent) (domain.ID, bool, error) {
+	id, replayed := record.Profile.ID, false
+	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
 		tx := write.(*txStore)
-		replay, err := commandReplay(ctx, tx, command)
-		if err != nil || replay {
+		existing, err := tx.FindCommand(ctx, command.ID)
+		if err != nil {
 			return err
+		}
+		if existing != nil {
+			if !bytes.Equal(existing.RequestFingerprint, command.RequestFingerprint) {
+				return &domain.ConflictError{Message: "request identifier was reused with different input"}
+			}
+			id, replayed = existing.TargetID, true
+			return nil
 		}
 		p := record.Profile
 		_, err = tx.tx.ExecContext(ctx, `INSERT INTO access_profiles
@@ -100,6 +108,7 @@ func (s *Store) CreateProfile(ctx context.Context, record ports.ProfileRecord, c
 		}
 		return tx.AppendAudit(ctx, audit)
 	})
+	return id, replayed, err
 }
 
 func (s *Store) UpdateProfile(ctx context.Context, record ports.ProfileRecord, match ports.RevisionMatch, command domain.DomainCommand, audit domain.AuditEvent) error {

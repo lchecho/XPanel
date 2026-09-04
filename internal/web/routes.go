@@ -1,6 +1,7 @@
 package web
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/alexedwards/scs/v2"
@@ -13,11 +14,16 @@ import (
 )
 
 type RouteDependencies struct {
-	Auth     *application.AuthService
-	Sessions *scs.SessionManager
-	CSRFKey  []byte
-	Secure   bool
-	Ready    func() bool
+	Auth        *application.AuthService
+	Profiles    *application.ProfileService
+	Users       *application.UserService
+	Connections *application.ConnectionService
+	Settings    *application.SettingsService
+	Sessions    *scs.SessionManager
+	CSRFKey     []byte
+	Secure      bool
+	Ready       func() bool
+	Logger      *slog.Logger
 }
 
 func Routes(deps RouteDependencies) (http.Handler, error) {
@@ -51,12 +57,32 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 	public.HandleFunc("GET /login", auth.LoginPage)
 	public.HandleFunc("POST /login", auth.Login)
 
+	base := handlers.Base{Sessions: deps.Sessions, Renderer: renderer, Settings: deps.Settings, Logger: deps.Logger}
+	profiles := &handlers.ProfileHandler{Base: base, Service: deps.Profiles}
+	users := &handlers.UserHandler{Base: base, Service: deps.Users, Profiles: deps.Profiles, Connections: deps.Connections}
+
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		renderer.Page(w, http.StatusOK, "dashboard.html", views.Page{Title: "仪表盘", Authenticated: true,
 			CSRFField: csrf.TemplateField(r), RequestID: handlers.NewRequestID()})
 	})
 	protected.HandleFunc("POST /logout", auth.Logout)
+	if deps.Profiles != nil {
+		protected.HandleFunc("GET /profiles", profiles.List)
+		protected.HandleFunc("GET /profiles/new", profiles.NewForm)
+		protected.HandleFunc("POST /profiles", profiles.Create)
+		protected.HandleFunc("GET /profiles/{profile_id}", profiles.Detail)
+		protected.HandleFunc("GET /profiles/{profile_id}/edit", profiles.EditForm)
+		protected.HandleFunc("POST /profiles/{profile_id}", profiles.Update)
+		protected.HandleFunc("POST /profiles/{profile_id}/revalidate", profiles.Revalidate)
+	}
+	if deps.Users != nil {
+		protected.HandleFunc("GET /users", users.List)
+		protected.HandleFunc("GET /users/new", users.NewForm)
+		protected.HandleFunc("POST /users", users.Create)
+		protected.HandleFunc("GET /users/{user_id}", users.Detail)
+		protected.HandleFunc("GET /users/{user_id}/connection", users.Connection)
+	}
 	public.Handle("/", webmiddleware.RequireAuth(deps.Sessions, deps.Auth.SessionValid, protected))
 
 	stack := webmiddleware.CSRF(deps.CSRFKey, deps.Secure, public)

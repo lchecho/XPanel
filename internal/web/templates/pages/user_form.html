@@ -1,0 +1,27 @@
+{{define "user_form.html"}}{{template "head" .}}
+<body>{{template "nav" .}}<main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}
+{{if .Data.NoCompatible}}<p class="empty">当前没有处于“兼容”状态的访问配置，无法创建用户。请先<a href="/profiles">登记或重新验证访问配置</a>。</p>{{else}}
+<form method="post" action="/users">
+  {{.CSRFField}}
+  <input type="hidden" name="_request_id" value="{{.RequestID}}">
+  <label for="display_name">显示名称</label>
+  <input id="display_name" name="display_name" value="{{index .Values "display_name"}}" required maxlength="64" aria-describedby="display_name-error">
+  <span id="display_name-error" class="field-error">{{index .FieldErrors "display_name"}}</span>
+  <label for="profile_id">访问配置</label>
+  <select id="profile_id" name="profile_id" required aria-describedby="profile_id-error">{{$selected := index .Values "profile_id"}}{{range .Data.Profiles}}<option value="{{.ID}}"{{if eq .ID $selected}} selected{{end}}>{{.Name}}（{{.PublicHost}}:{{.PublicPort}}）</option>{{end}}</select>
+  <span id="profile_id-error" class="field-error">{{index .FieldErrors "profile_id"}}</span>
+  <fieldset><legend>月度流量配额</legend>
+    <label for="quota_value">配额数值</label>
+    <input id="quota_value" name="quota_value" type="number" min="1" inputmode="numeric" value="{{index .Values "quota_value"}}" aria-describedby="quota-error">
+    <label for="quota_unit">单位</label>
+    <select id="quota_unit" name="quota_unit">{{$unit := index .Values "quota_unit"}}{{range .Data.Units}}<option value="{{.}}"{{if eq . $unit}} selected{{end}}>{{.}}</option>{{end}}</select>
+    <label><input type="checkbox" name="unlimited" value="on"{{if eq (index .Values "unlimited") "on"}} checked{{end}}> 无限制（仍统计用量，但不会因总量自动禁用）</label>
+    <span id="quota-error" class="field-error">{{index .FieldErrors "quota"}}{{index .FieldErrors "limit_bytes"}}</span>
+  </fieldset>
+  <label for="reset_day">每月重置日（1–28）</label>
+  <input id="reset_day" name="reset_day" type="number" min="1" max="28" value="{{index .Values "reset_day"}}" required aria-describedby="reset_day-error">
+  <span id="reset_day-error" class="field-error">{{index .FieldErrors "reset_day"}}</span>
+  <button type="submit">创建用户</button>
+</form>{{end}}
+<p><a href="/users">返回用户列表</a></p>
+{{template "footer" .}}</main></body></html>{{end}}

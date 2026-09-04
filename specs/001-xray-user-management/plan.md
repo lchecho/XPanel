@@ -12,7 +12,8 @@ Shadowsocks 2022 AES 多用户入站。SQLite 保存管理员、访问配置、�
 读取非破坏性用户计数，短事务更新游标与聚合并触发配额封禁；持久化同步 worker 与
 协调器负责用户增删、轮换、重启恢复和失败重试。
 
-浏览器界面使用 `html/template` 和原生表单，HTMX 只增强局部只读刷新。Xray protobuf
+浏览器界面使用 `html/template` 和原生表单，HTMX 只增强局部只读刷新；HTMX 升级必须通过
+无脚本与 fragment 测试，若未来核心流程需要依赖脚本，须先修订规格并复核宪章 VI。Xray protobuf
 被隔离在固定版本 Adapter 内；同一二进制同时提供 HTTP 服务、首次管理员初始化和本机
 密码重置命令。
 
@@ -33,7 +34,10 @@ Shadowsocks 2022 AES 多用户入站。SQLite 保存管理员、访问配置、�
 `CGO_ENABLED=0` 单二进制  
 **Project Type**: 同源 SSR Web 应用 + 后台 worker + 本机管理 CLI 的模块化单体  
 **Performance Goals**: 95% 管理操作 2 秒内反馈；95% 流量展示不晚于 10 秒；95% 正常
-配额越界 10 秒内阻止新连接，全部案例 30 秒内完成或显示待同步；重连后 60 秒内收敛  
+配额越界 10 秒内阻止新连接，全部案例 30 秒内完成或显示待同步；重连后 60 秒内收敛。
+测量基线：1 vCPU / 1 GiB、与 Xray 同机、20 个活跃分配、热状态（进程运行 ≥1 分钟）、
+单管理员串行操作；SSR 页面服务端渲染 ≤50 ms，静态资源总量 ≤100 KB 并以内容哈希文件名
+配合 `Cache-Control: public, max-age=31536000, immutable`  
 **Constraints**: 单控制进程、Xray API 仅回环、预配置 inbound、无 Node/CDN/WebSocket、
 不保存轮询原始样本、不承诺切断已建立连接、所有敏感输出 no-store 且日志脱敏  
 **Scale/Scope**: 单 Xray 实例、一个或多个预配置 profile、单管理员、最多 20 个活跃用户/
@@ -73,7 +77,9 @@ specs/001-xray-user-management/
 │   ├── config.md
 │   └── xray-adapter.md
 ├── checklists/
-│   └── requirements.md
+│   ├── requirements.md
+│   ├── plan-readiness.md
+│   └── ux.md
 └── tasks.md                 # 由 $speckit-tasks 生成，本命令不创建
 ```
 
@@ -115,7 +121,6 @@ internal/
 │       ├── db.go
 │       ├── store.go
 │       ├── sessions.go
-│       ├── queries/
 │       ├── migrations.go
 │       ├── migrations/
 │       │   └── 00001_initial.sql
@@ -126,12 +131,17 @@ internal/
 │       ├── handler.go
 │       ├── stats.go
 │       ├── errors.go
+│       ├── fake/
+│       │   └── fake.go          # 手写 fake Adapter，供 application/worker/E2E 测试
 │       └── *_test.go
 ├── security/
 │   ├── password.go          # Argon2id PHC 编码与比较
 │   ├── secrets.go           # XChaCha20-Poly1305 字段加密
 │   ├── tokens.go
 │   └── *_test.go
+├── logging/
+│   ├── logging.go           # slog JSON handler 与固定字段
+│   └── redact.go            # 集中脱敏
 ├── worker/
 │   ├── collector.go
 │   ├── synchronizer.go
@@ -150,6 +160,7 @@ internal/
     │   └── fragments/
     ├── static/
     │   ├── app.css
+    │   ├── app.js               # HTMX 轮询/焦点保持配置，原生 JS
     │   └── htmx-2.0.10.min.js
     └── *_test.go
 
@@ -163,6 +174,11 @@ deploy/
 ├── xpanel.example.json
 ├── xray-v26.3.27.example.json
 └── xpanel.service
+
+docs/
+└── operations.md            # 备份、恢复、主密钥与时钟运维
+
+Makefile                     # fmt/vet/test/test-race/build/contract/check
 ```
 
 **Structure Decision**: 采用单 Go module 的端口/适配器式模块化单体。领域与应用层不导入
@@ -213,8 +229,10 @@ HTTP、SQLite 或 Xray protobuf；适配器分别实现持久化和 Xray port。
   或以最大 30 秒、full jitter 的有界退避重排。任何写入同步操作的事务提交后，通过
   进程内通知立即唤醒 synchronizer（兜底轮询间隔 1 秒），使健康 Xray 上的创建、
   配额封禁与恢复通常在数秒内确认；创建成功页在确认前显示“启用中（待同步）”。
-- Reconciler：启动、Xray 重连和每 15 秒比较实际用户与最新期望；只管理 `xpanel-`
-  命名空间，保留 bootstrap 和未知外部用户。
+- Reconciler：启动、Xray 重连和每 15 秒比较实际用户与最新期望；`xpanel-` 命名空间内
+  SQLite 无记录或已删除的身份按漂移移除并审计，非该命名空间的身份（含 bootstrap）一律
+  保留。任一分配 `desired_revision ≠ synced_revision` 持续超过 3 个 `reconcile_interval`
+  时输出 warn 日志并在仪表盘标记“持续不同步”。
 - Scheduler：按 IANA 时区计算日/配额边界，幂等关闭旧周期并打开新周期；停机恢复时
   收敛到唯一 open 周期。
 
@@ -232,6 +250,8 @@ HTTP、SQLite 或 Xray protobuf；适配器分别实现持久化和 Xray port。
 
 [quickstart.md](quickstart.md) 定义固定 Xray 配置、构建初始化、profile 能力验证、真实
 TCP/UDP 流量、配额/手动重置、生命周期、轮换、重启恢复、认证与备份恢复的验收路径。
+备份方法（`sqlite3 .backup` 或 WAL checkpoint 后复制）、恢复步骤、恢复后协调校验以及
+主密钥与时钟的运维责任由 `docs/operations.md`（T122）定义，发布门禁 T127 引用该文档。
 
 ## Complexity Tracking
 

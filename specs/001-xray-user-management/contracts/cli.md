@@ -31,7 +31,8 @@ There is no `--password VALUE` option. Passwords are not accepted from environme
   password with terminal echo disabled.
 - `--password-stdin` is an explicit automation mode. It consumes only stdin, never repeats the value,
   and fails if the input is empty or malformed.
-- Applies the same username normalization, password policy and Argon2id service used by web login.
+- Applies the same username normalization, password policy and Argon2id service used by web login
+  (policy defined in `config.md` §Administrator Credential Policy).
 - Creates the administrator and `administrator_initialized` audit event in one transaction.
 - If an administrator already exists, exits without modifying it and instructs the operator to use
   `reset-password`.

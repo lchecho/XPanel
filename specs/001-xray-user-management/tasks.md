@@ -38,11 +38,11 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 **Purpose**: 建立可编译的 Go 工程骨架、固定依赖版本与本地嵌入的前端资源
 
-- [ ] T001 初始化 `go.mod`（module `xpanel`，`go 1.26.8`），固定 `github.com/xtls/xray-core@v1.260327.0`、`modernc.org/sqlite@v1.58.0`、`github.com/pressly/goose/v3@v3.28.0`、`golang.org/x/crypto@v0.56.0`、`github.com/alexedwards/scs/v2@v2.9.0`、`github.com/gorilla/csrf@v1.7.3`，生成 `go.sum`
-- [ ] T002 按 plan.md 创建目录骨架并放置 `doc.go` 包说明：`cmd/xpanel/`、`internal/{config,domain,application,ports,persistence/sqlite/migrations,adapter/xray/fake,security,logging,worker,web/{middleware,handlers,views,templates/{layouts,pages,fragments},static}}`、`tests/{contract/xray,integration,e2e}`、`deploy/`
-- [ ] T003 [P] 下载 HTMX `2.0.10` 到 `internal/web/static/htmx-2.0.10.min.js`，并在 `internal/web/static/THIRD_PARTY.md` 记录来源 URL、版本与 SHA-256
-- [ ] T004 [P] 创建 `Makefile`：`fmt`（gofmt 检查）、`vet`、`test`（`go test ./...`）、`test-race`、`build`（`CGO_ENABLED=0 go build -trimpath -o bin/xpanel ./cmd/xpanel`）、`contract`（设置 `XRAY_BIN` 后运行 `tests/contract/xray`；`XPANEL_REQUIRE_CONTRACT=1` 时缺少 `XRAY_BIN` 直接失败）、`check`（合并门禁：依次执行 `fmt`、`vet`、`test`、`test-race`、`contract`，并以 `XPANEL_REQUIRE_CONTRACT=1` 运行）
-- [ ] T005 [P] 按 contracts/config.md 与 quickstart.md §2 编写 `deploy/xpanel.example.json`、`deploy/xray-v26.3.27.example.json`（含 api/stats/policy 与非空 `clients` bootstrap 用户）和 `deploy/xpanel.service`（systemd，专用账号、`0700` 数据目录）
+- [X] T001 初始化 `go.mod`（module `xpanel`，`go 1.26.8`），固定 `github.com/xtls/xray-core@v1.260327.0`、`modernc.org/sqlite@v1.58.0`、`github.com/pressly/goose/v3@v3.28.0`、`golang.org/x/crypto@v0.56.0`、`github.com/alexedwards/scs/v2@v2.9.0`、`github.com/gorilla/csrf@v1.7.3`，生成 `go.sum`
+- [X] T002 按 plan.md 创建目录骨架并放置 `doc.go` 包说明：`cmd/xpanel/`、`internal/{config,domain,application,ports,persistence/sqlite/migrations,adapter/xray/fake,security,logging,worker,web/{middleware,handlers,views,templates/{layouts,pages,fragments},static}}`、`tests/{contract/xray,integration,e2e}`、`deploy/`
+- [X] T003 [P] 下载 HTMX `2.0.10` 到 `internal/web/static/htmx-2.0.10.min.js`，并在 `internal/web/static/THIRD_PARTY.md` 记录来源 URL、版本与 SHA-256
+- [X] T004 [P] 创建 `Makefile`：`fmt`（gofmt 检查）、`vet`、`test`（`go test ./...`）、`test-race`、`build`（`CGO_ENABLED=0 go build -trimpath -o bin/xpanel ./cmd/xpanel`）、`contract`（设置 `XRAY_BIN` 后运行 `tests/contract/xray`；`XPANEL_REQUIRE_CONTRACT=1` 时缺少 `XRAY_BIN` 直接失败）、`check`（合并门禁：依次执行 `fmt`、`vet`、`test`、`test-race`、`contract`，并以 `XPANEL_REQUIRE_CONTRACT=1` 运行）
+- [X] T005 [P] 按 contracts/config.md 与 quickstart.md §2 编写 `deploy/xpanel.example.json`、`deploy/xray-v26.3.27.example.json`（含 api/stats/policy 与非空 `clients` bootstrap 用户）和 `deploy/xpanel.service`（systemd，专用账号、`0700` 数据目录）
 
 ---
 
@@ -54,55 +54,55 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 ### 配置与安全原语
 
-- [ ] T006 实现 `internal/config/config.go`：严格 JSON 解析（`DisallowUnknownFields`）、Go duration 正值校验、`server.listen`/`xray.api_endpoint` 单 socket 地址与回环校验、`public_url` 绝对 HTTPS 校验、`insecure_development` 仅回环允许并产生启动警告、`database_path` 本地目录权限校验、`traffic_interval` 默认 5s 且 ≤60s（>5s 警告）、`reconcile_interval` ≤30s、`initial.quota_timezone` IANA 校验
-- [ ] T007 [P] 编写 `internal/config/config_test.go` 表驱动测试覆盖每条校验规则与错误信息不含敏感值
-- [ ] T008 [P] 实现 `internal/security/password.go`：Argon2id（64 MiB、3 iterations、4 lanes、16 字节盐、32 字节输出）PHC 编码/校验、常量时间比较、密码策略（最小长度等）与用户名规范化
-- [ ] T009 [P] 实现 `internal/security/secrets.go`：读取 root key 文件（标准 Base64 的 32 字节 + 换行、`0600` 权限校验）、HKDF-SHA256 派生 `xpanel-field-aead-v1` 与 `xpanel-csrf-v1` 子密钥、XChaCha20-Poly1305 字段加解密（24 字节随机 nonce，AAD 绑定实体/行 ID/字段名/版本）
-- [ ] T010 [P] 实现 `internal/security/tokens.go`：`crypto/rand` 令牌、SS2022 用户密钥生成（AES-256 为 32 字节、AES-128 为 16 字节，标准 Base64）与校验、统计身份 `xpanel-<allocation-uuid>` 生成与校验（非空、不含 `>>>`）、默认脱敏的 `RedactedString` 类型
-- [ ] T011 [P] 编写 `internal/security/password_test.go`、`secrets_test.go`、`tokens_test.go`（含 AEAD AAD 不匹配失败、错误密钥长度拒绝、脱敏类型 `%v`/`%s` 输出为占位符）
-- [ ] T012 [P] 实现 `internal/logging/logging.go` 与 `internal/logging/redact.go` 【可观测性】：`log/slog` JSONHandler、固定字段（component、request_id、operation_id、allocation_id、node_id、target_state、result、duration_ms、error_kind）、集中脱敏（密码、密钥、token、完整连接 URI）
+- [X] T006 实现 `internal/config/config.go`：严格 JSON 解析（`DisallowUnknownFields`）、Go duration 正值校验、`server.listen`/`xray.api_endpoint` 单 socket 地址与回环校验、`public_url` 绝对 HTTPS 校验、`insecure_development` 仅回环允许并产生启动警告、`database_path` 本地目录权限与文件系统类型校验（拒绝 NFS/SMB/网络 FUSE）、`traffic_interval` 默认 5s 且 ≤60s（>5s 警告）、`reconcile_interval` ≤30s、`initial.quota_timezone` IANA 校验
+- [X] T007 [P] 编写 `internal/config/config_test.go` 表驱动测试覆盖每条校验规则与错误信息不含敏感值
+- [X] T008 [P] 实现 `internal/security/password.go`：Argon2id（64 MiB、3 iterations、4 lanes、16 字节盐、32 字节输出）PHC 编码/校验、常量时间比较、密码策略（12–256 字节、不得等于用户名，见 config.md §Administrator Credential Policy）与用户名 NFKC 规范化、大小写不敏感
+- [X] T009 [P] 实现 `internal/security/secrets.go`：读取 root key 文件（标准 Base64 的 32 字节 + 换行、`0600` 权限校验）、HKDF-SHA256 派生 `xpanel-field-aead-v1` 与 `xpanel-csrf-v1` 子密钥、XChaCha20-Poly1305 字段加解密（24 字节随机 nonce，AAD 绑定实体/行 ID/字段名/版本）、`panel_settings.key_verifier` 校验值生成与启动解密校验
+- [X] T010 [P] 实现 `internal/security/tokens.go`：`crypto/rand` 令牌、SS2022 用户密钥生成（AES-256 为 32 字节、AES-128 为 16 字节，标准 Base64）与校验、统计身份 `xpanel-<allocation-uuid>` 生成与校验（非空、不含 `>>>`）、默认脱敏的 `RedactedString` 类型
+- [X] T011 [P] 编写 `internal/security/password_test.go`、`secrets_test.go`、`tokens_test.go`（含 AEAD AAD 不匹配失败、错误密钥长度拒绝、脱敏类型 `%v`/`%s` 输出为占位符）
+- [X] T012 [P] 实现 `internal/logging/logging.go` 与 `internal/logging/redact.go` 【可观测性】：`log/slog` JSONHandler、固定字段（component、request_id、operation_id、allocation_id、node_id、target_state、result、duration_ms、error_kind）、集中脱敏（密码、密钥、token、完整连接 URI）
 
 ### 端口与领域基础
 
-- [ ] T013 实现 `internal/ports/clock.go`（可注入时钟）、`internal/ports/xray.go`（按 contracts/xray-adapter.md 定义 `Adapter` 接口、`InstanceTarget`/`RuntimeProfile`/`RemoteUser`/`AddUserCommand`/`RemoveUserCommand`/`CounterSnapshot`/`ProfileCapabilities`/`MutationReceipt` 与稳定错误类型 `AdapterError{Kind, Operation, Retryable, SafeSummary}`）、`internal/ports/store.go`（`Store`、`WriteTx`/`ReadTx` 事务边界与基础仓储接口）
-- [ ] T014 [P] 实现 `internal/domain/identity.go`：UUID 生成、`Revision`、`ActorType`、`DomainCommand`（id、fingerprint、state、result_reference）、`AuditEvent`、稳定动作名常量（`login`、`logout`、`administrator_initialized`、`password_reset`、`user_created`、`user_updated`、`user_enabled`、`user_disabled`、`credential_rotated`、`user_deleted`、`quota_exceeded`、`traffic_reset`、`cycle_restored`、`sync_failed` 等）
-- [ ] T015 [P] 实现 `internal/domain/errors.go`：`ValidationError`（字段级）、`ConflictError`（版本/请求 ID）、`NotFoundError`、`InvalidStateError`，均不携带敏感值
+- [X] T013 实现 `internal/ports/clock.go`（可注入时钟）、`internal/ports/xray.go`（按 contracts/xray-adapter.md 定义 `Adapter` 接口、`InstanceTarget`/`RuntimeProfile`/`RemoteUser`/`AddUserCommand`/`RemoveUserCommand`/`CounterSnapshot`/`ProfileCapabilities`/`MutationReceipt` 与稳定错误类型 `AdapterError{Kind, Operation, Retryable, SafeSummary}`）、`internal/ports/store.go`（`Store`、`WriteTx`/`ReadTx` 事务边界与基础仓储接口）
+- [X] T014 [P] 实现 `internal/domain/identity.go`：UUID 生成、`Revision`、`ActorType`、`DomainCommand`（id、fingerprint、state、result_reference）、`AuditEvent`、稳定动作名常量（`login`、`logout`、`administrator_initialized`、`password_reset`、`user_created`、`user_updated`、`user_enabled`、`user_disabled`、`credential_rotated`、`user_deleted`、`quota_exceeded`、`traffic_reset`、`cycle_restored`、`sync_failed` 等）
+- [X] T015 [P] 实现 `internal/domain/errors.go`：`ValidationError`（字段级）、`ConflictError`（版本/请求 ID）、`NotFoundError`、`InvalidStateError`，均不携带敏感值
 
 ### SQLite 持久化
 
-- [ ] T016 编写 `internal/persistence/sqlite/migrations/00001_initial.sql` 【迁移】：按 data-model.md 创建全部 STRICT 表（panel_settings、administrators、admin_sessions、managed_xray_instances、access_profiles、xray_user_identities、managed_users、access_allocations、access_credentials、quota_policies、quota_cycles、allocation_traffic_totals、traffic_cursors、daily_traffic_aggregates、traffic_continuity_events、quota_reset_events、domain_commands、synchronization_operations、audit_events），含 CHECK 枚举/布尔、外键、`managed_users` 未删除名称部分唯一索引、`access_allocations.user_id` 唯一、`quota_cycles` 单 open 周期部分唯一索引、`UNIQUE(instance_id, statistics_id)`
-- [ ] T017 实现 `internal/persistence/sqlite/db.go`：modernc 打开数据库、设置并回读验证 `journal_mode=WAL`、`foreign_keys=ON`、`busy_timeout=5000`、`synchronous=FULL`，写句柄 `MaxOpenConns(1)`、读句柄小连接池，数据库/WAL/SHM 文件最小权限
-- [ ] T018 实现 `internal/persistence/sqlite/migrations.go` 【迁移】：goose 嵌入式顺序迁移，在 HTTP 监听与 worker 之前执行；失败返回错误使 `/readyz` 不就绪
-- [ ] T019 实现 `internal/persistence/sqlite/store.go`：`Store` 基础（`WithWriteTx`/`WithReadTx`）、`DomainCommand` 幂等记录（同 id 同 fingerprint 返回原结果；同 id 不同 fingerprint 返回冲突）、`AuditEvent` append-only 写入、`PanelSettings` 读取/首次创建/按 revision 更新、`Administrator` 读取/创建/更新密码与 `password_version`、`ManagedXrayInstance` 单例读写、`EnsureSingletons`（`panel_settings` 不存在时按 `initial.quota_timezone` 创建；`managed_xray_instances` 按配置 upsert `api_endpoint`/`supported_runtime_version`，重复执行幂等）
-- [ ] T020 实现 `internal/persistence/sqlite/sessions.go`：基于 `admin_sessions` 的 `scs.Store`（token digest、`password_version` 校验、idle/absolute 过期、`Revoke`、`RevokeAll`）
-- [ ] T021 [P] 编写 `internal/persistence/sqlite/db_test.go` 与 `migrations_test.go`：PRAGMA 回读、迁移幂等重跑、外键约束生效、busy timeout 下并发读写、单 open 周期索引
-- [ ] T022 [P] 编写 `internal/persistence/sqlite/store_test.go` 与 `sessions_test.go`：命令幂等/冲突、审计仅追加、会话过期与撤销、`EnsureSingletons` 重复执行幂等且不覆盖已被管理员修改的时区
+- [X] T016 编写 `internal/persistence/sqlite/migrations/00001_initial.sql` 【迁移】：按 data-model.md 创建全部 STRICT 表（panel_settings、administrators、admin_sessions、managed_xray_instances、access_profiles、xray_user_identities、managed_users、access_allocations、access_credentials、quota_policies、quota_cycles、allocation_traffic_totals、traffic_cursors、daily_traffic_aggregates、traffic_continuity_events、quota_reset_events、domain_commands、synchronization_operations、audit_events），含 CHECK 枚举/布尔、外键、`managed_users` 未删除名称部分唯一索引、`access_allocations.user_id` 唯一、`quota_cycles` 单 open 周期部分唯一索引、`UNIQUE(instance_id, statistics_id)`
+- [X] T017 实现 `internal/persistence/sqlite/db.go`：modernc 打开数据库、设置并回读验证 `journal_mode=WAL`、`foreign_keys=ON`、`busy_timeout=5000`、`synchronous=FULL`，写句柄 `MaxOpenConns(1)`、读句柄小连接池，数据库/WAL/SHM 文件最小权限、`<database_path>.lock` 排他 flock 保证单写入实例（锁被占用则退出码 3）
+- [X] T018 实现 `internal/persistence/sqlite/migrations.go` 【迁移】：goose 嵌入式顺序迁移，在 HTTP 监听与 worker 之前执行；失败返回错误使 `/readyz` 不就绪
+- [X] T019 实现 `internal/persistence/sqlite/store.go`：`Store` 基础（`WithWriteTx`/`WithReadTx`）、`DomainCommand` 幂等记录（同 id 同 fingerprint 返回原结果；同 id 不同 fingerprint 返回冲突）、`AuditEvent` append-only 写入、`PanelSettings` 读取/首次创建/按 revision 更新、`Administrator` 读取/创建/更新密码与 `password_version`、`ManagedXrayInstance` 单例读写、`EnsureSingletons`（`panel_settings` 不存在时按 `initial.quota_timezone` 创建；`managed_xray_instances` 按配置 upsert `api_endpoint`/`supported_runtime_version`，重复执行幂等）
+- [X] T020 实现 `internal/persistence/sqlite/sessions.go`：基于 `admin_sessions` 的 `scs.Store`（token digest、`password_version` 校验、idle/absolute 过期、`Revoke`、`RevokeAll`）
+- [X] T021 [P] 编写 `internal/persistence/sqlite/db_test.go` 与 `migrations_test.go`：PRAGMA 回读、迁移幂等重跑、外键约束生效、busy timeout 下并发读写、单 open 周期索引
+- [X] T022 [P] 编写 `internal/persistence/sqlite/store_test.go` 与 `sessions_test.go`：命令幂等/冲突、审计仅追加、会话过期与撤销、`EnsureSingletons` 重复执行幂等且不覆盖已被管理员修改的时区
 
 ### 认证应用服务
 
-- [ ] T023 实现 `internal/application/auth_service.go`：`InitializeAdministrator`（仅当不存在，同事务写 `administrator_initialized` 审计）、`Login`（用户名规范化、Argon2id 校验、非枚举错误、同用户名+来源地址 5 次/15 分钟与全局 20 次/15 分钟限流，忽略 `X-Forwarded-For`）、`Logout`、会话校验（`password_version` 一致）、登录/登出审计
-- [ ] T024 [P] 编写 `internal/application/auth_service_test.go`：初始化只允许一次、错误密码非枚举、限流触发与恢复、密码版本不一致会话失效
+- [X] T023 实现 `internal/application/auth_service.go`：`InitializeAdministrator`（仅当不存在，同事务写 `administrator_initialized` 审计）、`Login`（用户名规范化、Argon2id 校验、非枚举错误、同用户名+来源地址 5 次/15 分钟与全局 20 次/15 分钟限流，忽略 `X-Forwarded-For`）、`Logout`、会话校验（`password_version` 一致）、登录/登出审计
+- [X] T024 [P] 编写 `internal/application/auth_service_test.go`：初始化只允许一次、错误密码非枚举、限流触发与恢复、密码版本不一致会话失效
 
 ### Web 骨架与安全中间件
 
-- [ ] T025 实现 `internal/web/server.go` 与 `internal/web/routes.go`：`net/http.ServeMux` 方法/路径模式、`go:embed` 模板与静态资源、来自配置的 `ReadHeaderTimeout`/请求超时/`shutdown_timeout`、`GET /healthz`（仅进程存活）、`GET /readyz`（配置校验与迁移完成后才 200）、优雅关闭钩子
-- [ ] T026 [P] 实现 `internal/web/middleware/security_headers.go`：认证页面 `Cache-Control: no-store`、`Referrer-Policy: no-referrer`、`X-Content-Type-Options: nosniff`、CSP `default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`
-- [ ] T027 [P] 实现 `internal/web/middleware/session.go`：scs `LoadAndSave`、`__Host-xpanel_session` Cookie（`Secure`/`HttpOnly`/`SameSite=Strict`/`Path=/`，`insecure_development` 时允许非 Secure）、`RequireAuth`（未认证 303 到 `/login`，fragment 请求返回 403）
-- [ ] T028 [P] 实现 `internal/web/middleware/csrf.go`：gorilla/csrf 使用 HKDF `xpanel-csrf-v1` 子密钥 + Go `http.CrossOriginProtection`；CSRF 失败返回 403 且不进入业务写路径
-- [ ] T029 [P] 实现 `internal/web/handlers/forms.go`：解析 `application/x-www-form-urlencoded`、提取 `_csrf`/`_request_id`/`_version`、`_request_id` 绑定 session+action+target 的 fingerprint 计算、通用 422 字段错误与 409 冲突渲染辅助
-- [ ] T030 实现 `internal/web/handlers/errors.go` 与 `internal/web/templates/pages/error.html`：400/403/404/409/422/429/500/503 不泄露信息的错误页，500 仅展示安全错误 ID，429 带有界 `Retry-After`
-- [ ] T031 编写 `internal/web/templates/layouts/base.html`、`internal/web/templates/pages/login.html` 与 `internal/web/views/flash.go`：基础布局（导航链接、`aria-live="polite"` 消息区、可聚焦错误摘要、`aria-describedby` 字段错误）、登录表单、PRG flash 消息（不含敏感值）
-- [ ] T032 实现 `internal/web/handlers/auth.go`：`GET /login`（已登录重定向 `/`）、`POST /login`（成功轮换 token 并 303 到 `/`；失败 401 非枚举文案；限流 429）、`POST /logout`（撤销会话，303 到 `/login`）
-- [ ] T033 [P] 编写 `internal/web/static/app.css`：基础样式、可见焦点样式、状态以文字而非仅颜色表达、常见移动宽度下关键操作不依赖横向滚动
-- [ ] T034 实现 `cmd/xpanel/main.go`：子命令 `serve`/`admin init`；`admin init` 无回显 TTY 两次输入或 `--password-stdin`、已存在管理员时拒绝并提示 `reset-password`；退出码 0/2/3/4；`serve` 启动顺序：配置 → 数据库与 PRAGMA → 迁移 → `EnsureSingletons`（panel_settings、managed_xray_instances）→ Store/security/服务/Adapter/路由 → worker → readiness；slog 初始化
+- [X] T025 实现 `internal/web/server.go` 与 `internal/web/routes.go`：`net/http.ServeMux` 方法/路径模式、`go:embed` 模板与静态资源、来自配置的 `ReadHeaderTimeout`/请求超时/`shutdown_timeout`、`GET /healthz`（仅进程存活）、`GET /readyz`（配置校验与迁移完成后才 200）、优雅关闭钩子
+- [X] T026 [P] 实现 `internal/web/middleware/security_headers.go`：认证页面 `Cache-Control: no-store`、`Referrer-Policy: no-referrer`、`X-Content-Type-Options: nosniff`、CSP `default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`
+- [X] T027 [P] 实现 `internal/web/middleware/session.go`：scs `LoadAndSave`、`__Host-xpanel_session` Cookie（`Secure`/`HttpOnly`/`SameSite=Strict`/`Path=/`，`insecure_development` 时允许非 Secure）、`RequireAuth`（未认证 303 到 `/login`，fragment 请求返回 403）
+- [X] T028 [P] 实现 `internal/web/middleware/csrf.go`：gorilla/csrf 使用 HKDF `xpanel-csrf-v1` 子密钥 + Go `http.CrossOriginProtection`；CSRF 失败返回 403 且不进入业务写路径
+- [X] T029 [P] 实现 `internal/web/handlers/forms.go`：解析 `application/x-www-form-urlencoded`、提取 `_csrf`/`_request_id`/`_version`、`_request_id` 绑定 session+action+target 的 fingerprint 计算、通用 422 字段错误渲染辅助、409 冲突页回填非敏感输入并附当前值与新 `_version`
+- [X] T030 实现 `internal/web/handlers/errors.go` 与 `internal/web/templates/pages/error.html`：400/403/404/409/422/429/500/503 不泄露信息的错误页，500 仅展示安全错误 ID，429 带有界 `Retry-After`
+- [X] T031 编写 `internal/web/templates/layouts/base.html`、`internal/web/templates/pages/login.html` 与 `internal/web/views/flash.go`：基础布局（导航链接、`aria-live="polite"` 消息区、可聚焦错误摘要、`aria-describedby` 字段错误）、登录表单、PRG flash 消息（不含敏感值）
+- [X] T032 实现 `internal/web/handlers/auth.go`：`GET /login`（已登录重定向 `/`）、`POST /login`（成功轮换 token 并 303 到 `/`；失败 401 非枚举文案；限流 429）、`POST /logout`（撤销会话，303 到 `/login`）
+- [X] T033 [P] 编写 `internal/web/static/app.css`：基础样式、可见焦点样式、状态以文字而非仅颜色表达、常见移动宽度下关键操作不依赖横向滚动
+- [X] T034 实现 `cmd/xpanel/main.go`：子命令 `serve`/`admin init`；`admin init` 无回显 TTY 两次输入或 `--password-stdin`、已存在管理员时拒绝并提示 `reset-password`；退出码 0/2/3/4；`serve` 启动顺序：配置 → 数据库与 PRAGMA → 迁移 → `EnsureSingletons`（panel_settings 含 key_verifier、managed_xray_instances）→ 主密钥校验值解密（失败则不就绪）→ Store/security/服务/Adapter/路由 → worker → readiness；slog 初始化
 
 ### Xray 客户端基础与测试支撑
 
-- [ ] T035 实现 `internal/adapter/xray/client.go` 与 `internal/adapter/xray/errors.go` 【Xray 契约】：仅在证明目标为回环后建立明文 gRPC 连接、连接复用、每次调用显式 deadline（`rpc_timeout`）、gRPC status → 稳定错误类型映射（`invalid_argument`、`unsupported_protocol`、`incompatible_profile`、`instance_unavailable`、`deadline_exceeded`、`profile_not_found`、`user_already_exists`、`user_not_found`、`stats_not_found`、`version_mismatch`、`upstream_rejected`、`internal`）、`retryable` 判定、原始错误脱敏
-- [ ] T036 [P] 实现 `internal/adapter/xray/fake/fake.go`：内存 fake `ports.Adapter`，支持可编程失败/超时/“已生效但返回超时”的不确定结果、用户集合、上下行计数器、模拟重启（清空动态用户并更换 boot epoch）、调用记录
-- [ ] T037 [P] 编写 `tests/e2e/harness_test.go`：端到端测试夹具（临时 SQLite、fake Adapter、fake 时钟、`httptest` 服务、带 Cookie jar 的客户端、CSRF token 提取、表单 POST 与 303 跟随辅助、等待同步收敛辅助）
-- [ ] T038 [P] 编写 `tests/integration/auth_test.go`：登录/登出、idle 与 absolute 过期、CSRF 失败 403 无写入、安全响应头、限流 429、未认证访问受保护路由 303 且响应不含敏感内容
-- [ ] T039 [P] 编写 `internal/web/handlers/auth_test.go`：登录页渲染、错误摘要可聚焦、敏感输入不回显
+- [X] T035 实现 `internal/adapter/xray/client.go` 与 `internal/adapter/xray/errors.go` 【Xray 契约】：仅在证明目标为回环后建立明文 gRPC 连接、连接复用、每次调用显式 deadline（`rpc_timeout`）、gRPC status → 稳定错误类型映射（`invalid_argument`、`unsupported_protocol`、`incompatible_profile`、`instance_unavailable`、`deadline_exceeded`、`profile_not_found`、`user_already_exists`、`user_not_found`、`stats_not_found`、`version_mismatch`、`upstream_rejected`、`internal`）、`retryable` 判定、原始错误脱敏
+- [X] T036 [P] 实现 `internal/adapter/xray/fake/fake.go`：内存 fake `ports.Adapter`，支持可编程失败/超时/“已生效但返回超时”的不确定结果、用户集合、上下行计数器、模拟重启（清空动态用户并更换 boot epoch）、调用记录
+- [X] T037 [P] 编写 `tests/e2e/harness_test.go`：端到端测试夹具（临时 SQLite、fake Adapter、fake 时钟、`httptest` 服务、带 Cookie jar 的客户端、CSRF token 提取、表单 POST 与 303 跟随辅助、等待同步收敛辅助）
+- [X] T038 [P] 编写 `tests/integration/auth_test.go`：登录/登出、idle 与 absolute 过期、CSRF 失败 403 无写入、安全响应头、限流 429、未认证访问受保护路由 303 且响应不含敏感内容
+- [X] T039 [P] 编写 `internal/web/handlers/auth_test.go`：登录页渲染、错误摘要可聚焦、敏感输入不回显
 
 **Checkpoint**: 可初始化管理员、登录登出、访问空面板；数据库、迁移、安全头与 CSRF 全部生效
 
@@ -116,44 +116,44 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 ### 领域模型
 
-- [ ] T040 [P] [US1] 实现 `internal/domain/profile.go`：`AccessProfile`（host/port/tag/method/network 校验，method 仅 `2022-blake3-aes-128-gcm`/`2022-blake3-aes-256-gcm`）、`CompatibilityState` 状态机（unverified/compatible/incompatible/unreachable）、`XrayUserIdentity`（kind bootstrap/managed）
-- [ ] T041 [P] [US1] 实现 `internal/domain/user.go`：`ManagedUser`（显示名称去空白、规范化、生命周期 active/deleted）、`AccessAllocation`（`admin_enabled`/`quota_state`/`projection_state` 正交状态、期望存在判定、页面状态按 `deleted → disabled/disabling → quota_exceeded/disabling → enabling → active` 派生并附加同步错误标记）、`AccessCredential`（版本、pending/active/retired/destroyed 约束：至多一个 pending 与一个 active）
-- [ ] T042 [P] [US1] 实现 `internal/domain/sync.go` 【重试/协调】：`SynchronizationOperation`（reason/phase/state）、`idempotency_key` 规则、`NextBackoff(attempt, rng)` 有界指数退避（上限 `max_retry_interval`，full jitter）、`Supersede` 规则（旧 `desired_revision` 标记 superseded）、租约模型
-- [ ] T043 [P] [US1] 编写 `internal/domain/profile_test.go`、`user_test.go`、`sync_test.go`：状态派生优先级、凭证约束、退避序列确定性（固定随机源）、supersede
+- [X] T040 [P] [US1] 实现 `internal/domain/profile.go`：`AccessProfile`（host/port/tag/method/network 校验，method 仅 `2022-blake3-aes-128-gcm`/`2022-blake3-aes-256-gcm`）、`CompatibilityState` 状态机（unverified/compatible/incompatible/unreachable）、`XrayUserIdentity`（kind bootstrap/managed）
+- [X] T041 [P] [US1] 实现 `internal/domain/user.go`：`ManagedUser`（显示名称去空白后 1–64 字符、NFKC 小写规范化、生命周期 active/deleted）、`AccessAllocation`（`admin_enabled`/`quota_state`/`projection_state` 正交状态、期望存在判定、页面状态按 data-model §AccessAllocation 派生表（deleted/disabling/disabled/quota_disabling/quota_exceeded/enabling/active）派生并附加同步错误标记）、`AccessCredential`（版本、pending/active/retired/destroyed 约束：至多一个 pending 与一个 active）
+- [X] T042 [P] [US1] 实现 `internal/domain/sync.go` 【重试/协调】：`SynchronizationOperation`（reason/phase/state）、`idempotency_key` 规则、`NextBackoff(attempt, rng)` 有界指数退避（上限 `max_retry_interval`，full jitter）、`Supersede` 规则（旧 `desired_revision` 标记 superseded）、租约模型
+- [X] T043 [P] [US1] 编写 `internal/domain/profile_test.go`、`user_test.go`、`sync_test.go`：状态派生优先级、凭证约束、退避序列确定性（固定随机源）、supersede
 
 ### 持久化
 
-- [ ] T044 [US1] 扩展 `internal/ports/store.go`：profile 仓储、identity 注册、user/allocation/credential 仓储、同步操作队列接口（`Enqueue`、`LeaseDue`、`ConfirmIfRevisionCurrent`、`Reschedule`、`Supersede`、`RecordError`）
-- [ ] T045 [US1] 实现 `internal/persistence/sqlite/store_profiles.go`：profile 创建/读取/按 revision 更新（服务端密钥 AEAD 密文与 nonce，空输入不改密钥）、归档、兼容状态与原因更新、bootstrap identity 注册（`UNIQUE(instance_id, statistics_id)`）
-- [ ] T046 [US1] 实现 `internal/persistence/sqlite/store_users.go`：创建用户事务（command、user、identity、allocation、credential v1 pending、policy、open cycle、cursor、sync operation、audit 一次提交）、按 ID 读取用户及其 allocation/credential/profile、凭证密文读取
-- [ ] T047 [US1] 实现 `internal/persistence/sqlite/store_sync.go`：领取到期操作（有限租约、单实例串行）、按 revision 条件确认、重排 `next_attempt_at` 与 `attempt_count`、supersede 旧 revision、更新 allocation `projection_state`/`synced_revision`/`synced_credential_version`/`last_sync_*`
-- [ ] T048 [P] [US1] 编写 `internal/persistence/sqlite/store_profiles_test.go`、`store_users_test.go`、`store_sync_test.go`：创建原子性（中途失败无残留）、未删除名称唯一、每用户一个 allocation、租约过期回收、旧 revision 确认被拒绝
+- [X] T044 [US1] 扩展 `internal/ports/store.go`：profile 仓储、identity 注册、user/allocation/credential 仓储、同步操作队列接口（`Enqueue`、`LeaseDue`、`ConfirmIfRevisionCurrent`、`Reschedule`、`Supersede`、`RecordError`）
+- [X] T045 [US1] 实现 `internal/persistence/sqlite/store_profiles.go`：profile 创建/读取/按 revision 更新（服务端密钥 AEAD 密文与 nonce，空输入不改密钥）、归档、兼容状态与原因更新、bootstrap identity 注册（`UNIQUE(instance_id, statistics_id)`）
+- [X] T046 [US1] 实现 `internal/persistence/sqlite/store_users.go`：创建用户事务（command、user、identity、allocation、credential v1 pending、policy、open cycle、cursor、sync operation、audit 一次提交）、按 ID 读取用户及其 allocation/credential/profile、凭证密文读取
+- [X] T047 [US1] 实现 `internal/persistence/sqlite/store_sync.go`：领取到期操作（有限租约、单实例串行）、按 revision 条件确认、重排 `next_attempt_at` 与 `attempt_count`、supersede 旧 revision、更新 allocation `projection_state`/`synced_revision`/`synced_credential_version`/`last_sync_*`
+- [X] T048 [P] [US1] 编写 `internal/persistence/sqlite/store_profiles_test.go`、`store_users_test.go`、`store_sync_test.go`：创建原子性（中途失败无残留）、未删除名称唯一、每用户一个 allocation、租约过期回收、旧 revision 确认被拒绝
 
 ### Xray Adapter（变更与探测）
 
-- [ ] T049 [US1] 实现 `internal/adapter/xray/handler.go` 【Xray 契约】：`Probe`（可达性与 boot epoch 推导）、`ValidateProfile`（inbound 存在、协议/method 支持、UserManager 多用户能力、bootstrap 可见、独立上下行统计，网络失败→`unreachable`、契约不符→`incompatible`）、`ListUsers`（区分 `xpanel-` 命名空间、bootstrap 与未知用户）、`AddUser`（`AlterInbound` + `AddUserOperation`，`protocol.User{Level:0, Email:statisticsID}` + `shadowsocks_2022.Account{Key}`，不记录密钥）、`RemoveUser`（`RemoveUserOperation{Email}`，not-found 映射为可收敛）
-- [ ] T050 [P] [US1] 编写 `internal/adapter/xray/handler_test.go`：bufconn 上的 HandlerService stub，验证 TypedMessage 类型、email/level 编码、already-exists/not-found/deadline 映射、错误字符串不含密钥
-- [ ] T051 [US1] 编写 `tests/contract/xray/main_test.go`、`profile_test.go`、`users_test.go` 【Xray 契约】：`XRAY_BIN` 未设置时跳过并打印醒目警告，但 `XPANEL_REQUIRE_CONTRACT=1` 时缺少二进制即失败（T075/T108 沿用同一规则）；启动固定 v26.3.27 真实进程验证门禁 1–4 与 9（版本/module 一致且回环 API、非空 `clients` 进入多用户模式、空 `clients`/错误 account/无效密钥为已知失败、add/list/remove 与重复/缺失稳定错误、多 profile 统计 ID 全局唯一且 bootstrap 排除）
+- [X] T049 [US1] 实现 `internal/adapter/xray/handler.go` 【Xray 契约】：`Probe`（经 `GetSysStats` 判定可达并由 uptime 推导 boot epoch，返回 `InstanceObservation`）、`ValidateProfile`（经 `ListInbounds`/`GetInboundUsersCount`/`GetInboundUsers` 与 bootstrap 计数器 `GetStats` 判定 inbound 存在、协议/method 支持、UserManager 多用户能力、bootstrap 可见、独立上下行统计，网络失败→`unreachable`、契约不符→`incompatible`）、`ListUsers`（`GetInboundUsers`，区分 `xpanel-` 命名空间、bootstrap 与未知用户）、`AddUser`（`AlterInbound` + `AddUserOperation`，`protocol.User{Level:0, Email:statisticsID}` + `shadowsocks_2022.Account{Key}`，不记录密钥）、`RemoveUser`（`RemoveUserOperation{Email}`，not-found 映射为可收敛）
+- [X] T050 [P] [US1] 编写 `internal/adapter/xray/handler_test.go`：bufconn 上的 HandlerService stub，验证 TypedMessage 类型、email/level 编码、already-exists/not-found/deadline 映射、错误字符串不含密钥
+- [X] T051 [US1] 编写 `tests/contract/xray/main_test.go`、`profile_test.go`、`users_test.go` 【Xray 契约】：`XRAY_BIN` 未设置时跳过并打印醒目警告，但 `XPANEL_REQUIRE_CONTRACT=1` 时缺少二进制即失败（T075/T108 沿用同一规则）；启动固定 v26.3.27 真实进程验证门禁 1–4 与 9（版本/module 一致且回环 API、非空 `clients` 进入多用户模式、空 `clients`/错误 account/无效密钥为已知失败、add/list/remove 与重复/缺失稳定错误、多 profile 统计 ID 全局唯一且 bootstrap 排除）
 
 ### 应用服务
 
-- [ ] T052 [US1] 实现 `internal/application/profile_service.go`：`RegisterProfile`（校验后以 unverified 落库，事务外调度探测）、`UpdateProfile`（revision、空密钥保留）、`Revalidate`、`RunValidation`（调用 Adapter 更新 compatibility_state/reason/last_validated_at，注册 bootstrap identity，更新实例健康与 `last_success_at`/`last_error_*`）、审计
+- [ ] T052 [US1] 实现 `internal/application/profile_service.go`：`RegisterProfile`（校验后以 unverified 落库，事务外调度探测）、`UpdateProfile`（revision、空密钥保留；修改 inbound_tag/method/密钥后回到 unverified 并重新排队验证）、`Revalidate`、`RunValidation`（调用 Adapter 更新 compatibility_state/reason/last_validated_at，注册 bootstrap identity，更新实例健康与 `last_success_at`/`last_error_*`）、审计
 - [ ] T053 [US1] 实现 `internal/application/user_service.go`（创建路径）：`CreateUser`（名称唯一、目标 profile 必须 compatible、配额为无限或正整数、重置日 1–28、按 method 生成用户密钥并 AEAD 加密、统计身份 `xpanel-<uuid>`、按全局时区开启首个周期、按数据模型「原子事务边界 1」提交、`DomainCommand` 幂等、`user_created` 审计）；事务提交后通过进程内通知立即唤醒 synchronizer（见 T056），创建成功页在确认前显示“启用中（待同步）”
 - [ ] T054 [US1] 实现 `internal/application/connection_service.go`：`BuildConnectionInfo`（仅当凭证已确认；组合 `server-key:user-key` 客户端密码、host/port/method/label 与 `ss://` URI；返回脱敏类型，绝不持久化或记录）、禁用/超限时的“不活跃”标记、轮换中返回“待确认”
 - [ ] T055 [P] [US1] 编写 `internal/application/profile_service_test.go`、`user_service_test.go`、`connection_service_test.go`：创建成功、不兼容 profile 拒绝且原因安全、重名拒绝、零/负配额拒绝、同 `_request_id` 重放返回原结果、fake Xray 离线时创建成功并产生 pending 操作、连接信息在确认前不可用
 
 ### 同步 Worker
 
-- [ ] T056 [US1] 实现 `internal/worker/synchronizer.go` 【重试/协调】：单实例串行循环，由提交后通知立即唤醒并以 1 秒兜底轮询；短事务领取到期操作 → 事务外调用 Adapter → 独立短事务按 revision 确认；`deadline_exceeded`/未知结果先 `ListUsers` 读后写再决定确认或重放；`user_already_exists` 比对期望 revision 与凭证版本后选择成功或受控 remove/add 修复；有界退避重排；不可重试错误标记 `permanent_failed`；更新 `projection_state` 与 `last_sync_*`；`sync_failed` 审计；slog 字段（allocation_id、operation_id、target_state、result、duration_ms）【可观测性】
+- [ ] T056 [US1] 实现 `internal/worker/synchronizer.go` 【重试/协调】：单实例串行循环，由提交后通知立即唤醒并以 1 秒兜底轮询；短事务领取到期操作 → 事务外调用 Adapter → 独立短事务按 revision 确认；`deadline_exceeded`/未知结果先 `ListUsers` 读后写再决定确认或重放；`user_already_exists` 比对期望 revision 与凭证版本后选择成功或受控 remove/add 修复；有界退避重排；不可重试错误标记 `permanent_failed`；所属 profile 为 unverified/incompatible 时不领取操作，unreachable 时退避照常但不标记 permanent_failed，并按 data-model §Profile compatibility 触发漂移状态；更新 `projection_state` 与 `last_sync_*`；`sync_failed` 审计；slog 字段（allocation_id、operation_id、target_state、result、duration_ms）【可观测性】
 - [ ] T057 [P] [US1] 编写 `internal/worker/synchronizer_test.go`：成功确认、超时后读到已存在→确认、超时后不存在→重放、already-exists 修复、更高 revision supersede、退避时间表、进程重启后从租约/revision 恢复
 
 ### Web 页面
 
-- [ ] T058 [US1] 实现 `internal/web/views/format.go`、`internal/web/views/profile.go`、`internal/web/views/user.go`：字节格式化（明确进制与精度）、时间按面板时区格式化、状态标签文案与派生、安全错误摘要、`pending_sync` 标记
+- [ ] T058 [US1] 实现 `internal/web/views/format.go`、`internal/web/views/profile.go`、`internal/web/views/user.go`：字节格式化（IEC 1024 进制，≥1 MiB 两位小数四舍五入）、时间按面板时区 `YYYY-MM-DD HH:MM:SS` 格式化、状态标签文案与派生（data-model §AccessAllocation 表）、稳定错误/事件→固定中文句子映射表（http.md §Response Semantics）、`pending_sync` 标记
 - [ ] T059 [US1] 实现 `internal/web/templates/pages/profiles_list.html`、`profile_form.html`、`profile_detail.html` 与 `internal/web/handlers/profiles.go`：`GET /profiles`、`GET /profiles/new`、`POST /profiles`（303）、`GET /profiles/{profile_id}`、`GET /profiles/{profile_id}/edit`（密钥字段恒为空）、`POST /profiles/{profile_id}`（`_version`）、`POST /profiles/{profile_id}/revalidate`；422 字段错误、409 版本冲突、兼容状态与安全原因展示
 - [ ] T060 [US1] 实现 `internal/web/templates/pages/user_form.html` 与 `internal/web/handlers/users.go`（创建部分）：`GET /users/new`（仅 compatible profile 可选，无兼容 profile 时显示零状态引导）、`POST /users`（校验、幂等、303 到 `/users/{user_id}`）
 - [ ] T061 [US1] 实现 `internal/web/templates/pages/user_detail.html`（US1 部分）与 `GET /users/{user_id}`：显示名称、profile、派生状态、`pending_sync`/同步错误摘要、最后同步时间、连接信息页链接
-- [ ] T062 [US1] 实现 `internal/web/templates/pages/user_connection.html` 与 `GET /users/{user_id}/connection`：`no-store`；仅凭证确认后展示；禁用/超限附“不活跃”警示；轮换中标记不可用/待确认；无脚本可用的只读文本块供复制；密钥不作为独立字段记录
+- [ ] T062 [US1] 实现 `internal/web/templates/pages/user_connection.html` 与 `GET /users/{user_id}/connection`：`no-store`；仅凭证确认后展示；禁用/超限附“不活跃”警示；轮换中标记不可用/待确认；无脚本可用的只读文本块供复制；密钥不作为独立字段记录；客户端密码加 print-hidden 类
 - [ ] T063 [P] [US1] 编写 `internal/web/handlers/profiles_test.go` 与 `users_create_test.go`：模板渲染、422/409、未认证 303 且正文不含连接信息、服务端密钥永不回显、连接页 `Cache-Control: no-store`
 - [ ] T064 [US1] 编写 `tests/e2e/create_user_test.go`：登录 → 登记 profile → 验证 compatible → 创建用户 → 等待 fake Xray 出现用户 → 打开连接信息；不兼容 profile 创建被拒；fake Xray 离线时创建显示待同步并在恢复后收敛；未登录访问被拒
 - [ ] T065 [US1] 在 `cmd/xpanel/main.go` 接线 synchronizer 与 profile 验证任务；启动时记录节点标识、Xray 端点与受支持版本【可观测性】
@@ -171,7 +171,7 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 ### 领域模型
 
 - [ ] T066 [P] [US2] 实现 `internal/domain/quota.go`：`QuotaPolicy` 校验（null 无限或 >0，reset_day 1–28）、`QuotaCycle`（gross/accounted 双计数）、周期边界计算（IANA 时区、reset day、`time.Date` 在 Location 中构造以正确处理夏令时）、配额判定（accounted 总和 ≥ limit → exceeded；无限永不超限）、调额/手动重置/新周期的状态转换规则
-- [ ] T067 [P] [US2] 实现 `internal/domain/traffic.go`：`TrafficCursor` 方向级 delta 规则（同 epoch 且不下降→差值；已确认新 boot epoch→当前值并记 `node_restart`；未确认下降→0、方向 epoch+1、记 `counter_decrease`；缺失→无 delta 并维护 `missing_since`）、`uint64`→有符号范围与求和溢出检查、按样本完成时间归属日期/周期、超过一个采集间隔的 `boundary_gap` 事件
+- [ ] T067 [P] [US2] 实现 `internal/domain/traffic.go`：`TrafficCursor` 方向级 delta 规则（同 epoch 且不下降→差值；已确认新 boot epoch→当前值并记 `node_restart`；未确认下降→0、方向 epoch+1、记 `counter_decrease`；缺失→无 delta 并维护 `missing_since`；首个样本→当前值并记 `baseline`；单方向缺失只影响该方向；`observed_at` 早于游标的迟到样本整体丢弃；溢出按未确认下降处理并记 `overflow`）、`uint64`→有符号范围与求和溢出检查、按样本完成时间归属日期/周期、超过一个采集间隔的 `boundary_gap` 事件
 - [ ] T068 [P] [US2] 编写 `internal/domain/quota_test.go` 与 `traffic_test.go`：月份天数与 reset day 28、夏令时切换、恰好等于配额判超限、无限不封禁、四条 delta 规则、溢出拒绝、永不产生负增量
 
 ### 持久化
@@ -196,12 +196,12 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 ### Worker
 
 - [ ] T079 [US2] 实现 `internal/worker/collector.go`：按 `traffic_interval` 定时（默认 5s，>5s 启动警告）调用 `CollectOnce`，RPC 不在写事务持锁期间执行，记录每轮耗时/用户数/陈旧状态【可观测性】
-- [ ] T080 [US2] 实现 `internal/worker/scheduler.go` 【重试/协调】：按面板时区计算每个 allocation 的下一日/周期边界，幂等关闭旧周期并打开新周期，停机后追赶多个漏执行边界并收敛到唯一 open 周期，触发恢复操作
+- [ ] T080 [US2] 实现 `internal/worker/scheduler.go` 【重试/协调】：按周期 timezone_name 快照计算每个 allocation 的下一日/周期边界（边界定时器 + 每 60 秒兜底扫描），幂等关闭旧周期并打开新周期，停机后追赶多个漏执行边界并收敛到唯一 open 周期，触发恢复操作
 - [ ] T081 [P] [US2] 编写 `internal/worker/collector_test.go` 与 `scheduler_test.go`：fake Adapter + fake 时钟；越界在一轮内产生 remove 操作；周期切换仅恢复“仅超限”用户；停机追赶
 
 ### Web 页面
 
-- [ ] T082 [US2] 实现 `internal/web/templates/pages/user_edit.html` 并扩展 `internal/web/handlers/users.go`：`GET /users/{user_id}/edit`、`POST /users/{user_id}`（`_version`；配额单位输入换算为字节；零/负值 422；reset day 1–28；启用意图）
+- [ ] T082 [US2] 实现 `internal/web/templates/pages/user_edit.html` 并扩展 `internal/web/handlers/users.go`：`GET /users/{user_id}/edit`、`POST /users/{user_id}`（`_version`；配额为整数 + 单位选择（MiB/GiB/TiB）精确换算为字节或勾选“无限制”，空值未勾选、零/负值、超过 2^62 均 422；reset day 1–28 默认 1；启用意图）
 - [ ] T083 [US2] 实现 `internal/web/templates/pages/user_reset_traffic.html` 与 `GET/POST /users/{user_id}/reset-traffic`：说明仅清零本周期 accounted、保留 gross/lifetime/日趋势、不改变周期结束时间，POST 后 303
 - [ ] T084 [US2] 扩展 `internal/web/templates/pages/user_detail.html` 与 `internal/web/views/quota.go`：上行/下行/总量/剩余、无限配额与超过 100% 的显示规则、当前周期边界（面板时区）、数据最后更新时间、配额超限说明与“轮询检测、主要阻止新连接、已有连接可能少量超额”提示（FR-019）
 - [ ] T085 [US2] 实现 `internal/web/templates/pages/settings.html` 与 `internal/web/handlers/settings.go`：`GET /settings`、`POST /settings`（IANA 时区校验、`_version`、仅影响未来周期的说明、审计）
@@ -220,7 +220,7 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 **Independent Test**: 对已有用户依次执行编辑、禁用、启用、轮换、删除，每个 POST 用相同 `_request_id` 提交两次并提交一次过期 `_version`，验证页面状态、fake Xray 中的用户集合与审计记录
 
 - [ ] T089 [US3] 扩展 `internal/persistence/sqlite/store_users.go`：按规范化名称搜索与按派生状态筛选（默认排除已删除，显式包含选项）、按 revision 更新显示名称、启用/禁用意图、软删除（`deleted_at`、`admin_enabled=false`）、凭证下一版本插入/激活/销毁（清空密文）
-- [ ] T090 [US3] 扩展 `internal/application/user_service.go`：`UpdateUser`（重名校验、revision）、`EnableUser`（先检查当前用量是否符合配额）、`DisableUser`、`RotateCredential`（生成下一版本密钥、`desired_credential_version`、phase=`remove_old` 操作、旧信息标为即将失效）、`DeleteUser`（需确认、软删除、入队 remove、确认后销毁密钥）；均经 `DomainCommand` 幂等与 revision 保护并写审计
+- [ ] T090 [US3] 扩展 `internal/application/user_service.go`：`UpdateUser`（重名校验、revision）、`EnableUser`（先检查当前用量是否符合配额）、`DisableUser`、`RotateCredential`（生成下一版本密钥、`desired_credential_version`、phase=`remove_old` 操作、旧信息标为即将失效；轮换进行中再次轮换返回 409，禁用/删除 supersede 轮换）、`DeleteUser`（需确认、软删除、入队 remove、确认后销毁密钥；已删除用户的任何 POST 返回 409）；均经 `DomainCommand` 幂等与 revision 保护并写审计
 - [ ] T091 [US3] 扩展 `internal/worker/synchronizer.go` 【重试/协调】：轮换阶段 `remove_old → add_desired → confirm`（每阶段持久化后再执行，超时读后写，确认后新凭证 active、旧凭证 destroyed）；删除确认后销毁密钥；任一阶段失败保持 pending/error 重试，绝不重新发布旧密钥
 - [ ] T092 [P] [US3] 扩展 `internal/application/user_service_test.go` 与 `internal/worker/synchronizer_test.go`：轮换各阶段超时/重启/新意图 supersede、重复提交、过期版本、删除后重名创建获得新身份
 - [ ] T093 [US3] 实现 `internal/web/templates/pages/users_list.html` 并扩展 `internal/web/handlers/users.go`：`GET /users`（名称搜索、状态筛选 启用/手动禁用/配额超限/待同步/已删除、包含已删除选项、零状态、状态文字标签、表格 caption 与 scope）
@@ -240,7 +240,7 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 - [ ] T097 [US4] 实现 `internal/persistence/sqlite/store_dashboard.go`：各派生状态计数、当期 accounted 总流量、实例健康/最后成功/最近错误、最近失败同步操作摘要、最后采集成功时间、指定 allocation 当前周期每日聚合
 - [ ] T098 [US4] 实现 `internal/application/dashboard_service.go`：汇总视图、陈旧判定（最后采集成功时间超过 2 个 `traffic_interval` 即陈旧，阈值来自配置）、用户表行数据、详情每日趋势
-- [ ] T099 [US4] 实现 `internal/web/templates/pages/dashboard.html`、`internal/web/templates/fragments/dashboard_summary.html`、`internal/web/templates/fragments/users_table.html`、`internal/web/handlers/dashboard.go` 与 `internal/web/handlers/fragments.go`：`GET /`、`GET /fragments/dashboard-summary`、`GET /fragments/users-table`（非敏感查询参数；fragment 无布局、只读 SQLite、不发 Xray RPC；`Vary: HX-Request`；503 时带可见陈旧文案；包含最后确认时间与 fresh/stale 状态）
+- [ ] T099 [US4] 实现 `internal/web/templates/pages/dashboard.html`、`internal/web/templates/fragments/dashboard_summary.html`、`internal/web/templates/fragments/users_table.html`、`internal/web/handlers/dashboard.go` 与 `internal/web/handlers/fragments.go`：`GET /`、`GET /fragments/dashboard-summary`、`GET /fragments/users-table`（非敏感查询参数；fragment 无布局、只读 SQLite、不发 Xray RPC；`Vary: HX-Request`；503 时带可见陈旧文案；包含最后确认时间与 fresh/stale 状态（陈旧阈值 2×traffic_interval 或最近探测失败）、零状态引导、活跃分配 >20 的容量提示）
 - [ ] T100 [US4] 扩展 `internal/web/templates/pages/user_detail.html`：当前周期每日趋势表（本地日期、上行、下行、总量）、统计连续性事件标记、FR-003 的节点健康与最近故障摘要引用
 - [ ] T101 [US4] 编写 `internal/web/static/app.js`（原生 JS，无 CDN）：HTMX 轮询配置（不快于 5 秒）、fragment 替换时保留焦点或移动到稳定摘要、保护搜索框输入不被清空、失败时保留旧内容并显示陈旧摘要
 - [ ] T102 [P] [US4] 编写 `internal/web/handlers/dashboard_test.go` 与 `fragments_test.go`：fragment 不含 `<html>`、陈旧标记、503 文案、筛选参数、未认证 fragment 403、无 Adapter 调用
@@ -256,10 +256,10 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 **Independent Test**: 构造启用、手动禁用、配额超限、待同步和已删除用户后重启 fake/真实 Xray，恢复连接后 60 秒内状态收敛；模拟 RPC 超时与计数下降验证无重复凭证、无负流量；审计页可按用户与动作筛选
 
-- [ ] T104 [US5] 实现 `internal/application/reconciliation_service.go` 【重试/协调】：按 profile 对比 SQLite 期望存在集合与 `ListUsers` 实际集合，仅管理 `xpanel-` 命名空间，保留 bootstrap 与未知外部用户；仅在漂移时创建 `reconcile` 操作；更新实例健康与 boot epoch；检测新 boot epoch 时标记游标进入新纪元
-- [ ] T105 [US5] 实现 `internal/worker/reconciler.go` 【重试/协调】：在启动、Xray 由 unreachable 转 healthy 时以及每 `reconcile_interval`（≤30s）运行；与 synchronizer 共用串行执行通道避免并发变更同一节点；记录漂移数量与耗时【可观测性】
+- [ ] T104 [US5] 实现 `internal/application/reconciliation_service.go` 【重试/协调】：按 profile 对比 SQLite 期望存在集合与 `ListUsers` 实际集合，`xpanel-` 命名空间内 SQLite 无记录或已删除的身份按漂移移除并写 `reconcile_removed_unknown` 审计，非该命名空间身份（含 bootstrap）一律保留；仅在漂移时创建 `reconcile` 操作；更新实例健康与 boot epoch；检测新 boot epoch 时标记游标进入新纪元
+- [ ] T105 [US5] 实现 `internal/worker/reconciler.go` 【重试/协调】：在启动、Xray 由 unreachable 转 healthy 时以及每 `reconcile_interval`（≤30s）运行；与 synchronizer 共用串行执行通道避免并发变更同一节点；记录漂移数量与耗时；任一分配 `desired_revision ≠ synced_revision` 持续超过 3×`reconcile_interval` 时输出 warn 并在仪表盘标记“持续不同步”【可观测性】
 - [ ] T106 [P] [US5] 编写 `internal/application/reconciliation_service_test.go` 与 `internal/worker/reconciler_test.go`：fake 重启后 active 恢复、disabled/exceeded/deleted 保持缺席、外部用户不动、不确定变更与更高 revision 意图的优先级
-- [ ] T107 [US5] 扩展 `internal/application/traffic_service.go`：将 `Probe` 的 boot epoch 与游标 `boot_epoch` 对比，重启后首个绝对值按 `node_restart` 计入，未知下降按 `counter_decrease` 建新基线，缺失后重现记 `reappeared`；持续不同步超过阈值输出告警日志【可观测性】
+- [ ] T107 [US5] 扩展 `internal/application/traffic_service.go`：将 `Probe` 的 boot epoch 与游标 `boot_epoch` 对比，重启后首个绝对值按 `node_restart` 计入，未知下降按 `counter_decrease` 建新基线，缺失后重现记 `reappeared`；持续不同步阈值与告警见 T105【可观测性】
 - [ ] T108 [US5] 编写 `tests/contract/xray/recovery_test.go` 【Xray 契约】：门禁 7–8（重启改变 boot/统计纪元、丢弃动态用户并仅恢复 active 用户；可能已生效的变更超时后通过读后写收敛且无重复）
 - [ ] T109 [US5] 实现 `internal/persistence/sqlite/store_audit.go`：按用户/动作/结果筛选的游标分页审计查询；不提供 UPDATE/DELETE 方法
 - [ ] T110 [US5] 实现 `internal/web/templates/pages/audit.html` 与 `internal/web/handlers/audit.go`：`GET /audit`（筛选、游标分页、空结果文案；展示时间、操作者、目标、动作、结果与安全摘要；已删除用户仍可按目标筛选）

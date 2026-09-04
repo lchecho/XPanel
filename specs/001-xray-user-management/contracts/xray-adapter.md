@@ -22,6 +22,19 @@ type Adapter interface {
 
 Exact Go packages and method signatures may refine naming, but must preserve these responsibilities.
 
+## Upstream RPC Mapping
+
+| Port method | Upstream RPCs (pinned module) |
+|---|---|
+| `Probe` | `StatsService.GetSysStats` (uptime, used for the boot epoch) |
+| `ValidateProfile` | `HandlerService.ListInbounds` (inbound presence, protocol), `HandlerService.GetInboundUsersCount` and `GetInboundUsers` (multi-user mode and bootstrap visibility), `StatsService.GetStats` on the bootstrap counters (per-user stats capability) |
+| `ListUsers` | `HandlerService.GetInboundUsers` |
+| `AddUser` / `RemoveUser` | `HandlerService.AlterInbound` with `AddUserOperation` / `RemoveUserOperation` |
+| `ReadTraffic` | `StatsService.GetStats` with `reset=false` |
+
+The pinned module must expose every RPC above; a missing method fails compilation, and contract
+gate 1 proves them against the real binary before any version change.
+
 ## Value Semantics
 
 ### InstanceTarget
@@ -29,6 +42,16 @@ Exact Go packages and method signatures may refine naming, but must preserve the
 - Contains instance ID, API endpoint and expected runtime version.
 - Plaintext gRPC is permitted only after proving the target is loopback or an equivalent local channel.
 - Connection reuse is allowed; every operation still has an explicit context deadline.
+
+### InstanceObservation
+
+- Returned by `Probe` and attached to every `ReadTraffic` result taken in the same round.
+- Contains `ObservedAt`, `UptimeSeconds` and `BootEpoch = ObservedAt − UptimeSeconds` truncated to
+  whole seconds, plus `BootEpochKnown`.
+- A boot epoch that differs from the stored one by more than one `traffic_interval` is a confirmed
+  restart; a smaller difference is clock jitter and keeps the stored epoch.
+- If `GetSysStats` fails while counters still read, `BootEpochKnown=false` and the collector applies
+  the unconfirmed-decrease rule instead of the restart rule.
 
 ### RuntimeProfile
 
@@ -61,6 +84,8 @@ Exact Go packages and method signatures may refine naming, but must preserve the
 - Contains statistics identity, direction, absolute `uint64` bytes, observation time and `found`.
 - `found=false` is not the same as a zero counter.
 - Counter names are exact `user>>><id>>>traffic>>>uplink|downlink` values.
+- Snapshots are never paired with a stale epoch: the coordinator uses the `InstanceObservation`
+  from the same round.
 
 ### ProfileCapabilities
 
@@ -107,6 +132,21 @@ version_mismatch
 upstream_rejected
 internal
 ```
+
+| Kind | Retryable | Coordinator handling |
+|---|---|---|
+| `invalid_argument` | no | permanent_failed; audit with safe summary |
+| `unsupported_protocol` | no | profile → `incompatible` |
+| `incompatible_profile` | no | profile → `incompatible`; operations stay pending |
+| `instance_unavailable` | yes | bounded backoff; 3 in a row → profile `unreachable` |
+| `deadline_exceeded` | yes (uncertain for mutations) | read-after-write, then replay or confirm |
+| `profile_not_found` | no | profile → `incompatible` |
+| `user_already_exists` | no | compare identity/credential version; success or remove/add repair |
+| `user_not_found` | no | remove converged; add replays |
+| `stats_not_found` | no | counter treated as missing |
+| `version_mismatch` | no | instance → `incompatible`; stop mutations |
+| `upstream_rejected` | no | permanent_failed |
+| `internal` | yes, bounded | backoff, then permanent_failed after max attempts |
 
 Each adapter error exposes only `kind`, `operation`, `retryable` and `safe_summary`. The raw gRPC cause
 may be retained internally but must be redacted before structured logging. Error strings and attributes

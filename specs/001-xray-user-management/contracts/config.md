@@ -65,6 +65,26 @@ Shadowsocks keys, session tokens or a raw application root key.
   capabilities.
 - `initial.quota_timezone` must be a valid IANA name and is used only when the singleton panel setting
   is first created. Later changes occur through the authenticated settings flow.
+- Local storage check: startup rejects a `database_path` whose filesystem is NFS, SMB/CIFS or a
+  network FUSE mount, or where advisory locks are unsupported; the check reads the platform
+  filesystem type and takes a probe lock.
+- Single-writer lock: the process holds an exclusive `flock` on `<database_path>.lock` for its
+  lifetime. If the lock is already held, startup exits with code 3 and readiness never turns on.
+- System clock: XPanel does not verify NTP. Startup logs a warning when the clock is earlier than
+  the build timestamp or than the newest `updated_at` in the database; keeping the clock correct is
+  an operator responsibility documented in `docs/operations.md`.
+
+## Administrator Credential Policy
+
+- Username: 1–64 characters after Unicode NFKC normalization and trimming; uniqueness and login
+  matching are case-insensitive.
+- Password: 12–256 bytes, no composition rules; rejected when it equals the username. CLI and web
+  login apply the same check.
+- Argon2id parameters are fixed in code (64 MiB, 3 iterations, 4 lanes). The deployment baseline is
+  1 vCPU / 1 GiB RAM and one hash must finish within 1 s there; a slower baseline lowers memory to
+  32 MiB through a versioned code change, never through configuration.
+- Login throttling state lives in process memory and resets on restart, which is acceptable for a
+  single-instance MVP.
 
 ## Root Key File
 
@@ -74,6 +94,10 @@ Shadowsocks keys, session tokens or a raw application root key.
 - Must be stored and backed up separately from SQLite. Losing it makes encrypted profile/user keys
   unrecoverable; copying it with a leaked database defeats field encryption.
 - The raw key is never logged or loaded into templates.
+- On first start XPanel encrypts a fixed verifier string into `panel_settings.key_verifier`; every
+  later start must decrypt it, otherwise readiness fails with `root_key_mismatch` and no worker runs.
+- A single row that fails to decrypt at use time marks that profile or credential as `error` with a
+  safe reason and never crashes the process; the operator restores the correct key file and restarts.
 - Purpose-specific subkeys are derived with HKDF-SHA256 and fixed labels, at minimum
   `xpanel-field-aead-v1` and `xpanel-csrf-v1`; raw key bytes are not reused directly across purposes.
 - Field secrets use XChaCha20-Poly1305 with a fresh 24-byte nonce and AAD binding entity, row ID, field

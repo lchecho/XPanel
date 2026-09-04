@@ -26,8 +26,7 @@ func TestConnectionInfoRequiresConfirmedCredential(t *testing.T) {
 	if err := fixture.store.DB().Read.QueryRow(`SELECT id FROM synchronization_operations WHERE allocation_id=(SELECT id FROM access_allocations WHERE user_id=?)`, userID.String()).Scan(&operationID); err != nil {
 		t.Fatal(err)
 	}
-	record, err := fixture.store.User(context.Background(), userID)
-	if err != nil {
+	if _, err := fixture.store.User(context.Background(), userID); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := fixture.store.ConfirmIfRevisionCurrent(context.Background(), domain.ID(operationID), 1, 1, true, fixture.clock.Now()); err != nil || !ok {

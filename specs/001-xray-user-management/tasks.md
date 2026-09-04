@@ -137,10 +137,10 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 ### 应用服务
 
-- [ ] T052 [US1] 实现 `internal/application/profile_service.go`：`RegisterProfile`（校验后以 unverified 落库，事务外调度探测）、`UpdateProfile`（revision、空密钥保留；修改 inbound_tag/method/密钥后回到 unverified 并重新排队验证）、`Revalidate`、`RunValidation`（调用 Adapter 更新 compatibility_state/reason/last_validated_at，注册 bootstrap identity，更新实例健康与 `last_success_at`/`last_error_*`）、审计
-- [ ] T053 [US1] 实现 `internal/application/user_service.go`（创建路径）：`CreateUser`（名称唯一、目标 profile 必须 compatible、配额为无限或正整数、重置日 1–28、按 method 生成用户密钥并 AEAD 加密、统计身份 `xpanel-<uuid>`、按全局时区开启首个周期、按数据模型「原子事务边界 1」提交、`DomainCommand` 幂等、`user_created` 审计）；事务提交后通过进程内通知立即唤醒 synchronizer（见 T056），创建成功页在确认前显示“启用中（待同步）”
-- [ ] T054 [US1] 实现 `internal/application/connection_service.go`：`BuildConnectionInfo`（仅当凭证已确认；组合 `server-key:user-key` 客户端密码、host/port/method/label 与 `ss://` URI；返回脱敏类型，绝不持久化或记录）、禁用/超限时的“不活跃”标记、轮换中返回“待确认”
-- [ ] T055 [P] [US1] 编写 `internal/application/profile_service_test.go`、`user_service_test.go`、`connection_service_test.go`：创建成功、不兼容 profile 拒绝且原因安全、重名拒绝、零/负配额拒绝、同 `_request_id` 重放返回原结果、fake Xray 离线时创建成功并产生 pending 操作、连接信息在确认前不可用
+- [X] T052 [US1] 实现 `internal/application/profile_service.go`：`RegisterProfile`（校验后以 unverified 落库，事务外调度探测）、`UpdateProfile`（revision、空密钥保留；修改 inbound_tag/method/密钥后回到 unverified 并重新排队验证）、`Revalidate`、`RunValidation`（调用 Adapter 更新 compatibility_state/reason/last_validated_at，注册 bootstrap identity，更新实例健康与 `last_success_at`/`last_error_*`）、审计
+- [X] T053 [US1] 实现 `internal/application/user_service.go`（创建路径）：`CreateUser`（名称唯一、目标 profile 必须 compatible、配额为无限或正整数、重置日 1–28、按 method 生成用户密钥并 AEAD 加密、统计身份 `xpanel-<uuid>`、按全局时区开启首个周期、按数据模型「原子事务边界 1」提交、`DomainCommand` 幂等、`user_created` 审计）；事务提交后通过进程内通知立即唤醒 synchronizer（见 T056），创建成功页在确认前显示“启用中（待同步）”
+- [X] T054 [US1] 实现 `internal/application/connection_service.go`：`BuildConnectionInfo`（仅当凭证已确认；组合 `server-key:user-key` 客户端密码、host/port/method/label 与 `ss://` URI；返回脱敏类型，绝不持久化或记录）、禁用/超限时的“不活跃”标记、轮换中返回“待确认”
+- [X] T055 [P] [US1] 编写 `internal/application/profile_service_test.go`、`user_service_test.go`、`connection_service_test.go`：创建成功、不兼容 profile 拒绝且原因安全、重名拒绝、零/负配额拒绝、同 `_request_id` 重放返回原结果、fake Xray 离线时创建成功并产生 pending 操作、连接信息在确认前不可用
 
 ### 同步 Worker
 

@@ -285,3 +285,88 @@ func translateConstraint(err error, message string) error {
 	}
 	return err
 }
+
+// CompleteProfileValidation 在一个事务中按 revision 条件提交验证结果、实例健康、bootstrap 身份与审计；
+// revision 已变化（验证期间被编辑或重新验证）时丢弃结果并返回 false。
+func (s *Store) CompleteProfileValidation(ctx context.Context, outcome ports.ValidationOutcome) (bool, error) {
+	applied := false
+	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
+		tx := write.(*txStore)
+		state, reason, health, code, summary, success := outcome.State, outcome.Reason, outcome.Health, outcome.ErrorCode, outcome.ErrorSummary, outcome.SuccessAt
+		var registerBootstrap *domain.XrayUserIdentity
+		if outcome.Bootstrap != nil && state == domain.CompatibilityCompatible {
+			b := outcome.Bootstrap
+			var existingProfile, existingKind string
+			err := tx.tx.QueryRowContext(ctx, `SELECT profile_id,kind FROM xray_user_identities WHERE instance_id=? AND statistics_id=?`,
+				b.InstanceID.String(), b.StatisticsID).Scan(&existingProfile, &existingKind)
+			switch {
+			case err == nil:
+				if existingProfile != b.ProfileID.String() || existingKind != string(b.Kind) {
+					// 跨 profile 复用同一 bootstrap 统计标识：全实例唯一性被破坏，不得标为 compatible（contract gate 9）。
+					state, reason = domain.CompatibilityIncompatible, "bootstrap identity is already registered by another profile"
+					health, code, summary, success = "incompatible", "incompatible_profile", reason, nil
+				}
+			case errors.Is(err, sql.ErrNoRows):
+				registerBootstrap = b
+			default:
+				return err
+			}
+		}
+		// 先做 revision 条件更新：结果过期时事务内不得留下任何写入（含 bootstrap 身份）。
+		result, err := tx.tx.ExecContext(ctx, `UPDATE access_profiles SET compatibility_state=?,compatibility_reason=?,last_validated_at=?,updated_at=?
+            WHERE id=? AND revision=? AND archived_at IS NULL`, state, nullString(reason), millis(outcome.ValidatedAt), millis(outcome.ValidatedAt),
+			outcome.ProfileID.String(), outcome.ExpectedRevision)
+		if err != nil {
+			return err
+		}
+		if rows, _ := result.RowsAffected(); rows != 1 {
+			return nil
+		}
+		applied = true
+		if registerBootstrap != nil {
+			b := registerBootstrap
+			if _, err := tx.tx.ExecContext(ctx, `INSERT INTO xray_user_identities(id,instance_id,profile_id,statistics_id,kind,created_at) VALUES (?,?,?,?,?,?)`,
+				b.ID.String(), b.InstanceID.String(), b.ProfileID.String(), b.StatisticsID, b.Kind, millis(b.CreatedAt)); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.tx.ExecContext(ctx, `UPDATE managed_xray_instances SET health_state=?,boot_epoch=COALESCE(?,boot_epoch),
+            last_success_at=COALESCE(?,last_success_at),last_error_code=?,last_error_summary=?,updated_at=? WHERE singleton=1`,
+			health, nullString(outcome.BootEpoch), nullTime(success), nullString(code), nullString(summary), millis(outcome.ValidatedAt)); err != nil {
+			return err
+		}
+		audit := outcome.Audit
+		audit.SafeSummary = reason
+		if state != domain.CompatibilityCompatible {
+			audit.Result = domain.AuditFailed
+		}
+		return tx.AppendAudit(ctx, audit)
+	})
+	return applied, err
+}
+
+// RequestRevalidation 以 revision 条件把 profile 置回 unverified 并递增 revision；同请求重放幂等。
+func (s *Store) RequestRevalidation(ctx context.Context, id domain.ID, expected domain.Revision, command domain.DomainCommand, audit domain.AuditEvent) (bool, error) {
+	replay := false
+	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
+		tx := write.(*txStore)
+		var err error
+		replay, err = commandReplay(ctx, tx, command)
+		if err != nil || replay {
+			return err
+		}
+		result, err := tx.tx.ExecContext(ctx, `UPDATE access_profiles SET compatibility_state='unverified',compatibility_reason=NULL,last_validated_at=NULL,
+            revision=revision+1,updated_at=? WHERE id=? AND revision=? AND archived_at IS NULL`, millis(audit.OccurredAt), id.String(), expected)
+		if err != nil {
+			return err
+		}
+		if rows, _ := result.RowsAffected(); rows != 1 {
+			return &domain.ConflictError{Message: "profile changed since the page was loaded"}
+		}
+		if err := tx.SaveCommand(ctx, command); err != nil {
+			return err
+		}
+		return tx.AppendAudit(ctx, audit)
+	})
+	return replay, err
+}

@@ -149,7 +149,7 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input := application.CreateUserInput{DisplayName: form.Values["display_name"], ProfileID: domain.ID(form.Values["profile_id"]),
-		RequestID: form.RequestID, ActorID: h.Actor(r)}
+		RequestID: form.RequestID, ActorID: h.Actor(r), Fingerprint: form.Fingerprint}
 	if !input.ProfileID.Valid() {
 		h.renderUserForm(w, r, form.Values, &domain.ValidationError{Field: "profile_id", Message: "profile is required"})
 		return
@@ -371,7 +371,7 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	resetDay, _ := strconv.Atoi(strings.TrimSpace(form.Values["reset_day"]))
 	_, err = h.Service.UpdateUser(r.Context(), application.UpdateUserInput{ID: id, DisplayName: form.Values["display_name"], LimitBytes: limit,
 		ResetDay: resetDay, AdminEnabled: form.Values["admin_enabled"] == "on", ExpectedRevision: domain.Revision(*form.Version),
-		RequestID: form.RequestID, ActorID: h.Actor(r)})
+		RequestID: form.RequestID, ActorID: h.Actor(r), Fingerprint: form.Fingerprint})
 	if err != nil {
 		h.renderEditForm(w, r, id, form.Values, err)
 		return
@@ -430,7 +430,7 @@ func (h *UserHandler) Reset(w http.ResponseWriter, r *http.Request) {
 		h.Renderer.Error(w, http.StatusBadRequest, "表单格式无效", "")
 		return
 	}
-	if _, err := h.Service.ResetTraffic(r.Context(), application.ResetTrafficInput{ID: id, RequestID: form.RequestID, ActorID: h.Actor(r)}); err != nil {
+	if _, err := h.Service.ResetTraffic(r.Context(), application.ResetTrafficInput{ID: id, RequestID: form.RequestID, ActorID: h.Actor(r), Fingerprint: form.Fingerprint}); err != nil {
 		h.Fail(w, r, err)
 		return
 	}
@@ -458,7 +458,7 @@ func (h *UserHandler) setEnabled(w http.ResponseWriter, r *http.Request, enabled
 		return
 	}
 	if _, err := h.Service.SetAdminEnabled(r.Context(), application.SetEnabledInput{ID: id, Enabled: enabled,
-		ExpectedRevision: domain.Revision(*form.Version), RequestID: form.RequestID, ActorID: h.Actor(r)}); err != nil {
+		ExpectedRevision: domain.Revision(*form.Version), RequestID: form.RequestID, ActorID: h.Actor(r), Fingerprint: form.Fingerprint}); err != nil {
 		h.conflictOrFail(w, r, id, err)
 		return
 	}
@@ -530,7 +530,7 @@ func (h *UserHandler) Rotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.Service.RotateCredential(r.Context(), application.LifecycleInput{ID: id, ExpectedRevision: domain.Revision(*form.Version),
-		RequestID: form.RequestID, ActorID: h.Actor(r)}); err != nil {
+		RequestID: form.RequestID, ActorID: h.Actor(r), Fingerprint: form.Fingerprint}); err != nil {
 		h.conflictOrFail(w, r, id, err)
 		return
 	}
@@ -550,7 +550,7 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.Service.DeleteUser(r.Context(), application.LifecycleInput{ID: id, ExpectedRevision: domain.Revision(*form.Version),
-		RequestID: form.RequestID, ActorID: h.Actor(r)}); err != nil {
+		RequestID: form.RequestID, ActorID: h.Actor(r), Fingerprint: form.Fingerprint}); err != nil {
 		h.conflictOrFail(w, r, id, err)
 		return
 	}

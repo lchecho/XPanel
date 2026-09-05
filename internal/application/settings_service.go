@@ -47,6 +47,7 @@ type UpdateSettingsInput struct {
 	ExpectedRevision domain.Revision
 	RequestID        domain.ID
 	ActorID          domain.ID
+	Fingerprint      []byte
 }
 
 const settingsTargetID = domain.ID("00000000-0000-4000-8000-000000000001")
@@ -70,10 +71,13 @@ func (s *SettingsService) Update(ctx context.Context, input UpdateSettingsInput)
 	if err != nil {
 		return false, err
 	}
+	fingerprint := input.Fingerprint
+	if len(fingerprint) == 0 {
+		fingerprint = domain.Fingerprint(domain.ActionSettingsUpdated, name, strconv.FormatInt(int64(input.ExpectedRevision), 10))
+	}
 	command := domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor, CommandType: domain.ActionSettingsUpdated,
-		TargetType: "settings", TargetID: settingsTargetID,
-		RequestFingerprint: domain.Fingerprint(domain.ActionSettingsUpdated, name, strconv.FormatInt(int64(input.ExpectedRevision), 10)),
-		State:              domain.CommandCompleted, ResultReference: "/settings", CreatedAt: now, CompletedAt: &completed}
+		TargetType: "settings", TargetID: settingsTargetID, RequestFingerprint: fingerprint,
+		State: domain.CommandCompleted, ResultReference: "/settings", CreatedAt: now, CompletedAt: &completed}
 	audit := domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor, TargetType: "settings",
 		TargetID: settingsTargetID, Action: domain.ActionSettingsUpdated, Result: domain.AuditSucceeded, CommandID: &input.RequestID,
 		SafeSummary: "quota timezone set to " + name + "; applies from the next cycle"}

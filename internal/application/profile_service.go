@@ -11,6 +11,9 @@ import (
 	"xpanel/internal/security"
 )
 
+// ErrValidationStale 表示验证期间 profile 已被编辑：旧结果被丢弃，最新 revision 会重新验证。
+var ErrValidationStale = errors.New("profile changed during validation; result discarded")
+
 type ProfileInput struct {
 	Name                  string
 	InboundTag            string
@@ -23,8 +26,23 @@ type ProfileInput struct {
 	RequestID             domain.ID
 	ExpectedRevision      domain.Revision
 	ActorID               domain.ID
+	// Fingerprint 由 handler 以 session+action+target+规范化载荷生成；为空时由服务按业务字段计算。
+	Fingerprint []byte
 }
 
+// RevalidateInput 描述手动重新验证：需要当前 revision，幂等排队。
+type RevalidateInput struct {
+	ID               domain.ID
+	ExpectedRevision domain.Revision
+	RequestID        domain.ID
+	ActorID          domain.ID
+	Fingerprint      []byte
+}
+
+// 核心函数：ProfileService 管理访问配置的登记、编辑、验证与重新验证。
+//
+// 职责：校验并持久化 profile 元数据与加密的服务端密钥；把验证结果按 profile revision 条件提交；不负责调度验证时机。
+// 约束：验证结果、实例健康、bootstrap 身份与验证审计在一个事务中提交；验证期间发生编辑时丢弃旧结果（FR-021）。
 type ProfileService struct {
 	store   ports.Store
 	adapter ports.Adapter
@@ -64,7 +82,13 @@ func (s *ProfileService) RegisterProfile(ctx context.Context, input ProfileInput
 	if err != nil {
 		return "", err
 	}
-	command, audit, err := profileCommand(input, profileID, domain.ActionProfileRegistered, now)
+	// 登记的指纹不得依赖随机生成的新 profile ID，否则同请求重放永远无法命中（FR-021）。
+	fingerprint := input.Fingerprint
+	if len(fingerprint) == 0 {
+		fingerprint = domain.Fingerprint(domain.ActionProfileRegistered, input.Name, input.InboundTag, input.PublicHost,
+			strconv.Itoa(input.PublicPort), input.Method, string(input.Network), input.BootstrapStatisticsID, input.ServerKey)
+	}
+	command, audit, err := profileCommand(input, profileID, domain.ActionProfileRegistered, now, fingerprint)
 	if err != nil {
 		return "", err
 	}
@@ -126,7 +150,13 @@ func (s *ProfileService) UpdateProfile(ctx context.Context, id domain.ID, input 
 		record.Profile.CompatibilityReason = ""
 		record.Profile.LastValidatedAt = nil
 	}
-	command, audit, err := profileCommand(input, id, domain.ActionProfileUpdated, record.Profile.UpdatedAt)
+	fingerprint := input.Fingerprint
+	if len(fingerprint) == 0 {
+		fingerprint = domain.Fingerprint(domain.ActionProfileUpdated, id.String(), input.Name, input.InboundTag, input.PublicHost,
+			strconv.Itoa(input.PublicPort), input.Method, string(input.Network), input.BootstrapStatisticsID, input.ServerKey,
+			strconv.FormatInt(int64(input.ExpectedRevision), 10))
+	}
+	command, audit, err := profileCommand(input, id, domain.ActionProfileUpdated, record.Profile.UpdatedAt, fingerprint)
 	if err != nil {
 		return err
 	}
@@ -139,7 +169,7 @@ func (s *ProfileService) UpdateProfile(ctx context.Context, id domain.ID, input 
 	return nil
 }
 
-func profileCommand(input ProfileInput, id domain.ID, action string, now time.Time) (domain.DomainCommand, domain.AuditEvent, error) {
+func profileCommand(input ProfileInput, id domain.ID, action string, now time.Time, fingerprint []byte) (domain.DomainCommand, domain.AuditEvent, error) {
 	auditID, err := domain.NewID()
 	if err != nil {
 		return domain.DomainCommand{}, domain.AuditEvent{}, err
@@ -147,9 +177,7 @@ func profileCommand(input ProfileInput, id domain.ID, action string, now time.Ti
 	actor := input.ActorID
 	completed := now
 	command := domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor,
-		CommandType: action, TargetType: "profile", TargetID: id,
-		RequestFingerprint: domain.Fingerprint(action, id.String(), input.Name, input.InboundTag, input.PublicHost,
-			strconv.Itoa(input.PublicPort), input.Method, string(input.Network), input.BootstrapStatisticsID, input.ServerKey),
+		CommandType: action, TargetType: "profile", TargetID: id, RequestFingerprint: fingerprint,
 		State: domain.CommandCompleted, ResultReference: "/profiles/" + id.String(), CreatedAt: now, CompletedAt: &completed}
 	audit := domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor,
 		TargetType: "profile", TargetID: id, Action: action, Result: domain.AuditSucceeded,
@@ -157,16 +185,39 @@ func profileCommand(input ProfileInput, id domain.ID, action string, now time.Ti
 	return command, audit, nil
 }
 
-func (s *ProfileService) Revalidate(ctx context.Context, id domain.ID) error {
-	if err := s.store.SetProfileCompatibility(ctx, id, domain.CompatibilityUnverified, "", s.clock.Now()); err != nil {
-		return err
+// Revalidate 以 revision 条件把 profile 置回 unverified 并递增 revision，使验证期间到达的旧结果被丢弃；同请求重放幂等。
+func (s *ProfileService) Revalidate(ctx context.Context, input RevalidateInput) (bool, error) {
+	if !input.RequestID.Valid() {
+		return false, &domain.ValidationError{Field: "_request_id", Message: "invalid request identifier"}
 	}
-	if s.notify != nil {
-		s.notify(id)
+	fingerprint := input.Fingerprint
+	if len(fingerprint) == 0 {
+		fingerprint = domain.Fingerprint(domain.ActionProfileRevalidationRequested, input.ID.String(), strconv.FormatInt(int64(input.ExpectedRevision), 10))
 	}
-	return nil
+	now := s.clock.Now().UTC()
+	actor := input.ActorID
+	completed := now
+	auditID, err := domain.NewID()
+	if err != nil {
+		return false, err
+	}
+	command := domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor,
+		CommandType: domain.ActionProfileRevalidationRequested, TargetType: "profile", TargetID: input.ID, RequestFingerprint: fingerprint,
+		State: domain.CommandCompleted, ResultReference: "/profiles/" + input.ID.String(), CreatedAt: now, CompletedAt: &completed}
+	audit := domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor, TargetType: "profile",
+		TargetID: input.ID, Action: domain.ActionProfileRevalidationRequested, Result: domain.AuditAccepted, CommandID: &input.RequestID,
+		SafeSummary: "administrator requested profile revalidation"}
+	replay, err := s.store.RequestRevalidation(ctx, input.ID, input.ExpectedRevision, command, audit)
+	if err != nil {
+		return false, err
+	}
+	if !replay && s.notify != nil {
+		s.notify(input.ID)
+	}
+	return replay, nil
 }
 
+// RunValidation 探测实例并验证 profile 能力；结果只在 profile revision 未变化时提交，否则返回 ErrValidationStale。
 func (s *ProfileService) RunValidation(ctx context.Context, id domain.ID) error {
 	record, err := s.store.Profile(ctx, id)
 	if err != nil {
@@ -175,12 +226,12 @@ func (s *ProfileService) RunValidation(ctx context.Context, id domain.ID) error 
 	now := s.clock.Now().UTC()
 	observation, err := s.adapter.Probe(ctx, s.target)
 	if err != nil {
-		return s.finishValidation(ctx, record, domain.CompatibilityUnreachable, adapterSummary(err, "Xray API is unavailable"), nil, now)
+		return s.complete(ctx, record, domain.CompatibilityUnreachable, adapterSummary(err, "Xray API is unavailable"), nil, nil, now)
 	}
 	serverKey, err := s.keyring.Decrypt(record.ServerKeyCiphertext, record.ServerKeyNonce,
 		security.SecretAAD("access_profiles", id.String(), "server_key", record.KeyEncryptionVersion))
 	if err != nil {
-		return s.finishValidation(ctx, record, domain.CompatibilityIncompatible, "profile key could not be decrypted", &observation, now)
+		return s.complete(ctx, record, domain.CompatibilityIncompatible, "profile key could not be decrypted", &observation, nil, now)
 	}
 	capabilities, err := s.adapter.ValidateProfile(ctx, ports.RuntimeProfile{ID: id, InboundTag: record.Profile.InboundTag,
 		Method: record.Profile.Method, BootstrapStatisticsID: record.Profile.BootstrapStatisticsID,
@@ -191,29 +242,22 @@ func (s *ProfileService) RunValidation(ctx context.Context, id domain.ID) error 
 		if errors.As(err, &adapterErr) && adapterErr.Retryable {
 			state = domain.CompatibilityUnreachable
 		}
-		return s.finishValidation(ctx, record, state, adapterSummary(err, "profile validation failed"), &observation, now)
+		return s.complete(ctx, record, state, adapterSummary(err, "profile validation failed"), &observation, nil, now)
 	}
 	if !capabilities.Compatible() {
 		reason := capabilities.CompatibilityReason
 		if reason == "" {
 			reason = "profile does not satisfy the SS2022 multi-user contract"
 		}
-		return s.finishValidation(ctx, record, domain.CompatibilityIncompatible, reason, &observation, now)
+		return s.complete(ctx, record, domain.CompatibilityIncompatible, reason, &observation, nil, now)
 	}
 	identityID, err := domain.NewID()
 	if err != nil {
 		return err
 	}
-	if err := s.store.RegisterBootstrapIdentity(ctx, domain.XrayUserIdentity{ID: identityID, InstanceID: record.Profile.InstanceID,
-		ProfileID: id, StatisticsID: record.Profile.BootstrapStatisticsID, Kind: domain.IdentityBootstrap, CreatedAt: now}); err != nil {
-		var conflict *domain.ConflictError
-		if errors.As(err, &conflict) {
-			// 跨 profile 复用同一 bootstrap 统计标识：全实例唯一性被破坏，不得标为 compatible（contract gate 9）。
-			return s.finishValidation(ctx, record, domain.CompatibilityIncompatible, conflict.Message, &observation, now)
-		}
-		return err
-	}
-	return s.finishValidation(ctx, record, domain.CompatibilityCompatible, "", &observation, now)
+	bootstrap := &domain.XrayUserIdentity{ID: identityID, InstanceID: record.Profile.InstanceID, ProfileID: id,
+		StatisticsID: record.Profile.BootstrapStatisticsID, Kind: domain.IdentityBootstrap, CreatedAt: now}
+	return s.complete(ctx, record, domain.CompatibilityCompatible, "", &observation, bootstrap, now)
 }
 
 func adapterSummary(err error, fallback string) string {
@@ -224,23 +268,20 @@ func adapterSummary(err error, fallback string) string {
 	return fallback
 }
 
-func (s *ProfileService) finishValidation(ctx context.Context, record ports.ProfileRecord, state domain.CompatibilityState,
-	reason string, observation *ports.InstanceObservation, now time.Time) error {
-	if err := s.store.SetProfileCompatibility(ctx, record.Profile.ID, state, reason, now); err != nil {
-		return err
+// complete 组装验证结果并按 profile revision 条件在一个事务中提交 compatibility、实例健康、bootstrap 身份与审计。
+func (s *ProfileService) complete(ctx context.Context, record ports.ProfileRecord, state domain.CompatibilityState, reason string,
+	observation *ports.InstanceObservation, bootstrap *domain.XrayUserIdentity, now time.Time) error {
+	outcome := ports.ValidationOutcome{ProfileID: record.Profile.ID, ExpectedRevision: record.Profile.Revision, State: state, Reason: reason,
+		ValidatedAt: now, Bootstrap: bootstrap, Health: "incompatible", ErrorCode: "incompatible_profile", ErrorSummary: reason}
+	if observation != nil && observation.BootEpochKnown {
+		outcome.BootEpoch = observation.BootEpoch.UTC().Format(time.RFC3339)
 	}
-	health, boot, code := "incompatible", "", "incompatible_profile"
-	var success *time.Time
-	if observation != nil {
-		boot = observation.BootEpoch.UTC().Format(time.RFC3339)
-	}
-	if state == domain.CompatibilityCompatible {
-		health, code, reason, success = "healthy", "", "", &now
-	} else if state == domain.CompatibilityUnreachable {
-		health, code = "unreachable", "instance_unavailable"
-	}
-	if err := s.store.SetInstanceHealth(ctx, health, boot, code, success, reason, now); err != nil {
-		return err
+	switch state {
+	case domain.CompatibilityCompatible:
+		success := now
+		outcome.Health, outcome.ErrorCode, outcome.ErrorSummary, outcome.SuccessAt = "healthy", "", "", &success
+	case domain.CompatibilityUnreachable:
+		outcome.Health, outcome.ErrorCode = "unreachable", "instance_unavailable"
 	}
 	auditID, err := domain.NewID()
 	if err != nil {
@@ -250,7 +291,14 @@ func (s *ProfileService) finishValidation(ctx context.Context, record ports.Prof
 	if state != domain.CompatibilityCompatible {
 		result = domain.AuditFailed
 	}
-	return s.store.AppendAudit(ctx, domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorSystem,
-		TargetType: "profile", TargetID: record.Profile.ID, Action: domain.ActionProfileValidated,
-		Result: result, SafeSummary: reason})
+	outcome.Audit = domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorSystem, TargetType: "profile",
+		TargetID: record.Profile.ID, Action: domain.ActionProfileValidated, Result: result, SafeSummary: reason}
+	applied, err := s.store.CompleteProfileValidation(ctx, outcome)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return ErrValidationStale
+	}
+	return nil
 }

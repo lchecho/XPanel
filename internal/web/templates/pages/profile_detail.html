@@ -13,7 +13,7 @@
 {{if eq .Data.Compatibility "unreachable"}}<p class="notice">节点暂时不可达，系统会自动重试验证。</p>{{end}}
 <div class="actions">
   <a href="/profiles/{{.Data.ID}}/edit" class="button">编辑</a>
-  <form method="post" action="/profiles/{{.Data.ID}}/revalidate" class="inline">{{.CSRFField}}<input type="hidden" name="_request_id" value="{{.RequestID}}"><button type="submit">重新验证</button></form>
+  <form method="post" action="/profiles/{{.Data.ID}}/revalidate" class="inline">{{.CSRFField}}<input type="hidden" name="_request_id" value="{{.RequestID}}"><input type="hidden" name="_version" value="{{.Version}}"><button type="submit">重新验证</button></form>
 </div>
 <p><a href="/profiles">返回访问配置列表</a></p>
 {{template "footer" .}}</main></body></html>{{end}}

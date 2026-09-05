@@ -6,6 +6,7 @@ import (
 	"errors"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -13,9 +14,10 @@ import (
 )
 
 type CommandForm struct {
-	RequestID domain.ID
-	Version   *int64
-	Values    map[string]string
+	RequestID   domain.ID
+	Version     *int64
+	Values      map[string]string
+	Fingerprint []byte
 }
 
 func ParseCommandForm(r *http.Request, sessionID, action, target string) (CommandForm, error) {
@@ -45,8 +47,15 @@ func ParseCommandForm(r *http.Request, sessionID, action, target string) (Comman
 		}
 		values[key] = r.PostForm.Get(key)
 	}
-	_ = RequestFingerprint(sessionID, action, target, r.PostForm.Encode())
-	return CommandForm{RequestID: id, Version: version, Values: values}, nil
+	// 规范化载荷：排除每次页面加载都变化的 CSRF 令牌；指纹绑定 session、动作与目标（http.md §General Rules）。
+	canonical := url.Values{}
+	for key, list := range r.PostForm {
+		if key == "_csrf" {
+			continue
+		}
+		canonical[key] = list
+	}
+	return CommandForm{RequestID: id, Version: version, Values: values, Fingerprint: RequestFingerprint(sessionID, action, target, canonical.Encode())}, nil
 }
 
 func RequestFingerprint(sessionID, action, target, canonicalPayload string) []byte {

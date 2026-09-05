@@ -38,7 +38,7 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, err = h.Service.Update(r.Context(), application.UpdateSettingsInput{QuotaTimezone: form.Values["quota_timezone"],
-		ExpectedRevision: domain.Revision(*form.Version), RequestID: form.RequestID, ActorID: h.Actor(r)})
+		ExpectedRevision: domain.Revision(*form.Version), RequestID: form.RequestID, ActorID: h.Actor(r), Fingerprint: form.Fingerprint})
 	if err != nil {
 		failure := Classify(err)
 		if failure.Status == http.StatusInternalServerError {

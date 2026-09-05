@@ -130,12 +130,14 @@ func (h *ProfileHandler) Revalidate(w http.ResponseWriter, r *http.Request) {
 		h.Renderer.Error(w, http.StatusNotFound, "请求的资源不存在", "")
 		return
 	}
-	if _, err := ParseCommandForm(r, h.SessionToken(r), "profile_revalidate", id.String()); err != nil {
-		h.Renderer.Error(w, http.StatusBadRequest, "表单格式无效", "")
+	form, err := ParseCommandForm(r, h.SessionToken(r), "profile_revalidate", id.String())
+	if err != nil || form.Version == nil {
+		h.Renderer.Error(w, http.StatusBadRequest, "表单格式无效或缺少资源版本", "")
 		return
 	}
-	if err := h.Service.Revalidate(r.Context(), id); err != nil {
-		h.Fail(w, r, err)
+	if _, err := h.Service.Revalidate(r.Context(), application.RevalidateInput{ID: id, ExpectedRevision: domain.Revision(*form.Version),
+		RequestID: form.RequestID, ActorID: h.Actor(r), Fingerprint: form.Fingerprint}); err != nil {
+		h.renderProfileForm(w, r, true, id, profileValues(domain.AccessProfile{}), err)
 		return
 	}
 	h.Flash(r, "success", "已重新排队验证访问配置")
@@ -176,7 +178,7 @@ func profileInput(r *http.Request, form CommandForm) (application.ProfileInput, 
 	input := application.ProfileInput{Name: values["name"], InboundTag: values["inbound_tag"], PublicHost: strings.TrimSpace(values["public_host"]),
 		PublicPort: port, Method: values["method"], Network: domain.Network(values["network"]),
 		ServerKey: strings.TrimSpace(r.PostForm.Get("server_key")), BootstrapStatisticsID: strings.TrimSpace(values["bootstrap_statistics_id"]),
-		RequestID: form.RequestID}
+		RequestID: form.RequestID, Fingerprint: form.Fingerprint}
 	return input, values
 }
 

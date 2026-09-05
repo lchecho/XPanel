@@ -19,6 +19,7 @@ type CreateUserInput struct {
 	ResetDay    int
 	RequestID   domain.ID
 	ActorID     domain.ID
+	Fingerprint []byte
 }
 
 type UserService struct {
@@ -94,10 +95,13 @@ func (s *UserService) CreateUser(ctx context.Context, input CreateUserInput) (do
 	if input.LimitBytes != nil {
 		limit = strconv.FormatInt(*input.LimitBytes, 10)
 	}
+	fingerprint := input.Fingerprint
+	if len(fingerprint) == 0 {
+		fingerprint = domain.Fingerprint(domain.ActionUserCreated, user.NormalizedName, input.ProfileID.String(), limit, strconv.Itoa(input.ResetDay))
+	}
 	command := domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor,
-		CommandType: domain.ActionUserCreated, TargetType: "user", TargetID: userID,
-		RequestFingerprint: domain.Fingerprint(domain.ActionUserCreated, user.NormalizedName, input.ProfileID.String(), limit, strconv.Itoa(input.ResetDay)),
-		State:              domain.CommandCompleted, ResultReference: "/users/" + userID.String(), CreatedAt: now, CompletedAt: &completed}
+		CommandType: domain.ActionUserCreated, TargetType: "user", TargetID: userID, RequestFingerprint: fingerprint,
+		State: domain.CommandCompleted, ResultReference: "/users/" + userID.String(), CreatedAt: now, CompletedAt: &completed}
 	audit := domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor,
 		TargetType: "user", TargetID: userID, Action: domain.ActionUserCreated, Result: domain.AuditAccepted,
 		CommandID: &input.RequestID, OperationID: &operationID, SafeSummary: "user created; Xray projection pending"}
@@ -331,6 +335,7 @@ type SetEnabledInput struct {
 	ExpectedRevision domain.Revision
 	RequestID        domain.ID
 	ActorID          domain.ID
+	Fingerprint      []byte
 }
 
 // SetAdminEnabled 只切换管理员启用意图，其余字段沿用当前值；重新启用先检查配额（spec FR-010）。
@@ -341,7 +346,7 @@ func (s *UserService) SetAdminEnabled(ctx context.Context, input SetEnabledInput
 	}
 	return s.UpdateUser(ctx, UpdateUserInput{ID: input.ID, DisplayName: record.User.DisplayName, LimitBytes: record.Policy.LimitBytes,
 		ResetDay: record.Policy.ResetDay, AdminEnabled: input.Enabled, ExpectedRevision: input.ExpectedRevision,
-		RequestID: input.RequestID, ActorID: input.ActorID})
+		RequestID: input.RequestID, ActorID: input.ActorID, Fingerprint: input.Fingerprint})
 }
 
 // LifecycleInput 描述轮换与删除提交。
@@ -350,6 +355,7 @@ type LifecycleInput struct {
 	ExpectedRevision domain.Revision
 	RequestID        domain.ID
 	ActorID          domain.ID
+	Fingerprint      []byte
 }
 
 // RotateCredential 生成下一版本密钥并启动 remove_old → add_desired → confirm 三阶段轮换（spec FR-011）。
@@ -358,7 +364,10 @@ func (s *UserService) RotateCredential(ctx context.Context, input LifecycleInput
 	if !input.RequestID.Valid() {
 		return false, &domain.ValidationError{Field: "_request_id", Message: "invalid request identifier"}
 	}
-	fingerprint := domain.Fingerprint(domain.ActionCredentialRotated, input.ID.String(), strconv.FormatInt(int64(input.ExpectedRevision), 10))
+	fingerprint := input.Fingerprint
+	if len(fingerprint) == 0 {
+		fingerprint = domain.Fingerprint(domain.ActionCredentialRotated, input.ID.String(), strconv.FormatInt(int64(input.ExpectedRevision), 10))
+	}
 	if replayed, err := s.commandReplayed(ctx, input.RequestID, fingerprint); err != nil || replayed {
 		return replayed, err
 	}
@@ -427,7 +436,10 @@ func (s *UserService) DeleteUser(ctx context.Context, input LifecycleInput) (boo
 	if !input.RequestID.Valid() {
 		return false, &domain.ValidationError{Field: "_request_id", Message: "invalid request identifier"}
 	}
-	fingerprint := domain.Fingerprint(domain.ActionUserDeleted, input.ID.String(), strconv.FormatInt(int64(input.ExpectedRevision), 10))
+	fingerprint := input.Fingerprint
+	if len(fingerprint) == 0 {
+		fingerprint = domain.Fingerprint(domain.ActionUserDeleted, input.ID.String(), strconv.FormatInt(int64(input.ExpectedRevision), 10))
+	}
 	if replayed, err := s.commandReplayed(ctx, input.RequestID, fingerprint); err != nil || replayed {
 		return replayed, err
 	}

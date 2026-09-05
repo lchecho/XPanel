@@ -24,6 +24,8 @@ type Store interface {
 	Profiles(context.Context, bool) ([]ProfileRecord, error)
 	ArchiveProfile(context.Context, domain.ID, domain.Revision, time.Time) error
 	SetProfileCompatibility(context.Context, domain.ID, domain.CompatibilityState, string, time.Time) error
+	CompleteProfileValidation(context.Context, ValidationOutcome) (bool, error)
+	RequestRevalidation(context.Context, domain.ID, domain.Revision, domain.DomainCommand, domain.AuditEvent) (bool, error)
 	RegisterBootstrapIdentity(context.Context, domain.XrayUserIdentity) error
 	CreateUser(context.Context, UserCreateRecord) (domain.ID, bool, error)
 	User(context.Context, domain.ID) (UserRecord, error)
@@ -358,4 +360,20 @@ type DriftRemoval struct {
 	State         domain.SyncState
 	AttemptCount  int
 	NextAttemptAt time.Time
+}
+
+// ValidationOutcome 是一次 profile 验证的完整结果，按 ExpectedRevision 条件在一个事务中提交（FR-021）。
+type ValidationOutcome struct {
+	ProfileID        domain.ID
+	ExpectedRevision domain.Revision
+	State            domain.CompatibilityState
+	Reason           string
+	ValidatedAt      time.Time
+	Health           string
+	BootEpoch        string
+	ErrorCode        string
+	ErrorSummary     string
+	SuccessAt        *time.Time
+	Bootstrap        *domain.XrayUserIdentity
+	Audit            domain.AuditEvent
 }

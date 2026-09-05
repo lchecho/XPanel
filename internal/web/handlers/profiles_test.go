@@ -95,7 +95,11 @@ func TestProfileFormValidationConflictAndRevalidate(t *testing.T) {
 	if !strings.Contains(body, "edge.example.com") {
 		t.Fatalf("edit did not persist: %s", body)
 	}
-	response, _ = app.PostForm(location+"/revalidate", location, nil)
+	response, _ = app.PostForm(location+"/revalidate", location, url.Values{"_version": {"0"}})
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("stale revalidate status=%d", response.StatusCode)
+	}
+	response, _ = app.PostForm(location+"/revalidate", location, url.Values{"_version": {"1"}})
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("revalidate status=%d", response.StatusCode)
 	}

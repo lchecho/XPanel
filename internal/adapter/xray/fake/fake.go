@@ -34,6 +34,8 @@ type Adapter struct {
 	Delay time.Duration
 	// OnReadTraffic 在每次 ReadTraffic 前（锁外）调用一次，用于模拟采集与管理员操作的并发竞争。
 	OnReadTraffic func()
+	// OnValidateProfile 在每次 ValidateProfile 前（锁外）调用一次，用于模拟验证期间的编辑。
+	OnValidateProfile func()
 }
 
 func New() *Adapter {
@@ -73,6 +75,13 @@ func (a *Adapter) Probe(context.Context, ports.InstanceTarget) (ports.InstanceOb
 }
 
 func (a *Adapter) ValidateProfile(_ context.Context, profile ports.RuntimeProfile) (ports.ProfileCapabilities, error) {
+	a.mu.Lock()
+	hook := a.OnValidateProfile
+	a.OnValidateProfile = nil
+	a.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.Calls = append(a.Calls, Call{Operation: "validate_profile", ProfileTag: profile.InboundTag})

@@ -276,19 +276,19 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 **Purpose**: 本机密码重置、优雅关闭、安全加固、备份恢复、文档与发布门禁
 
-- [ ] T115 扩展 `cmd/xpanel/main.go` 与 `internal/application/auth_service.go`：`admin reset-password`（不需旧密码；TTY 无回显两次输入或 `--password-stdin`；单事务替换 Argon2id 哈希、递增 `password_version`、撤销全部会话、写 `actor_type=local_cli` 审计；不触碰用户/profile/配额/流量；退出码 0/2/3/4；stdout 无任何秘密）
-- [ ] T116 [P] 编写 `tests/integration/cli_test.go`：`--password-stdin` 模式下 init 与 reset；管理员已存在时 init 拒绝；reset 后旧密码与既有会话立即失效；输出不含哈希/密钥
-- [ ] T117 实现优雅关闭于 `internal/web/server.go` 与 `cmd/xpanel/main.go`：停止接收写请求、取消后台 RPC、完成或取消短事务、释放租约与连接；编写 `tests/integration/shutdown_test.go` 验证关闭期间无部分提交
-- [ ] T118 [P] 编写 `tests/integration/secrets_leak_test.go`：遍历所有认证页面、fragment、审计与日志输出，断言不含密码、服务端/用户密钥、session/CSRF token、完整 `ss://` URI；编写 `internal/logging/redact_test.go`
-- [ ] T119 [P] 编写 `tests/integration/failure_matrix_test.go` 与故障注入 Store 包装器 `tests/integration/faultstore_test.go`：按 变更类型 {创建, 启用, 禁用, 轮换, 删除, 配额封禁, 周期恢复} × 故障 {数据库提交失败, RPC 超时, RPC 成功后进程崩溃, Xray 重启, 重复请求, 协调器重放} 生成表驱动用例（42 个单元格，缺失单元格视为失败）；每个单元格断言 SQLite 期望状态与审计一致、fake Xray 最终用户集合与期望一致、无重复用户/重复流量/负流量（宪章「开发流程与质量门禁」）
-- [ ] T120 [P] 编写 fuzz 测试 `internal/security/tokens_fuzz_test.go`（统计身份、SS2022 密钥校验）与 `internal/adapter/xray/stats_fuzz_test.go`（计数器名称解析）
-- [ ] T121 [P] 无障碍与渐进增强复核：检查 `internal/web/templates/**` 所有输入有程序化标签、错误 `aria-describedby`、表格 caption/scope、导航为链接/动作为按钮；`internal/web/static/app.css` 移动宽度下关键操作可见；编写 `internal/web/handlers/accessibility_test.go` 断言上述结构与 CSP 兼容（无内联脚本）
-- [ ] T122 [P] 编写 `docs/operations.md`：SQLite 备份（WAL checkpoint）、root key 分离存储与丢失后果、恢复步骤、恢复后协调验证；编写 `tests/integration/backup_restore_test.go` 验证恢复数据库后 active 用户被协调而 blocked/deleted 不复活
-- [ ] T123 [P] 编写 `README.md`：构建、配置、`admin init`/`serve`/`reset-password`、quickstart 指引、软配额语义声明
-- [ ] T124 编写 `tests/integration/perf_test.go`：20 个活跃 allocation 下管理操作反馈 <2s、一轮采集提交耗时记录（SC-002/SC-003 基线）
-- [ ] T125 编写 `tests/e2e/success_criteria_test.go`：用 fake 时钟与 fake Adapter 为可自动化的成功标准产生证据并以结构化 `t.Log` 输出测量摘要：SC-003（20 个分配下数据从采集到页面 ≤10s）、SC-004（越界后 ≤10s 完成移除投影；失败路径 ≤30s 显示待同步）、SC-005（周期切换 ≤60s 恢复，手动禁用/已删除恢复数为 0）、SC-006（重连 ≤60s 收敛）、SC-007（负流量与重复计量为 0）、SC-008（受审计操作覆盖 100% 且无明文凭证）、SC-011（重置后旧会话可用数为 0）
-- [ ] T126 按 `specs/001-xray-user-management/quickstart.md` §2–§9 使用真实 Xray v26.3.27 完成人工验收并记录到 `specs/001-xray-user-management/validation-report.md`：SC-001（从首次登录到复制出连接信息的计时）、SC-002（登录/搜索/创建/编辑/状态切换各执行 ≥20 次，记录 P95 反馈时间）、SC-010（纯键盘以及 360×640、390×844 视口各完成登录/创建/编辑/禁用/删除，记录成功率）；引用 T125 的自动化证据；SC-009 属可用性研究，需另行组织，不由本任务验证
-- [ ] T127 运行发布门禁 `make check`（`XRAY_BIN` 指向固定二进制并设置 `XPANEL_REQUIRE_CONTRACT=1`），全部通过后更新 `validation-report.md` 的门禁证据
+- [X] T115 扩展 `cmd/xpanel/main.go` 与 `internal/application/auth_service.go`：`admin reset-password`（不需旧密码；TTY 无回显两次输入或 `--password-stdin`；单事务替换 Argon2id 哈希、递增 `password_version`、撤销全部会话、写 `actor_type=local_cli` 审计；不触碰用户/profile/配额/流量；退出码 0/2/3/4；stdout 无任何秘密）
+- [X] T116 [P] 编写 `tests/integration/cli_test.go`：`--password-stdin` 模式下 init 与 reset；管理员已存在时 init 拒绝；reset 后旧密码与既有会话立即失效；输出不含哈希/密钥
+- [X] T117 实现优雅关闭于 `internal/web/server.go` 与 `cmd/xpanel/main.go`：停止接收写请求、取消后台 RPC、完成或取消短事务、释放租约与连接；编写 `tests/integration/shutdown_test.go` 验证关闭期间无部分提交
+- [X] T118 [P] 编写 `tests/integration/secrets_leak_test.go`：遍历所有认证页面、fragment、审计与日志输出，断言不含密码、服务端/用户密钥、session/CSRF token、完整 `ss://` URI；编写 `internal/logging/redact_test.go`
+- [X] T119 [P] 编写 `tests/integration/failure_matrix_test.go` 与故障注入 Store 包装器 `tests/integration/faultstore_test.go`：按 变更类型 {创建, 启用, 禁用, 轮换, 删除, 配额封禁, 周期恢复} × 故障 {数据库提交失败, RPC 超时, RPC 成功后进程崩溃, Xray 重启, 重复请求, 协调器重放} 生成表驱动用例（42 个单元格，缺失单元格视为失败）；每个单元格断言 SQLite 期望状态与审计一致、fake Xray 最终用户集合与期望一致、无重复用户/重复流量/负流量（宪章「开发流程与质量门禁」）
+- [X] T120 [P] 编写 fuzz 测试 `internal/security/tokens_fuzz_test.go`（统计身份、SS2022 密钥校验）与 `internal/adapter/xray/stats_fuzz_test.go`（计数器名称解析）
+- [X] T121 [P] 无障碍与渐进增强复核：检查 `internal/web/templates/**` 所有输入有程序化标签、错误 `aria-describedby`、表格 caption/scope、导航为链接/动作为按钮；`internal/web/static/app.css` 移动宽度下关键操作可见；编写 `internal/web/handlers/accessibility_test.go` 断言上述结构与 CSP 兼容（无内联脚本）
+- [X] T122 [P] 编写 `docs/operations.md`：SQLite 备份（WAL checkpoint）、root key 分离存储与丢失后果、恢复步骤、恢复后协调验证；编写 `tests/integration/backup_restore_test.go` 验证恢复数据库后 active 用户被协调而 blocked/deleted 不复活
+- [X] T123 [P] 编写 `README.md`：构建、配置、`admin init`/`serve`/`reset-password`、quickstart 指引、软配额语义声明
+- [X] T124 编写 `tests/integration/perf_test.go`：20 个活跃 allocation 下管理操作反馈 <2s、一轮采集提交耗时记录（SC-002/SC-003 基线）
+- [X] T125 编写 `tests/e2e/success_criteria_test.go`：用 fake 时钟与 fake Adapter 为可自动化的成功标准产生证据并以结构化 `t.Log` 输出测量摘要：SC-003（20 个分配下数据从采集到页面 ≤10s）、SC-004（越界后 ≤10s 完成移除投影；失败路径 ≤30s 显示待同步）、SC-005（周期切换 ≤60s 恢复，手动禁用/已删除恢复数为 0）、SC-006（重连 ≤60s 收敛）、SC-007（负流量与重复计量为 0）、SC-008（受审计操作覆盖 100% 且无明文凭证）、SC-011（重置后旧会话可用数为 0）
+- [ ] T126 【待真实 Xray 环境：本机无 v26.3.27 二进制，2026-09-04 已完成自动化部分并生成 validation-report.md 骨架】按 `specs/001-xray-user-management/quickstart.md` §2–§9 使用真实 Xray v26.3.27 完成人工验收并记录到 `specs/001-xray-user-management/validation-report.md`：SC-001（从首次登录到复制出连接信息的计时）、SC-002（登录/搜索/创建/编辑/状态切换各执行 ≥20 次，记录 P95 反馈时间）、SC-010（纯键盘以及 360×640、390×844 视口各完成登录/创建/编辑/禁用/删除，记录成功率）；引用 T125 的自动化证据；SC-009 属可用性研究，需另行组织，不由本任务验证
+- [ ] T127 【fmt/vet/test/test-race 已通过并记录；contract 门禁待 XRAY_BIN】运行发布门禁 `make check`（`XRAY_BIN` 指向固定二进制并设置 `XPANEL_REQUIRE_CONTRACT=1`），全部通过后更新 `validation-report.md` 的门禁证据
 
 ---
 

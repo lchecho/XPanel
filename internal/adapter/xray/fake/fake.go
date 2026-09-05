@@ -30,6 +30,8 @@ type Adapter struct {
 	Available bool
 	BootEpoch time.Time
 	Now       func() time.Time
+	// Delay 模拟慢 RPC；调用会等待 Delay 或 ctx 取消（用于优雅关闭与超时测试）。
+	Delay time.Duration
 }
 
 func New() *Adapter {
@@ -99,7 +101,10 @@ func (a *Adapter) ListUsers(_ context.Context, profile ports.RuntimeProfile) ([]
 	return result, nil
 }
 
-func (a *Adapter) AddUser(_ context.Context, command ports.AddUserCommand) (ports.MutationReceipt, error) {
+func (a *Adapter) AddUser(ctx context.Context, command ports.AddUserCommand) (ports.MutationReceipt, error) {
+	if err := a.wait(ctx, "add_user"); err != nil {
+		return ports.MutationReceipt{}, err
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.Calls = append(a.Calls, Call{Operation: "add_user", ProfileTag: command.ProfileTag, StatisticsID: command.StatisticsID})
@@ -120,7 +125,10 @@ func (a *Adapter) AddUser(_ context.Context, command ports.AddUserCommand) (port
 	return ports.MutationReceipt{OperationID: command.OperationID, ObservedAt: a.Now()}, nil
 }
 
-func (a *Adapter) RemoveUser(_ context.Context, command ports.RemoveUserCommand) (ports.MutationReceipt, error) {
+func (a *Adapter) RemoveUser(ctx context.Context, command ports.RemoveUserCommand) (ports.MutationReceipt, error) {
+	if err := a.wait(ctx, "remove_user"); err != nil {
+		return ports.MutationReceipt{}, err
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.Calls = append(a.Calls, Call{Operation: "remove_user", ProfileTag: command.ProfileTag, StatisticsID: command.StatisticsID})
@@ -177,4 +185,22 @@ func (a *Adapter) SetCounter(id string, direction ports.Direction, value uint64)
 		a.Counters[id] = make(map[ports.Direction]uint64)
 	}
 	a.Counters[id][direction] = value
+}
+
+// wait 在配置了 Delay 时阻塞，ctx 取消则返回可重试的 deadline 错误（变更未应用）。
+func (a *Adapter) wait(ctx context.Context, operation string) error {
+	a.mu.Lock()
+	delay := a.Delay
+	a.mu.Unlock()
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return &ports.AdapterError{Kind: ports.ErrorDeadlineExceeded, Operation: operation, Retryable: true, SafeSummary: "fake Xray call cancelled"}
+	}
 }

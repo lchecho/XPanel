@@ -11,7 +11,8 @@ import (
 )
 
 func TestLoginPageRendersLabelsAndDoesNotEchoPassword(t *testing.T) {
-	templates, err := template.ParseFiles("../templates/layouts/base.html", "../templates/pages/login.html")
+	templates, err := template.New("test").Funcs(template.FuncMap{"asset": func(name string) string { return "/static/" + name }}).
+		ParseFiles("../templates/layouts/base.html", "../templates/pages/login.html")
 	if err != nil {
 		t.Fatal(err)
 	}

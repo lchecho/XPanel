@@ -3,6 +3,7 @@ package handlers_test
 import (
 	"context"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ func TestDashboardShowsCountsHealthAndZeroState(t *testing.T) {
 	app.Login()
 	response, body := app.Get("/")
 	if response.StatusCode != http.StatusOK || !strings.Contains(body, "尚未创建用户") || !strings.Contains(body, `hx-get="/fragments/dashboard-summary"`) ||
-		!strings.Contains(body, `src="/static/htmx-2.0.10.min.js"`) || !strings.Contains(body, `src="/static/app.js"`) {
+		!regexp.MustCompile(`src="/static/htmx-2\.0\.10\.min\.[0-9a-f]{12}\.js"`).MatchString(body) || !regexp.MustCompile(`src="/static/app\.[0-9a-f]{12}\.js"`).MatchString(body) {
 		t.Fatalf("dashboard zero state status=%d body=%s", response.StatusCode, body)
 	}
 	profileID := app.RegisterCompatibleProfile("Primary")

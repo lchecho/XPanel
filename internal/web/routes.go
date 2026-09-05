@@ -29,11 +29,11 @@ type RouteDependencies struct {
 }
 
 func Routes(deps RouteDependencies) (http.Handler, error) {
-	templates, err := parseTemplates()
+	manifest, err := buildManifest()
 	if err != nil {
 		return nil, err
 	}
-	static, err := staticFiles()
+	templates, err := parseTemplates(manifest)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 	auth := &handlers.AuthHandler{Service: deps.Auth, Sessions: deps.Sessions, Renderer: renderer}
 
 	public := http.NewServeMux()
-	public.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
+	public.Handle("GET /static/", manifest.Handler())
 	public.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)

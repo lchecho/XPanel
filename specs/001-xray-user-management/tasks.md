@@ -414,5 +414,5 @@ Task: "编写 internal/domain/quota_test.go 与 traffic_test.go"
 - [ ] T138 加强 `tests/integration/failure_matrix_test.go` 与 `tests/e2e/success_criteria_test.go`：每个故障单元格断言对应动作/结果的审计、operation 唯一性、流量不重复且不为负；对 SC-008 的 leak count 显式断言为零，确保缺少审计或发生泄露时门禁失败 per SC-007 / SC-008 (partial)
 - [X] T139 调整用户状态筛选，使 admin enabled 且 within-limit 的 enabling/pending/error 用户仍命中“启用”业务筛选，同时也命中“待同步”筛选，并增加正交筛选组合测试 per FR-008 (partial)
 - [X] T140 为无效及限流登录记录不枚举账号且不含密码的 failed 审计，并确保 logout 的会话撤销与审计失败不会被静默报告为完整成功；补齐成功/失败/限流认证路径的审计覆盖率断言 per FR-025 / FR-026 / SC-008 (partial)
-- [ ] T141 为嵌入式 CSS/JS 生成内容哈希资源名并仅对静态资源返回 `Cache-Control: public, max-age=31536000, immutable`，继续对认证 HTML 返回 `no-store`，增加缓存头和模板引用测试 per plan: performance and static delivery decision (contradicts)
+- [X] T141 为嵌入式 CSS/JS 生成内容哈希资源名并仅对静态资源返回 `Cache-Control: public, max-age=31536000, immutable`，继续对认证 HTML 返回 `no-store`，增加缓存头和模板引用测试 per plan: performance and static delivery decision (contradicts)
 - [X] T142 在创建和编辑用户时保存去除首尾空白的 display_name，并保持 NFKC/大小写不敏感 normalized_name 唯一语义，增加展示值与名称复用测试 per T041 / FR-005 (partial)

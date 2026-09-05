@@ -20,6 +20,7 @@ type RouteDependencies struct {
 	Connections *application.ConnectionService
 	Settings    *application.SettingsService
 	Dashboard   *application.DashboardService
+	Audit       *application.AuditService
 	Sessions    *scs.SessionManager
 	CSRFKey     []byte
 	Secure      bool
@@ -102,6 +103,10 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 		protected.HandleFunc("POST /users/{user_id}/rotate", users.Rotate)
 		protected.HandleFunc("GET /users/{user_id}/delete", users.DeleteForm)
 		protected.HandleFunc("POST /users/{user_id}/delete", users.Delete)
+	}
+	if deps.Audit != nil {
+		audit := &handlers.AuditHandler{Base: base, Service: deps.Audit, Users: deps.Users}
+		protected.HandleFunc("GET /audit", audit.List)
 	}
 	if deps.Settings != nil {
 		settings := &handlers.SettingsHandler{Base: base, Service: deps.Settings}

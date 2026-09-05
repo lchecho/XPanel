@@ -56,6 +56,10 @@ type Store interface {
 	DailyAggregates(context.Context, domain.ID, time.Time, time.Time) ([]DailyAggregateRecord, error)
 	ContinuityEvents(context.Context, domain.ID, int) ([]ContinuityEventListRecord, error)
 	SyncOperations(context.Context, domain.ID, int) ([]domain.SynchronizationOperation, error)
+	HasOpenOperation(context.Context, domain.ID) (bool, error)
+	EnqueueReconcile(context.Context, domain.ID, domain.Revision, domain.SynchronizationOperation, time.Time) (bool, error)
+	RecordObservation(context.Context, domain.ID, bool, time.Time) error
+	AuditEvents(context.Context, AuditFilter) ([]domain.AuditEvent, *AuditCursor, error)
 	Close() error
 }
 
@@ -321,4 +325,19 @@ type ContinuityEventListRecord struct {
 	Direction  string
 	OccurredAt time.Time
 	Summary    string
+}
+
+// AuditCursor 是审计列表的游标（按 occurred_at, id 倒序）。
+type AuditCursor struct {
+	OccurredAt time.Time
+	ID         domain.ID
+}
+
+// AuditFilter 描述审计页筛选；空值表示不限制。
+type AuditFilter struct {
+	TargetID domain.ID
+	Action   string
+	Result   string
+	Before   *AuditCursor
+	Limit    int
 }

@@ -10,16 +10,20 @@ import (
 
 // 核心函数：DashboardService 汇总仪表盘与详情页所需的只读数据；只读 SQLite，绝不调用 Xray。
 type DashboardService struct {
-	store    ports.Store
-	clock    ports.Clock
-	interval time.Duration
+	store     ports.Store
+	clock     ports.Clock
+	interval  time.Duration
+	reconcile time.Duration
 }
 
-func NewDashboardService(store ports.Store, clock ports.Clock, interval time.Duration) *DashboardService {
+func NewDashboardService(store ports.Store, clock ports.Clock, interval, reconcile time.Duration) *DashboardService {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
-	return &DashboardService{store: store, clock: clock, interval: interval}
+	if reconcile <= 0 {
+		reconcile = 15 * time.Second
+	}
+	return &DashboardService{store: store, clock: clock, interval: interval, reconcile: reconcile}
 }
 
 // DashboardSummary 是仪表盘汇总；Stale 表示最后采集成功早于两个采集周期或最近探测失败。
@@ -32,6 +36,7 @@ type DashboardSummary struct {
 	Disabled         int
 	QuotaExceeded    int
 	Pending          int
+	StuckSync        int
 	Deleted          int
 	AccountedBytes   int64
 	Failed           []ports.FailedOperationRecord
@@ -72,6 +77,10 @@ func (s *DashboardService) Summary(ctx context.Context) (DashboardSummary, error
 		summary.TotalUsers++
 		if record.Allocation.PendingSync() {
 			summary.Pending++
+			// 持续不同步：期望与确认版本不一致超过 3×reconcile_interval（plan §Background execution）。
+			if now.Sub(record.Allocation.UpdatedAt) > 3*s.reconcile {
+				summary.StuckSync++
+			}
 		}
 		summary.AccountedBytes += record.Cycle.AccountedUplinkBytes + record.Cycle.AccountedDownlinkBytes
 	}

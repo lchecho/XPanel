@@ -21,6 +21,7 @@ type DashboardView struct {
 	Disabled         int
 	QuotaExceeded    int
 	Pending          int
+	StuckSync        int
 	Deleted          int
 	AccountedText    string
 	Failed           []FailedOperationView

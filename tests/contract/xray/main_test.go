@@ -72,6 +72,7 @@ type liveRuntime struct {
 	inbound   string
 	serverKey string
 	api       string
+	config    string
 }
 
 func freeAddress(t *testing.T) string {
@@ -153,7 +154,7 @@ func startRuntime(t *testing.T) *liveRuntime {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	runtime := &liveRuntime{client: client, cancel: cancel, command: command, output: output, inbound: inboundAddress, serverKey: testKey('s'), api: apiAddress}
+	runtime := &liveRuntime{client: client, cancel: cancel, command: command, output: output, inbound: inboundAddress, serverKey: testKey('s'), api: apiAddress, config: path}
 	t.Cleanup(func() {
 		_ = client.Close()
 		cancel()
@@ -172,4 +173,30 @@ func runConfigCheck(t *testing.T, bin string, config map[string]any) error {
 
 func safeContains(output []byte, value string) bool {
 	return strings.Contains(strings.ToLower(string(output)), strings.ToLower(value))
+}
+
+// restart 停止并用相同配置重新启动 Xray 进程，模拟运行时重启（动态用户丢失、boot epoch 变化）。
+func (r *liveRuntime) restart(t *testing.T, bin string) {
+	t.Helper()
+	r.cancel()
+	_ = r.command.Wait()
+	ctx, cancel := context.WithCancel(context.Background())
+	command := exec.CommandContext(ctx, bin, "run", "-config", r.config)
+	command.Stdout, command.Stderr = r.output, r.output
+	if err := command.Start(); err != nil {
+		cancel()
+		t.Fatalf("restart Xray runtime")
+	}
+	r.cancel, r.command = cancel, command
+	target := ports.InstanceTarget{APIEndpoint: r.api, ExpectedVersion: wantRuntime, RPCTimeout: 500 * time.Millisecond}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := r.client.Probe(context.Background(), target); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Xray API did not come back after restart")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }

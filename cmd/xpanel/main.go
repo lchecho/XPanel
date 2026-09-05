@@ -163,15 +163,19 @@ func runServe(args []string, stderr io.Writer) int {
 	users := application.NewUserService(store, keyring, clock, synchronizer.Wake)
 	connections := application.NewConnectionService(store, keyring)
 	settings := application.NewSettingsService(store).WithClock(clock)
-	dashboard := application.NewDashboardService(store, clock, cfg.Workers.TrafficInterval.Duration)
+	dashboard := application.NewDashboardService(store, clock, cfg.Workers.TrafficInterval.Duration, cfg.Workers.ReconcileInterval.Duration)
+	auditService := application.NewAuditService(store)
 	validator = worker.NewProfileValidator(profiles, store, logger, node, cfg.Workers.ReconcileInterval.Duration)
 	traffic := application.NewTrafficService(store, xrayClient, clock, target, cfg.Workers.TrafficInterval.Duration, synchronizer.Wake, logger)
 	quota := application.NewQuotaService(store, clock, synchronizer.Wake, logger)
 	collector := worker.NewCollector(traffic, cfg.Workers.TrafficInterval.Duration, logger)
 	scheduler := worker.NewScheduler(quota, clock, time.Minute, logger)
+	reconciliation := application.NewReconciliationService(store, xrayClient, clock, target, node, cfg.Workers.ReconcileInterval.Duration,
+		synchronizer.Wake, profiles.RunValidation, logger)
+	reconciler := worker.NewReconciler(reconciliation, cfg.Workers.ReconcileInterval.Duration, logger)
 
 	server, err := web.NewServer(cfg, web.RouteDependencies{Auth: auth, Profiles: profiles, Users: users, Connections: connections,
-		Settings: settings, Dashboard: dashboard, Sessions: sessions, CSRFKey: keyring.CSRFKey(), Secure: !cfg.Server.InsecureDevelopment, Logger: logger})
+		Settings: settings, Dashboard: dashboard, Audit: auditService, Sessions: sessions, CSRFKey: keyring.CSRFKey(), Secure: !cfg.Server.InsecureDevelopment, Logger: logger})
 	if err != nil {
 		logger.Error("initialize HTTP server", "error_kind", "internal")
 		return 3
@@ -180,8 +184,8 @@ func runServe(args []string, stderr io.Writer) int {
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()
 	var workers sync.WaitGroup
-	// 启动顺序：synchronizer → validator → collector → scheduler，再开放 readiness（plan §Startup and shutdown order）。
-	for _, run := range []func(context.Context){synchronizer.Run, validator.Run, collector.Run, scheduler.Run} {
+	// 启动顺序：synchronizer → reconciler → validator → collector → scheduler，再开放 readiness（plan §Startup and shutdown order）。
+	for _, run := range []func(context.Context){synchronizer.Run, reconciler.Run, validator.Run, collector.Run, scheduler.Run} {
 		workers.Add(1)
 		go func(run func(context.Context)) { defer workers.Done(); run(workerCtx) }(run)
 	}

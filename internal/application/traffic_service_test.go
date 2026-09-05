@@ -38,7 +38,10 @@ func presentUser(t *testing.T, fixture *featureFixture, name string, limit *int6
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture.adapter.Users["managed"] = map[string]ports.RemoteUser{record.Identity.StatisticsID: {StatisticsID: record.Identity.StatisticsID, Present: true, Kind: "managed", CredentialVersion: 1}}
+	if fixture.adapter.Users["managed"] == nil {
+		fixture.adapter.Users["managed"] = map[string]ports.RemoteUser{}
+	}
+	fixture.adapter.Users["managed"][record.Identity.StatisticsID] = ports.RemoteUser{StatisticsID: record.Identity.StatisticsID, Present: true, Kind: "managed", CredentialVersion: 1}
 	return record
 }
 

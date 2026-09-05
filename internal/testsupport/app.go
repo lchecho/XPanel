@@ -46,6 +46,8 @@ type App struct {
 	Traffic     *application.TrafficService
 	Quota       *application.QuotaService
 	Dashboard   *application.DashboardService
+	Reconcile   *application.ReconciliationService
+	Audit       *application.AuditService
 	Sync        *worker.Synchronizer
 	Validator   *worker.ProfileValidator
 	Node        *sync.Mutex
@@ -123,12 +125,14 @@ func New(t *testing.T) *App {
 	app.Validator = worker.NewProfileValidator(app.Profiles, store, nil, node, 15*time.Second)
 	app.Traffic = application.NewTrafficService(store, adapter, clock, target, 5*time.Second, app.Sync.Wake, nil)
 	app.Quota = application.NewQuotaService(store, clock, app.Sync.Wake, nil)
-	app.Dashboard = application.NewDashboardService(store, clock, 5*time.Second)
+	app.Dashboard = application.NewDashboardService(store, clock, 5*time.Second, 15*time.Second)
+	app.Reconcile = application.NewReconciliationService(store, adapter, clock, target, node, 15*time.Second, app.Sync.Wake, app.Profiles.RunValidation, nil)
+	app.Audit = application.NewAuditService(store)
 
 	app.Sessions = scs.New()
 	webmiddleware.ConfigureSessions(app.Sessions, sqlite.NewSessionStore(db, 30*time.Minute, 12*time.Hour), 30*time.Minute, 12*time.Hour, false)
 	app.Handler, err = web.Routes(web.RouteDependencies{Auth: app.Auth, Profiles: app.Profiles, Users: app.Users,
-		Connections: app.Connections, Settings: app.Settings, Dashboard: app.Dashboard, Sessions: app.Sessions, CSRFKey: keyring.CSRFKey(), Secure: false,
+		Connections: app.Connections, Settings: app.Settings, Dashboard: app.Dashboard, Audit: app.Audit, Sessions: app.Sessions, CSRFKey: keyring.CSRFKey(), Secure: false,
 		Ready: func() bool { return true }})
 	if err != nil {
 		t.Fatal(err)
@@ -292,4 +296,14 @@ func (a *App) Rollover() int {
 func (a *App) SetTraffic(record ports.UserRecord, uplink, downlink uint64) {
 	a.Adapter.SetCounter(record.Identity.StatisticsID, ports.Uplink, uplink)
 	a.Adapter.SetCounter(record.Identity.StatisticsID, ports.Downlink, downlink)
+}
+
+// ReconcileOnce 执行一轮协调并断言成功。
+func (a *App) ReconcileOnce() application.ReconcileSummary {
+	a.T.Helper()
+	summary, err := a.Reconcile.ReconcileOnce(context.Background())
+	if err != nil {
+		a.T.Fatal(err)
+	}
+	return summary
 }

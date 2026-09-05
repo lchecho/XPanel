@@ -15,7 +15,7 @@
   <dt>已启用</dt><dd>{{.Data.Active}}</dd>
   <dt>手动禁用</dt><dd>{{.Data.Disabled}}</dd>
   <dt>配额超限</dt><dd>{{.Data.QuotaExceeded}}</dd>
-  <dt>待同步</dt><dd>{{.Data.Pending}}</dd>
+  <dt>待同步</dt><dd>{{.Data.Pending}}{{if .Data.StuckSync}} <span class="badge error">持续不同步 {{.Data.StuckSync}}</span>{{end}}</dd>
   <dt>已删除</dt><dd>{{.Data.Deleted}}</dd>
   <dt>当期总流量</dt><dd>{{.Data.AccountedText}}</dd>
 </dl>{{end}}

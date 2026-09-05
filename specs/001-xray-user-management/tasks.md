@@ -256,17 +256,17 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 **Independent Test**: 构造启用、手动禁用、配额超限、待同步和已删除用户后重启 fake/真实 Xray，恢复连接后 60 秒内状态收敛；模拟 RPC 超时与计数下降验证无重复凭证、无负流量；审计页可按用户与动作筛选
 
-- [ ] T104 [US5] 实现 `internal/application/reconciliation_service.go` 【重试/协调】：按 profile 对比 SQLite 期望存在集合与 `ListUsers` 实际集合，`xpanel-` 命名空间内 SQLite 无记录或已删除的身份按漂移移除并写 `reconcile_removed_unknown` 审计，非该命名空间身份（含 bootstrap）一律保留；仅在漂移时创建 `reconcile` 操作；更新实例健康与 boot epoch；检测新 boot epoch 时标记游标进入新纪元
-- [ ] T105 [US5] 实现 `internal/worker/reconciler.go` 【重试/协调】：在启动、Xray 由 unreachable 转 healthy 时以及每 `reconcile_interval`（≤30s）运行；与 synchronizer 共用串行执行通道避免并发变更同一节点；记录漂移数量与耗时；任一分配 `desired_revision ≠ synced_revision` 持续超过 3×`reconcile_interval` 时输出 warn 并在仪表盘标记“持续不同步”【可观测性】
-- [ ] T106 [P] [US5] 编写 `internal/application/reconciliation_service_test.go` 与 `internal/worker/reconciler_test.go`：fake 重启后 active 恢复、disabled/exceeded/deleted 保持缺席、外部用户不动、不确定变更与更高 revision 意图的优先级
-- [ ] T107 [US5] 扩展 `internal/application/traffic_service.go`：将 `Probe` 的 boot epoch 与游标 `boot_epoch` 对比，重启后首个绝对值按 `node_restart` 计入，未知下降按 `counter_decrease` 建新基线，缺失后重现记 `reappeared`；持续不同步阈值与告警见 T105【可观测性】
-- [ ] T108 [US5] 编写 `tests/contract/xray/recovery_test.go` 【Xray 契约】：门禁 7–8（重启改变 boot/统计纪元、丢弃动态用户并仅恢复 active 用户；可能已生效的变更超时后通过读后写收敛且无重复）
-- [ ] T109 [US5] 实现 `internal/persistence/sqlite/store_audit.go`：按用户/动作/结果筛选的游标分页审计查询；不提供 UPDATE/DELETE 方法
-- [ ] T110 [US5] 实现 `internal/web/templates/pages/audit.html` 与 `internal/web/handlers/audit.go`：`GET /audit`（筛选、游标分页、空结果文案；展示时间、操作者、目标、动作、结果与安全摘要；已删除用户仍可按目标筛选）
-- [ ] T111 [US5] 扩展 `internal/web/templates/pages/user_detail.html`：统计连续性事件列表与同步操作历史（pending/retry_wait/permanent_failed 及安全错误摘要、下一次重试时间）
-- [ ] T112 [P] [US5] 编写 `internal/web/handlers/audit_test.go`：筛选与分页、正文不含密码/密钥/token/完整 URI
-- [ ] T113 [US5] 编写 `tests/e2e/recovery_test.go`：四类用户 + fake 重启 → 状态收敛；不确定 RPC 结果无重复用户；计数下降无负流量且事件可见；在提交后确认前重启应用 → 操作从租约恢复到相同结果；审计筛选结果无敏感值
-- [ ] T114 [US5] 在 `cmd/xpanel/main.go` 接线 reconciler（启动顺序：synchronizer → reconciler → collector → scheduler → readiness）
+- [X] T104 [US5] 实现 `internal/application/reconciliation_service.go` 【重试/协调】：按 profile 对比 SQLite 期望存在集合与 `ListUsers` 实际集合，`xpanel-` 命名空间内 SQLite 无记录或已删除的身份按漂移移除并写 `reconcile_removed_unknown` 审计，非该命名空间身份（含 bootstrap）一律保留；仅在漂移时创建 `reconcile` 操作；更新实例健康与 boot epoch；检测新 boot epoch 时标记游标进入新纪元
+- [X] T105 [US5] 实现 `internal/worker/reconciler.go` 【重试/协调】：在启动、Xray 由 unreachable 转 healthy 时以及每 `reconcile_interval`（≤30s）运行；与 synchronizer 共用串行执行通道避免并发变更同一节点；记录漂移数量与耗时；任一分配 `desired_revision ≠ synced_revision` 持续超过 3×`reconcile_interval` 时输出 warn 并在仪表盘标记“持续不同步”【可观测性】
+- [X] T106 [P] [US5] 编写 `internal/application/reconciliation_service_test.go` 与 `internal/worker/reconciler_test.go`：fake 重启后 active 恢复、disabled/exceeded/deleted 保持缺席、外部用户不动、不确定变更与更高 revision 意图的优先级
+- [X] T107 [US5] 扩展 `internal/application/traffic_service.go`：将 `Probe` 的 boot epoch 与游标 `boot_epoch` 对比，重启后首个绝对值按 `node_restart` 计入，未知下降按 `counter_decrease` 建新基线，缺失后重现记 `reappeared`；持续不同步阈值与告警见 T105【可观测性】
+- [X] T108 [US5] 编写 `tests/contract/xray/recovery_test.go` 【Xray 契约】：门禁 7–8（重启改变 boot/统计纪元、丢弃动态用户并仅恢复 active 用户；可能已生效的变更超时后通过读后写收敛且无重复）
+- [X] T109 [US5] 实现 `internal/persistence/sqlite/store_audit.go`：按用户/动作/结果筛选的游标分页审计查询；不提供 UPDATE/DELETE 方法
+- [X] T110 [US5] 实现 `internal/web/templates/pages/audit.html` 与 `internal/web/handlers/audit.go`：`GET /audit`（筛选、游标分页、空结果文案；展示时间、操作者、目标、动作、结果与安全摘要；已删除用户仍可按目标筛选）
+- [X] T111 [US5] 扩展 `internal/web/templates/pages/user_detail.html`：统计连续性事件列表与同步操作历史（pending/retry_wait/permanent_failed 及安全错误摘要、下一次重试时间）
+- [X] T112 [P] [US5] 编写 `internal/web/handlers/audit_test.go`：筛选与分页、正文不含密码/密钥/token/完整 URI
+- [X] T113 [US5] 编写 `tests/e2e/recovery_test.go`：四类用户 + fake 重启 → 状态收敛；不确定 RPC 结果无重复用户；计数下降无负流量且事件可见；在提交后确认前重启应用 → 操作从租约恢复到相同结果；审计筛选结果无敏感值
+- [X] T114 [US5] 在 `cmd/xpanel/main.go` 接线 reconciler（启动顺序：synchronizer → reconciler → collector → scheduler → readiness）
 
 **Checkpoint**: 全部五个用户故事可独立验证；重启与超时场景可自动收敛
 

@@ -255,3 +255,49 @@ func (s *Store) FailSync(ctx context.Context, id domain.ID, code, summary string
 	}
 	return tx.Commit()
 }
+
+// HasOpenOperation 判断某分配是否仍有未完成的同步操作（pending/leased/retry_wait）。
+func (s *Store) HasOpenOperation(ctx context.Context, allocationID domain.ID) (bool, error) {
+	var count int
+	if err := s.db.Read.QueryRowContext(ctx, `SELECT count(*) FROM synchronization_operations WHERE allocation_id=? AND state IN ('pending','leased','retry_wait')`,
+		allocationID.String()).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// EnqueueReconcile 为检测到漂移的分配写入协调操作；仅当 desired_revision 仍为期望值时生效，避免覆盖并发的管理员意图。
+func (s *Store) EnqueueReconcile(ctx context.Context, allocationID domain.ID, expected domain.Revision, op domain.SynchronizationOperation, now time.Time) (bool, error) {
+	tx, err := s.db.Write.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE access_allocations SET desired_revision=?,projection_state='pending',updated_at=? WHERE id=? AND desired_revision=?`,
+		op.DesiredRevision, millis(now), allocationID.String(), expected)
+	if err != nil {
+		return false, err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return false, nil
+	}
+	if err := supersedeOlder(ctx, tx, allocationID, op.DesiredRevision, now); err != nil {
+		return false, err
+	}
+	if err := insertOperation(ctx, tx, op); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+// RecordObservation 记录协调器观察到的实际存在状态；没有待处理意图时同步修正投影状态。
+func (s *Store) RecordObservation(ctx context.Context, allocationID domain.ID, present bool, now time.Time) error {
+	projection := "absent"
+	if present {
+		projection = "present"
+	}
+	_, err := s.db.Write.ExecContext(ctx, `UPDATE access_allocations SET observed_present=?,
+        projection_state=CASE WHEN desired_revision=synced_revision THEN ? ELSE projection_state END,updated_at=? WHERE id=?`,
+		boolInt(present), projection, millis(now), allocationID.String())
+	return err
+}

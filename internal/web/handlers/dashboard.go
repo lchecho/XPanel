@@ -33,7 +33,7 @@ func NewDashboardView(summary application.DashboardSummary, location *time.Locat
 		LastSuccessAt: views.FormatTime(instance.LastSuccessAt, location), LastErrorText: views.ErrorSentence(instance.LastErrorCode),
 		LastCollectionAt: views.FormatTime(summary.LastCollectionAt, location), Stale: summary.Stale,
 		GeneratedAt: views.FormatTimeValue(summary.GeneratedAt, location), TotalUsers: summary.TotalUsers, Active: summary.Active,
-		Disabled: summary.Disabled, QuotaExceeded: summary.QuotaExceeded, Pending: summary.Pending, Deleted: summary.Deleted,
+		Disabled: summary.Disabled, QuotaExceeded: summary.QuotaExceeded, Pending: summary.Pending, StuckSync: summary.StuckSync, Deleted: summary.Deleted,
 		AccountedText: views.FormatBytes(summary.AccountedBytes), Failed: views.NewFailedOperationViews(summary.Failed, location)}
 }
 

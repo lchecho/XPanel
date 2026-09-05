@@ -115,16 +115,16 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 			if _, known := byIdentity[user.StatisticsID]; known {
 				continue
 			}
-			// 面板命名空间内但 SQLite 无记录：按漂移移除并审计。
-			if _, err := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{ProfileTag: profile.Profile.InboundTag, StatisticsID: user.StatisticsID}); err != nil {
-				if kind, _ := adapterKind(err); kind != ports.ErrorUserNotFound {
-					s.logger.Warn("remove unknown identity failed", logging.FieldErrorKind, kind, logging.FieldNodeID, profile.Profile.InstanceID.String())
-					continue
-				}
-			}
-			summary.RemovedUnknown++
-			if err := s.auditUnknownRemoval(ctx, profile.Profile.ID, user.StatisticsID, now); err != nil {
+			// 面板命名空间内但 SQLite 无记录：先持久化移除意图，由 synchronizer 在事务外串行执行并审计（Constitution I/IV）。
+			created, err := s.store.EnqueueDriftRemoval(ctx, profile.Profile.ID, user.StatisticsID, now)
+			if err != nil {
 				return summary, err
+			}
+			if created {
+				summary.RemovedUnknown++
+				enqueued = true
+				s.logger.Info("unknown namespace identity queued for removal", logging.FieldNodeID, profile.Profile.InstanceID.String(),
+					"profile_id", profile.Profile.ID.String(), logging.FieldResult, "queued")
 			}
 		}
 		for _, record := range users {
@@ -221,14 +221,4 @@ func (s *ReconciliationService) clearDegraded() bool {
 	was := s.degraded
 	s.degraded = false
 	return was
-}
-
-func (s *ReconciliationService) auditUnknownRemoval(ctx context.Context, profileID domain.ID, statisticsID string, now time.Time) error {
-	id, err := domain.NewID()
-	if err != nil {
-		return err
-	}
-	return s.store.AppendAudit(ctx, domain.AuditEvent{ID: id, OccurredAt: now, ActorType: domain.ActorSystem, TargetType: "profile", TargetID: profileID,
-		Action: domain.ActionReconcileRemovedUnknown, Result: domain.AuditSucceeded,
-		SafeSummary: "removed unknown identity " + statisticsID + " from the managed namespace"})
 }

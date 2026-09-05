@@ -389,6 +389,24 @@ AND allocation.quota_state == within_limit
 Worker 只在事务外调用 Xray。领取、结果确认和重试排程分别使用短事务；旧 revision 必须
 标记 superseded。删除不存在视为收敛；添加结果不确定时先读取实际用户，再决定重放。
 
+### DriftRemoval
+
+协调器发现 `xpanel-` 命名空间内 SQLite 无记录（或已删除）的身份时，不直接调用 Xray，而是先写入本表，由
+synchronizer 在事务外串行执行、读后写确认、有界退避重试并写 `reconcile_removed_unknown` 审计（迁移 `00002`）。
+
+| Field | Type | Rules |
+|---|---|---|
+| `id` | UUID | 主键 |
+| `profile_id` | UUID | FK |
+| `statistics_id` | text | 非空且不含 `>>>` |
+| `state` | enum | `pending`, `leased`, `retry_wait`, `succeeded`, `permanent_failed` |
+| `attempt_count` / `next_attempt_at` | integer / timestamp | 退避调度 |
+| `lease_owner` / `lease_expires_at` | text / timestamp nullable | 有限租约 |
+| `last_error_code` / `last_error_summary` | text nullable | 稳定且脱敏 |
+| `created_at` / `completed_at` | timestamp | 后者可空 |
+
+部分唯一索引 `(profile_id, statistics_id) WHERE state IN ('pending','leased','retry_wait')` 保证协调重放不产生重复意图。
+
 ### AuditEvent
 
 | Field | Type | Rules |

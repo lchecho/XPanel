@@ -124,13 +124,68 @@ func (s *Synchronizer) Drain(ctx context.Context) (int, error) {
 			return processed, err
 		}
 		if work == nil {
-			return processed, nil
+			break
 		}
 		processed++
 		if err := s.handle(ctx, work); err != nil {
 			return processed, err
 		}
 	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return processed, err
+		}
+		removal, err := s.store.LeaseDueDriftRemoval(ctx, s.owner, s.clock.Now(), s.lease)
+		if err != nil {
+			return processed, err
+		}
+		if removal == nil {
+			return processed, nil
+		}
+		processed++
+		if err := s.handleDriftRemoval(ctx, removal); err != nil {
+			return processed, err
+		}
+	}
+}
+
+// handleDriftRemoval 执行一条持久化的漂移移除意图：删除不存在视为收敛；不确定结果读后写；可重试错误退避。
+func (s *Synchronizer) handleDriftRemoval(ctx context.Context, removal *ports.DriftRemoval) error {
+	s.node.Lock()
+	defer s.node.Unlock()
+	now := s.clock.Now()
+	logger := s.logger.With("drift_removal_id", removal.ID.String(), "profile_id", removal.ProfileID.String(), logging.FieldTargetState, "absent")
+	profile := ports.RuntimeProfile{ID: removal.ProfileID, InboundTag: removal.InboundTag}
+	_, err := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: removal.ID, ProfileTag: removal.InboundTag, StatisticsID: removal.StatisticsID})
+	if err != nil {
+		kind, retryable := describe(err)
+		converged := kind == ports.ErrorUserNotFound
+		if !converged && retryable && kind != ports.ErrorInstanceUnavailable {
+			present, observeErr := s.observe(ctx, profile, removal.StatisticsID)
+			converged = observeErr == nil && !present
+		}
+		if !converged {
+			summary := summaryOf(err)
+			attempts := removal.AttemptCount + 1
+			if !retryable || (kind == ports.ErrorInternal && attempts >= maxInternalAttempts) {
+				logger.Error("drift removal failed permanently", logging.FieldResult, "permanent_failed", logging.FieldErrorKind, kind)
+				return s.store.FailDriftRemoval(ctx, removal.ID, s.owner, kind, summary, now, s.driftAudit(removal, domain.AuditFailed, "removal of unknown identity failed: "+summary, now))
+			}
+			next := now.Add(domain.NextBackoff(attempts, s.maxRetry, s.random))
+			logger.Warn("drift removal retry scheduled", logging.FieldResult, "retry_wait", logging.FieldErrorKind, kind, "attempt", attempts)
+			return s.store.RescheduleDriftRemoval(ctx, removal.ID, s.owner, attempts, next, kind, summary)
+		}
+	}
+	logger.Info("unknown namespace identity removed", logging.FieldResult, "succeeded")
+	return s.store.CompleteDriftRemoval(ctx, removal.ID, s.owner, now,
+		s.driftAudit(removal, domain.AuditSucceeded, "removed unknown identity "+removal.StatisticsID+" from the managed namespace", now))
+}
+
+func (s *Synchronizer) driftAudit(removal *ports.DriftRemoval, result domain.AuditResult, summary string, now time.Time) domain.AuditEvent {
+	id, _ := domain.NewID()
+	operationID := removal.ID
+	return domain.AuditEvent{ID: id, OccurredAt: now, ActorType: domain.ActorSystem, TargetType: "profile", TargetID: removal.ProfileID,
+		Action: domain.ActionReconcileRemovedUnknown, Result: result, OperationID: &operationID, SafeSummary: summary}
 }
 
 func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {

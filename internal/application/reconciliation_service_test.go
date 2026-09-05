@@ -81,8 +81,13 @@ func TestReconcileRestoresOnlyDesiredUsersAndRemovesUnknownNamespaceIdentities(t
 			t.Fatalf("%s received a reconcile operation", record.User.DisplayName)
 		}
 	}
-	if _, stillThere := fixture.adapter.Users["managed"]["xpanel-00000000-0000-4000-8000-00000000dead"]; stillThere {
-		t.Fatal("unknown namespace identity was not removed")
+	if _, stillThere := fixture.adapter.Users["managed"]["xpanel-00000000-0000-4000-8000-00000000dead"]; !stillThere {
+		t.Fatal("reconciler removed the identity synchronously instead of persisting an intent")
+	}
+	var queued int
+	_ = fixture.store.DB().Read.QueryRow(`SELECT count(*) FROM drift_removals WHERE state='pending'`).Scan(&queued)
+	if queued != 1 {
+		t.Fatalf("queued drift removals = %d", queued)
 	}
 	if _, kept := fixture.adapter.Users["managed"]["operator-static"]; !kept {
 		t.Fatal("external identity was removed")
@@ -90,15 +95,14 @@ func TestReconcileRestoresOnlyDesiredUsersAndRemovesUnknownNamespaceIdentities(t
 	if _, kept := fixture.adapter.Users["managed"]["bootstrap"]; !kept {
 		t.Fatal("bootstrap identity was removed")
 	}
-	var audits int
-	_ = fixture.store.DB().Read.QueryRow(`SELECT count(*) FROM audit_events WHERE action=?`, domain.ActionReconcileRemovedUnknown).Scan(&audits)
-	if audits != 1 {
-		t.Fatalf("unknown-removal audits = %d", audits)
-	}
-	// 第二轮：已有待处理操作，不重复入队。
+	// 第二轮：已有待处理操作与移除意图，不重复入队。
 	summary, err = service.ReconcileOnce(context.Background())
-	if err != nil || summary.Drift != 0 || operationsFor(t, fixture, active.Allocation.ID, "reconcile") != 1 {
+	if err != nil || summary.Drift != 0 || summary.RemovedUnknown != 0 || operationsFor(t, fixture, active.Allocation.ID, "reconcile") != 1 {
 		t.Fatalf("second round summary = %#v, %v", summary, err)
+	}
+	_ = fixture.store.DB().Read.QueryRow(`SELECT count(*) FROM drift_removals`).Scan(&queued)
+	if queued != 1 {
+		t.Fatalf("drift removals after replay = %d", queued)
 	}
 	// 持续不同步：超过 3×interval 仍未确认。
 	fixture.clock.Advance(46 * time.Second)

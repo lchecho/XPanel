@@ -60,6 +60,11 @@ type Store interface {
 	EnqueueReconcile(context.Context, domain.ID, domain.Revision, domain.SynchronizationOperation, time.Time) (bool, error)
 	RecordObservation(context.Context, domain.ID, bool, time.Time) error
 	AuditEvents(context.Context, AuditFilter) ([]domain.AuditEvent, *AuditCursor, error)
+	EnqueueDriftRemoval(context.Context, domain.ID, string, time.Time) (bool, error)
+	LeaseDueDriftRemoval(context.Context, string, time.Time, time.Duration) (*DriftRemoval, error)
+	CompleteDriftRemoval(context.Context, domain.ID, string, time.Time, domain.AuditEvent) error
+	RescheduleDriftRemoval(context.Context, domain.ID, string, int, time.Time, string, string) error
+	FailDriftRemoval(context.Context, domain.ID, string, string, string, time.Time, domain.AuditEvent) error
 	Close() error
 }
 
@@ -342,4 +347,15 @@ type AuditFilter struct {
 	Result   string
 	Before   *AuditCursor
 	Limit    int
+}
+
+// DriftRemoval 是持久化的“移除面板命名空间内未知身份”意图（data-model §DriftRemoval，迁移 00002）。
+type DriftRemoval struct {
+	ID            domain.ID
+	ProfileID     domain.ID
+	InboundTag    string
+	StatisticsID  string
+	State         domain.SyncState
+	AttemptCount  int
+	NextAttemptAt time.Time
 }

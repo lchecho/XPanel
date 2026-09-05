@@ -403,7 +403,7 @@ Task: "编写 internal/domain/quota_test.go 与 traffic_test.go"
 
 - [X] T128 CRITICAL 为 `internal/persistence/sqlite/store_sync.go` 的阶段推进、重试重排和永久失败写入增加 operation state、租约 owner 与 allocation desired revision 的条件更新；旧操作被 supersede 或新意图已提交时只结束旧操作，不得把当前 allocation 改回 pending/error，并增加 worker 与 SQLite 并发回归测试 per Constitution IV / FR-021 (contradicts)
 - [X] T129 CRITICAL 重构采集越界、手动流量重置、调额和周期切换事务，使其在写事务内重读最新 policy、admin_enabled、lifecycle、open cycle 与 allocation revision 后重算最终状态，并以 revision/CAS 防止事务外旧快照覆盖较新的管理员意图；覆盖边界时刻并发调额、禁用、重置、采集与 rollover 的确定性测试 per Constitution IV / FR-021 (contradicts)
-- [ ] T130 CRITICAL 将 `internal/application/reconciliation_service.go` 对 SQLite 无记录的 `xpanel-` 漂移身份移除改为 RPC 前持久化、可租约和可重试的漂移移除意图及关联审计结果，由串行 synchronizer 执行，并覆盖 RPC 超时、进程崩溃和重放 per Constitution I / Constitution IV / FR-020 (contradicts)
+- [X] T130 CRITICAL 将 `internal/application/reconciliation_service.go` 对 SQLite 无记录的 `xpanel-` 漂移身份移除改为 RPC 前持久化、可租约和可重试的漂移移除意图及关联审计结果，由串行 synchronizer 执行，并覆盖 RPC 超时、进程崩溃和重放 per Constitution I / Constitution IV / FR-020 (contradicts)
 - [ ] T131 为 profile 验证结果增加 profile revision 条件提交，把 compatibility、实例健康和验证审计按一致的事务边界写入；让 revalidate 接收 `_version`/`_request_id` 并幂等排队，验证期间发生编辑时丢弃旧结果并验证最新 revision per FR-021 (partial)
 - [ ] T132 将 handler 生成的 session+action+target+canonical-payload fingerprint 传入所有状态变更命令并持久比较；修复 profile 创建 fingerprint 对随机新 profile ID 的依赖，使同 session 同请求重放返回原 canonical result、跨 session 或不同载荷复用返回 409，并补 profile/setting/user HTTP 回归测试 per FR-021 / FR-027 (partial)
 - [X] T133 为已有 allocation 的 profile 限制或实现可恢复的 inbound_tag/method/bootstrap identity 变更：不得在旧入站遗留可用用户，method 变化必须校验或轮换现有 user/server keys，所有受影响 projection 必须经持久操作收敛，并增加在线用户迁移/拒绝测试 per FR-006 / FR-007 / FR-020 / FR-030 (partial)

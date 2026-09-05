@@ -72,7 +72,8 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 	} else {
 		protected.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 			renderer.Page(w, http.StatusOK, "dashboard.html", views.Page{Title: "仪表盘", Authenticated: true,
-				CSRFField: csrf.TemplateField(r), RequestID: handlers.NewRequestID()})
+				CSRFField: csrf.TemplateField(r), RequestID: handlers.NewRequestID(), Timezone: "UTC",
+				Data: views.DashboardView{HealthState: "unknown", HealthLabel: views.HealthLabel("unknown")}})
 		})
 	}
 	protected.HandleFunc("POST /logout", auth.Logout)

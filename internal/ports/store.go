@@ -51,6 +51,11 @@ type Store interface {
 	UpdateSettings(context.Context, string, domain.Revision, domain.DomainCommand, domain.AuditEvent) (bool, error)
 	RotateCredential(context.Context, RotationRecord) (bool, error)
 	SoftDeleteUser(context.Context, DeleteRecord) (bool, error)
+	FailedOperations(context.Context, int) ([]FailedOperationRecord, error)
+	LastCollectionAt(context.Context) (*time.Time, error)
+	DailyAggregates(context.Context, domain.ID, time.Time, time.Time) ([]DailyAggregateRecord, error)
+	ContinuityEvents(context.Context, domain.ID, int) ([]ContinuityEventListRecord, error)
+	SyncOperations(context.Context, domain.ID, int) ([]domain.SynchronizationOperation, error)
 	Close() error
 }
 
@@ -286,4 +291,34 @@ type DeleteRecord struct {
 	Command          domain.DomainCommand
 	Audit            domain.AuditEvent
 	Now              time.Time
+}
+
+// FailedOperationRecord 是仪表盘“最近同步失败”摘要的一行。
+type FailedOperationRecord struct {
+	UserID        domain.ID
+	DisplayName   string
+	Reason        domain.SyncReason
+	State         domain.SyncState
+	ErrorCode     string
+	ErrorSummary  string
+	AttemptCount  int
+	NextAttemptAt time.Time
+	UpdatedAt     time.Time
+}
+
+// DailyAggregateRecord 是 daily_traffic_aggregates 的一行。
+type DailyAggregateRecord struct {
+	DayStartUTC   time.Time
+	LocalDate     string
+	Timezone      string
+	UplinkBytes   int64
+	DownlinkBytes int64
+}
+
+// ContinuityEventListRecord 是详情页展示的连续性事件。
+type ContinuityEventListRecord struct {
+	Type       string
+	Direction  string
+	OccurredAt time.Time
+	Summary    string
 }

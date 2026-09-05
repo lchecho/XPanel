@@ -19,6 +19,7 @@ type RouteDependencies struct {
 	Users       *application.UserService
 	Connections *application.ConnectionService
 	Settings    *application.SettingsService
+	Dashboard   *application.DashboardService
 	Sessions    *scs.SessionManager
 	CSRFKey     []byte
 	Secure      bool
@@ -59,13 +60,21 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 
 	base := handlers.Base{Sessions: deps.Sessions, Renderer: renderer, Settings: deps.Settings, Logger: deps.Logger}
 	profiles := &handlers.ProfileHandler{Base: base, Service: deps.Profiles}
-	users := &handlers.UserHandler{Base: base, Service: deps.Users, Profiles: deps.Profiles, Connections: deps.Connections}
+	users := &handlers.UserHandler{Base: base, Service: deps.Users, Profiles: deps.Profiles, Connections: deps.Connections, Dashboard: deps.Dashboard}
 
 	protected := http.NewServeMux()
-	protected.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		renderer.Page(w, http.StatusOK, "dashboard.html", views.Page{Title: "仪表盘", Authenticated: true,
-			CSRFField: csrf.TemplateField(r), RequestID: handlers.NewRequestID()})
-	})
+	if deps.Dashboard != nil {
+		dashboard := &handlers.DashboardHandler{Base: base, Dashboard: deps.Dashboard}
+		fragments := &handlers.FragmentHandler{Base: base, Dashboard: deps.Dashboard, Users: deps.Users}
+		protected.HandleFunc("GET /{$}", dashboard.Show)
+		protected.HandleFunc("GET /fragments/dashboard-summary", fragments.Summary)
+		protected.HandleFunc("GET /fragments/users-table", fragments.UsersTable)
+	} else {
+		protected.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			renderer.Page(w, http.StatusOK, "dashboard.html", views.Page{Title: "仪表盘", Authenticated: true,
+				CSRFField: csrf.TemplateField(r), RequestID: handlers.NewRequestID()})
+		})
+	}
 	protected.HandleFunc("POST /logout", auth.Logout)
 	if deps.Profiles != nil {
 		protected.HandleFunc("GET /profiles", profiles.List)

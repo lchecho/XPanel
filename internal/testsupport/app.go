@@ -45,6 +45,7 @@ type App struct {
 	Settings    *application.SettingsService
 	Traffic     *application.TrafficService
 	Quota       *application.QuotaService
+	Dashboard   *application.DashboardService
 	Sync        *worker.Synchronizer
 	Validator   *worker.ProfileValidator
 	Node        *sync.Mutex
@@ -122,11 +123,12 @@ func New(t *testing.T) *App {
 	app.Validator = worker.NewProfileValidator(app.Profiles, store, nil, node, 15*time.Second)
 	app.Traffic = application.NewTrafficService(store, adapter, clock, target, 5*time.Second, app.Sync.Wake, nil)
 	app.Quota = application.NewQuotaService(store, clock, app.Sync.Wake, nil)
+	app.Dashboard = application.NewDashboardService(store, clock, 5*time.Second)
 
 	app.Sessions = scs.New()
 	webmiddleware.ConfigureSessions(app.Sessions, sqlite.NewSessionStore(db, 30*time.Minute, 12*time.Hour), 30*time.Minute, 12*time.Hour, false)
 	app.Handler, err = web.Routes(web.RouteDependencies{Auth: app.Auth, Profiles: app.Profiles, Users: app.Users,
-		Connections: app.Connections, Settings: app.Settings, Sessions: app.Sessions, CSRFKey: keyring.CSRFKey(), Secure: false,
+		Connections: app.Connections, Settings: app.Settings, Dashboard: app.Dashboard, Sessions: app.Sessions, CSRFKey: keyring.CSRFKey(), Secure: false,
 		Ready: func() bool { return true }})
 	if err != nil {
 		t.Fatal(err)

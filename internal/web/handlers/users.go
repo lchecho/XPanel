@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -20,6 +21,7 @@ type UserHandler struct {
 	Service     *application.UserService
 	Profiles    *application.ProfileService
 	Connections *application.ConnectionService
+	Dashboard   *application.DashboardService
 }
 
 const activeCapacity = 20
@@ -33,12 +35,32 @@ type userFormData struct {
 }
 
 type userListData struct {
-	Users          []views.UserView
-	Query          string
-	Status         string
-	Statuses       []statusOption
-	Total          int
-	IncludeDeleted bool
+	Users            []views.UserView
+	Query            string
+	Status           string
+	Statuses         []statusOption
+	Total            int
+	IncludeDeleted   bool
+	Stale            bool
+	LastCollectionAt string
+}
+
+// FragmentQuery 生成 users-table fragment 的轮询地址，保留当前筛选条件。
+func (d userListData) FragmentQuery() string {
+	values := url.Values{}
+	if d.Query != "" {
+		values.Set("q", d.Query)
+	}
+	if d.Status != "" {
+		values.Set("status", d.Status)
+	}
+	if d.IncludeDeleted {
+		values.Set("deleted", "1")
+	}
+	if len(values) == 0 {
+		return "/fragments/users-table"
+	}
+	return "/fragments/users-table?" + values.Encode()
 }
 
 type statusOption struct{ Value, Label string }
@@ -50,6 +72,12 @@ type userDetailData struct {
 	User                views.UserView
 	ConnectionAvailable bool
 	ConnectionPending   bool
+	Daily               []views.DailyRow
+	Events              []views.EventRow
+	Sync                []views.SyncRow
+	NodeHealth          string
+	NodeError           string
+	NodeLastSuccess     string
 }
 
 type connectionData struct {
@@ -208,11 +236,31 @@ func (h *UserHandler) Detail(w http.ResponseWriter, r *http.Request) {
 	}
 	page := h.NewPage(r, "用户："+record.User.DisplayName)
 	page.Version = int64(record.User.Revision)
+	data := h.detailData(r, record)
+	page.Data = data
+	h.Renderer.Page(w, http.StatusOK, "user_detail.html", page)
+}
+
+// detailData 组装详情页数据：派生状态、连接信息可用性、当前周期日趋势、连续性事件与同步历史。
+func (h *UserHandler) detailData(r *http.Request, record ports.UserRecord) userDetailData {
 	confirmed := record.Credential.State == domain.CredentialActive && record.Allocation.DesiredCredentialVersion == record.Credential.Version
-	page.Data = userDetailData{User: views.NewUserView(record, h.Location(r)),
+	data := userDetailData{User: views.NewUserView(record, h.Location(r)),
 		ConnectionAvailable: confirmed && record.User.Lifecycle != domain.LifecycleDeleted,
 		ConnectionPending:   !confirmed && record.User.Lifecycle != domain.LifecycleDeleted}
-	h.Renderer.Page(w, http.StatusOK, "user_detail.html", page)
+	if h.Dashboard == nil {
+		return data
+	}
+	if detail, err := h.Dashboard.UserDetail(r.Context(), record); err == nil {
+		data.Daily = views.NewDailyRows(detail.Daily)
+		data.Events = views.NewEventRows(detail.Events, h.Location(r))
+		data.Sync = views.NewSyncRows(detail.Sync, h.Location(r))
+	}
+	if summary, err := h.Dashboard.Summary(r.Context()); err == nil {
+		data.NodeHealth = views.HealthLabel(summary.Instance.HealthState)
+		data.NodeError = views.ErrorSentence(summary.Instance.LastErrorCode)
+		data.NodeLastSuccess = views.FormatTime(summary.Instance.LastSuccessAt, h.Location(r))
+	}
+	return data
 }
 
 func (h *UserHandler) Connection(w http.ResponseWriter, r *http.Request) {
@@ -437,10 +485,7 @@ func (h *UserHandler) conflictOrFail(w http.ResponseWriter, r *http.Request, id 
 	page := h.NewPage(r, "用户："+record.User.DisplayName)
 	page.ErrorSummary = failure.Message
 	page.Version = int64(record.User.Revision)
-	confirmed := record.Credential.State == domain.CredentialActive && record.Allocation.DesiredCredentialVersion == record.Credential.Version
-	page.Data = userDetailData{User: views.NewUserView(record, h.Location(r)),
-		ConnectionAvailable: confirmed && record.User.Lifecycle != domain.LifecycleDeleted,
-		ConnectionPending:   !confirmed && record.User.Lifecycle != domain.LifecycleDeleted}
+	page.Data = h.detailData(r, record)
 	h.Renderer.Page(w, http.StatusConflict, "user_detail.html", page)
 }
 

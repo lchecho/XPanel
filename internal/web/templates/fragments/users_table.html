@@ -1,0 +1,5 @@
+{{define "users_table.html"}}{{if .Data.Stale}}<p class="badge stale" role="status">数据陈旧：最后采集成功 {{if .Data.LastCollectionAt}}{{.Data.LastCollectionAt}}{{else}}尚无{{end}}，显示的是最后一次确认的数据</p>{{end}}
+{{if not .Data.Users}}<p class="empty">{{if or .Data.Query .Data.Status}}没有符合条件的用户。{{else}}尚未创建用户。<a href="/users/new">创建第一个用户</a>，创建后即可复制连接信息交付给使用者。{{end}}</p>{{else}}
+<table><caption>受管用户（{{.Data.Total}}）</caption><thead><tr><th scope="col">名称</th><th scope="col">访问配置</th><th scope="col">状态</th><th scope="col">本周期用量</th><th scope="col">剩余</th><th scope="col">最后同步</th></tr></thead><tbody>
+{{range .Data.Users}}<tr{{if .Deleted}} class="deleted"{{end}}><td data-label="名称"><a href="/users/{{.ID}}">{{.DisplayName}}</a></td><td data-label="访问配置">{{.ProfileName}}</td><td data-label="状态">{{template "state" .}}</td><td data-label="本周期用量">{{.Quota.UsedText}}</td><td data-label="剩余">{{.Quota.RemainingText}}</td><td data-label="最后同步">{{.LastSyncAt}}</td></tr>{{end}}
+</tbody></table>{{end}}{{end}}

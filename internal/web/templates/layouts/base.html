@@ -8,5 +8,6 @@
 </head>{{end}}
 {{define "nav"}}<nav aria-label="主导航"><a href="/">仪表盘</a><a href="/users">用户</a><a href="/profiles">访问配置</a><a href="/audit">审计</a><a href="/settings">设置</a>{{if .Authenticated}}<form method="post" action="/logout" class="inline">{{.CSRFField}}<input type="hidden" name="_request_id" value="{{.RequestID}}"><button type="submit">退出登录</button></form>{{end}}</nav>{{end}}
 {{define "messages"}}<div id="messages" aria-live="polite">{{with .Flash}}<p class="flash {{.Kind}}">{{.Message}}</p>{{end}}{{if .Capacity}}<p class="notice">{{.Capacity}}</p>{{end}}{{if .ErrorSummary}}<div class="error-summary" tabindex="-1" role="alert"><h2>请修正以下问题</h2><p>{{.ErrorSummary}}</p></div>{{end}}</div>{{end}}
+{{define "scripts"}}<script src="/static/htmx-2.0.10.min.js" defer></script><script src="/static/app.js" defer></script>{{end}}
 {{define "footer"}}<footer><p>时间按面板配额时区显示：{{.Timezone}}。配额为轮询式控制，禁用主要阻止新连接，已建立的连接可能继续并产生少量超额。</p></footer>{{end}}
 {{define "state"}}<span class="status status-{{.State}}">{{.StateLabel}}</span>{{if .PendingSync}} <span class="badge">待同步</span>{{end}}{{if .SyncError}} <span class="badge error">同步失败：{{.SyncError}}</span>{{end}}{{end}}

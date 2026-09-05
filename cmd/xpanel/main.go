@@ -163,6 +163,7 @@ func runServe(args []string, stderr io.Writer) int {
 	users := application.NewUserService(store, keyring, clock, synchronizer.Wake)
 	connections := application.NewConnectionService(store, keyring)
 	settings := application.NewSettingsService(store).WithClock(clock)
+	dashboard := application.NewDashboardService(store, clock, cfg.Workers.TrafficInterval.Duration)
 	validator = worker.NewProfileValidator(profiles, store, logger, node, cfg.Workers.ReconcileInterval.Duration)
 	traffic := application.NewTrafficService(store, xrayClient, clock, target, cfg.Workers.TrafficInterval.Duration, synchronizer.Wake, logger)
 	quota := application.NewQuotaService(store, clock, synchronizer.Wake, logger)
@@ -170,7 +171,7 @@ func runServe(args []string, stderr io.Writer) int {
 	scheduler := worker.NewScheduler(quota, clock, time.Minute, logger)
 
 	server, err := web.NewServer(cfg, web.RouteDependencies{Auth: auth, Profiles: profiles, Users: users, Connections: connections,
-		Settings: settings, Sessions: sessions, CSRFKey: keyring.CSRFKey(), Secure: !cfg.Server.InsecureDevelopment, Logger: logger})
+		Settings: settings, Dashboard: dashboard, Sessions: sessions, CSRFKey: keyring.CSRFKey(), Secure: !cfg.Server.InsecureDevelopment, Logger: logger})
 	if err != nil {
 		logger.Error("initialize HTTP server", "error_kind", "internal")
 		return 3

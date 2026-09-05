@@ -238,13 +238,13 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 **Independent Test**: 使用多种状态与用量的用户数据打开仪表盘，核对汇总、筛选、趋势；停止 fake Xray 采集后验证陈旧标记与最后成功时间；禁用脚本后页面仍可用
 
-- [ ] T097 [US4] 实现 `internal/persistence/sqlite/store_dashboard.go`：各派生状态计数、当期 accounted 总流量、实例健康/最后成功/最近错误、最近失败同步操作摘要、最后采集成功时间、指定 allocation 当前周期每日聚合
-- [ ] T098 [US4] 实现 `internal/application/dashboard_service.go`：汇总视图、陈旧判定（最后采集成功时间超过 2 个 `traffic_interval` 即陈旧，阈值来自配置）、用户表行数据、详情每日趋势
-- [ ] T099 [US4] 实现 `internal/web/templates/pages/dashboard.html`、`internal/web/templates/fragments/dashboard_summary.html`、`internal/web/templates/fragments/users_table.html`、`internal/web/handlers/dashboard.go` 与 `internal/web/handlers/fragments.go`：`GET /`、`GET /fragments/dashboard-summary`、`GET /fragments/users-table`（非敏感查询参数；fragment 无布局、只读 SQLite、不发 Xray RPC；`Vary: HX-Request`；503 时带可见陈旧文案；包含最后确认时间与 fresh/stale 状态（陈旧阈值 2×traffic_interval 或最近探测失败）、零状态引导、活跃分配 >20 的容量提示）
-- [ ] T100 [US4] 扩展 `internal/web/templates/pages/user_detail.html`：当前周期每日趋势表（本地日期、上行、下行、总量）、统计连续性事件标记、FR-003 的节点健康与最近故障摘要引用
-- [ ] T101 [US4] 编写 `internal/web/static/app.js`（原生 JS，无 CDN）：HTMX 轮询配置（不快于 5 秒）、fragment 替换时保留焦点或移动到稳定摘要、保护搜索框输入不被清空、失败时保留旧内容并显示陈旧摘要
-- [ ] T102 [P] [US4] 编写 `internal/web/handlers/dashboard_test.go` 与 `fragments_test.go`：fragment 不含 `<html>`、陈旧标记、503 文案、筛选参数、未认证 fragment 403、无 Adapter 调用
-- [ ] T103 [US4] 编写 `tests/e2e/dashboard_test.go`：多状态用户汇总正确；采集失败后最后确认值保留且标记陈旧；按名称/状态筛选；无脚本路径下整页数据完整
+- [X] T097 [US4] 实现 `internal/persistence/sqlite/store_dashboard.go`：各派生状态计数、当期 accounted 总流量、实例健康/最后成功/最近错误、最近失败同步操作摘要、最后采集成功时间、指定 allocation 当前周期每日聚合
+- [X] T098 [US4] 实现 `internal/application/dashboard_service.go`：汇总视图、陈旧判定（最后采集成功时间超过 2 个 `traffic_interval` 即陈旧，阈值来自配置）、用户表行数据、详情每日趋势
+- [X] T099 [US4] 实现 `internal/web/templates/pages/dashboard.html`、`internal/web/templates/fragments/dashboard_summary.html`、`internal/web/templates/fragments/users_table.html`、`internal/web/handlers/dashboard.go` 与 `internal/web/handlers/fragments.go`：`GET /`、`GET /fragments/dashboard-summary`、`GET /fragments/users-table`（非敏感查询参数；fragment 无布局、只读 SQLite、不发 Xray RPC；`Vary: HX-Request`；503 时带可见陈旧文案；包含最后确认时间与 fresh/stale 状态（陈旧阈值 2×traffic_interval 或最近探测失败）、零状态引导、活跃分配 >20 的容量提示）
+- [X] T100 [US4] 扩展 `internal/web/templates/pages/user_detail.html`：当前周期每日趋势表（本地日期、上行、下行、总量）、统计连续性事件标记、FR-003 的节点健康与最近故障摘要引用
+- [X] T101 [US4] 编写 `internal/web/static/app.js`（原生 JS，无 CDN）：HTMX 轮询配置（不快于 5 秒）、fragment 替换时保留焦点或移动到稳定摘要、保护搜索框输入不被清空、失败时保留旧内容并显示陈旧摘要
+- [X] T102 [P] [US4] 编写 `internal/web/handlers/dashboard_test.go` 与 `fragments_test.go`：fragment 不含 `<html>`、陈旧标记、503 文案、筛选参数、未认证 fragment 403、无 Adapter 调用
+- [X] T103 [US4] 编写 `tests/e2e/dashboard_test.go`：多状态用户汇总正确；采集失败后最后确认值保留且标记陈旧；按名称/状态筛选；无脚本路径下整页数据完整
 
 **Checkpoint**: 管理员可通过仪表盘判断配额控制与同步是否正常工作
 

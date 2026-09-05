@@ -23,5 +23,18 @@
   {{if .Data.User.Deleted}}<p class="notice">该用户已删除，页面只读；历史用量与审计仍可查看。</p>{{end}}
   {{if .Data.ConnectionPending}}<p class="notice">连接信息将在节点确认凭证后可用。</p>{{end}}
 </div>
+<section aria-labelledby="trend-heading"><h2 id="trend-heading">当前周期每日趋势</h2>
+{{if not .Data.Daily}}<p class="empty">本周期尚无确认流量。</p>{{else}}
+<table><caption>每日流量（周期时区 {{.Data.User.Quota.Timezone}}）</caption><thead><tr><th scope="col">日期</th><th scope="col">上行</th><th scope="col">下行</th><th scope="col">合计</th></tr></thead><tbody>
+{{range .Data.Daily}}<tr><td data-label="日期">{{.LocalDate}}</td><td data-label="上行">{{.UplinkText}}</td><td data-label="下行">{{.DownlinkText}}</td><td data-label="合计">{{.TotalText}}</td></tr>{{end}}
+</tbody></table>{{end}}</section>
+<section aria-labelledby="node-heading"><h2 id="node-heading">节点</h2><p>健康状态：{{.Data.NodeHealth}}{{if .Data.NodeLastSuccess}}，最后成功通信 {{.Data.NodeLastSuccess}}{{end}}{{if .Data.NodeError}}；最近故障：{{.Data.NodeError}}{{end}}</p></section>
+<section aria-labelledby="events-heading"><h2 id="events-heading">统计连续性事件</h2>
+{{if not .Data.Events}}<p>无异常事件。</p>{{else}}<ul>{{range .Data.Events}}<li>{{.OccurredAt}} — {{.Sentence}}{{if .Direction}}（{{.Direction}}）{{end}}</li>{{end}}</ul>{{end}}</section>
+<section aria-labelledby="sync-heading"><h2 id="sync-heading">同步操作历史</h2>
+{{if not .Data.Sync}}<p>暂无同步操作。</p>{{else}}
+<table><caption>最近的同步操作</caption><thead><tr><th scope="col">版本</th><th scope="col">操作</th><th scope="col">阶段</th><th scope="col">状态</th><th scope="col">重试</th><th scope="col">说明</th></tr></thead><tbody>
+{{range .Data.Sync}}<tr><td data-label="版本">{{.Revision}}</td><td data-label="操作">{{.ReasonLabel}}</td><td data-label="阶段">{{.Phase}}</td><td data-label="状态">{{.StateLabel}}{{if .CompletedAt}}（{{.CompletedAt}}）{{end}}</td><td data-label="重试">{{.Attempts}}{{if .NextAttempt}}，下次 {{.NextAttempt}}{{end}}</td><td data-label="说明">{{.ErrorText}}</td></tr>{{end}}
+</tbody></table>{{end}}</section>
 <p><a href="/users">返回用户列表</a></p>
 {{template "footer" .}}</main></body></html>{{end}}

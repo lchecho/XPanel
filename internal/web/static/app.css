@@ -37,3 +37,5 @@ dt { font-weight: 700; }
 textarea { font: inherit; width: 100%; box-sizing: border-box; }
 footer { margin-top: 2rem; font-size: .85em; color: GrayText; }
 @media (max-width: 40rem) { .filters { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr; } }
+.badge.stale, .hint.stale { color: #8a4b00; border-color: #8a4b00; }
+tr.deleted { color: GrayText; }

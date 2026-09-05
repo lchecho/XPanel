@@ -185,7 +185,7 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 - [X] T073 [US2] 实现 `internal/adapter/xray/stats.go` 【Xray 契约】：`ReadTraffic` 对最多 20 个身份逐个精确 `GetStats(reset=false)` 读取 `user>>><id>>>traffic>>>uplink|downlink`，`found=false` 与零值区分，格式错误映射稳定错误，从 `Probe` 获取 boot epoch
 - [X] T074 [P] [US2] 编写 `internal/adapter/xray/stats_test.go`：bufconn StatsService stub，验证精确名称、`reset=false`、缺失/零/格式错误三种结果
-- [ ] T075 [US2] 编写 `tests/contract/xray/traffic_test.go` 【Xray 契约】：门禁 5–6（真实 AES-256 客户端使用 `server-key:user-key` 发送 TCP 与 UDP 流量，两方向精确计数器递增；移除用户后新握手被拒而已建立连接可继续）
+- [X] T075 [US2] 编写 `tests/contract/xray/traffic_test.go` 【Xray 契约】：门禁 5–6（真实 AES-256 客户端使用 `server-key:user-key` 发送 TCP 与 UDP 流量，两方向精确计数器递增；移除用户后新握手被拒而已建立连接可继续）
 
 ### 应用服务
 

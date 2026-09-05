@@ -65,10 +65,13 @@ func TestPinnedRuntimeAndModule(t *testing.T) {
 }
 
 type liveRuntime struct {
-	client  *xrayadapter.Client
-	cancel  context.CancelFunc
-	command *exec.Cmd
-	output  *bytes.Buffer
+	client    *xrayadapter.Client
+	cancel    context.CancelFunc
+	command   *exec.Cmd
+	output    *bytes.Buffer
+	inbound   string
+	serverKey string
+	api       string
 }
 
 func freeAddress(t *testing.T) string {
@@ -150,7 +153,7 @@ func startRuntime(t *testing.T) *liveRuntime {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	runtime := &liveRuntime{client: client, cancel: cancel, command: command, output: output}
+	runtime := &liveRuntime{client: client, cancel: cancel, command: command, output: output, inbound: inboundAddress, serverKey: testKey('s'), api: apiAddress}
 	t.Cleanup(func() {
 		_ = client.Close()
 		cancel()

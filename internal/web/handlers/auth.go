@@ -74,7 +74,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	id := domain.ID(h.Sessions.GetString(r.Context(), webmiddleware.SessionAdministratorID))
 	version := h.Sessions.GetInt64(r.Context(), webmiddleware.SessionPasswordVersion)
-	_ = h.Service.Logout(r.Context(), ports.AdministratorRecord{ID: id, PasswordVersion: version})
+	if err := h.Service.Logout(r.Context(), ports.AdministratorRecord{ID: id, PasswordVersion: version}); err != nil {
+		h.Renderer.Error(w, http.StatusInternalServerError, "退出暂时无法完成", NewRequestID())
+		return
+	}
 	if err := h.Sessions.Destroy(r.Context()); err != nil {
 		h.Renderer.Error(w, http.StatusInternalServerError, "退出暂时无法完成", NewRequestID())
 		return

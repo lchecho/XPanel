@@ -119,6 +119,20 @@ func (s *Store) UpdateProfile(ctx context.Context, record ports.ProfileRecord, m
 			return err
 		}
 		p := record.Profile
+		var currentTag, currentMethod, currentBootstrap string
+		var managedUsers int
+		if err := tx.tx.QueryRowContext(ctx, `SELECT inbound_tag,method,bootstrap_statistics_id,
+            (SELECT count(*) FROM access_allocations a JOIN managed_users u ON u.id=a.user_id WHERE a.profile_id=access_profiles.id AND u.deleted_at IS NULL)
+            FROM access_profiles WHERE id=?`, p.ID.String()).Scan(&currentTag, &currentMethod, &currentBootstrap, &managedUsers); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return &domain.NotFoundError{Resource: "profile"}
+			}
+			return err
+		}
+		// 已有受管用户时不得改变入站标签、加密方式或保留初始用户：否则旧入站会遗留可用用户且现有密钥长度不再匹配（FR-006/FR-030）。
+		if managedUsers > 0 && (currentTag != p.InboundTag || currentMethod != p.Method || currentBootstrap != p.BootstrapStatisticsID) {
+			return &domain.ConflictError{Message: "profile has managed users; inbound tag, method and bootstrap identity cannot change"}
+		}
 		result, err := tx.tx.ExecContext(ctx, `UPDATE access_profiles SET name=?,normalized_name=?,inbound_tag=?,public_host=?,
             public_port=?,method=?,network=?,server_key_ciphertext=?,server_key_nonce=?,key_encryption_version=?,
             bootstrap_statistics_id=?,compatibility_state=?,compatibility_reason=?,last_validated_at=?,revision=revision+1,updated_at=?
@@ -232,12 +246,30 @@ func (s *Store) SetProfileCompatibility(ctx context.Context, id domain.ID, state
 	return nil
 }
 
+// RegisterBootstrapIdentity 注册保留初始用户身份：同 profile 重放幂等，跨 profile 复用同一统计标识返回冲突。
 func (s *Store) RegisterBootstrapIdentity(ctx context.Context, identity domain.XrayUserIdentity) error {
-	_, err := s.db.Write.ExecContext(ctx, `INSERT INTO xray_user_identities
-        (id,instance_id,profile_id,statistics_id,kind,created_at) VALUES (?,?,?,?,?,?)
-        ON CONFLICT(instance_id,statistics_id) DO NOTHING`, identity.ID.String(), identity.InstanceID.String(),
-		identity.ProfileID.String(), identity.StatisticsID, identity.Kind, millis(identity.CreatedAt))
-	return err
+	tx, err := s.db.Write.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var existingProfile, existingKind string
+	err = tx.QueryRowContext(ctx, `SELECT profile_id,kind FROM xray_user_identities WHERE instance_id=? AND statistics_id=?`,
+		identity.InstanceID.String(), identity.StatisticsID).Scan(&existingProfile, &existingKind)
+	switch {
+	case err == nil:
+		if existingProfile != identity.ProfileID.String() || existingKind != string(identity.Kind) {
+			return &domain.ConflictError{Message: "bootstrap identity is already registered by another profile"}
+		}
+		return nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO xray_user_identities(id,instance_id,profile_id,statistics_id,kind,created_at) VALUES (?,?,?,?,?,?)`,
+		identity.ID.String(), identity.InstanceID.String(), identity.ProfileID.String(), identity.StatisticsID, identity.Kind, millis(identity.CreatedAt)); err != nil {
+		return translateConstraint(err, "bootstrap identity is already registered by another profile")
+	}
+	return tx.Commit()
 }
 
 func nullString(value string) any {

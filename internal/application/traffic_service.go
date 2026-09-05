@@ -71,7 +71,7 @@ func (s *TrafficService) CollectOnce(ctx context.Context) (CollectionSummary, er
 	for _, target := range targets {
 		ids = append(ids, target.Identity.StatisticsID)
 	}
-	round, err := s.adapter.ReadTraffic(ctx, ports.TrafficQuery{Target: s.target, StatisticsIDs: ids})
+	round, err := s.readAll(ctx, ids)
 	if err != nil {
 		s.recordFailure(ctx, err)
 		return summary, err
@@ -117,6 +117,29 @@ func (s *TrafficService) CollectOnce(ctx context.Context) (CollectionSummary, er
 	s.logger.Info("collection round committed", "targets", summary.Targets, "applied", summary.Applied, "blocked", summary.Blocked,
 		"skipped", summary.Skipped, "events", summary.Events, logging.FieldResult, "succeeded", logging.FieldDurationMS, summary.Duration.Milliseconds())
 	return summary, nil
+}
+
+// readBatchSize 是 Adapter 契约允许的单次精确查询上限；超过时分批读取并合并为同一轮提交（FR-013/FR-017）。
+const readBatchSize = 20
+
+// readAll 分批读取全部身份的计数；任一批失败即整轮失败，避免部分数据被误判为缺失。
+func (s *TrafficService) readAll(ctx context.Context, ids []string) (ports.TrafficRound, error) {
+	var merged ports.TrafficRound
+	for start := 0; start < len(ids); start += readBatchSize {
+		end := start + readBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		round, err := s.adapter.ReadTraffic(ctx, ports.TrafficQuery{Target: s.target, StatisticsIDs: ids[start:end]})
+		if err != nil {
+			return ports.TrafficRound{}, err
+		}
+		if start == 0 {
+			merged.Observation = round.Observation
+		}
+		merged.Snapshots = append(merged.Snapshots, round.Snapshots...)
+	}
+	return merged, nil
 }
 
 func (s *TrafficService) buildUpdate(target ports.CollectionTarget, samples map[ports.Direction]domain.TrafficSample,

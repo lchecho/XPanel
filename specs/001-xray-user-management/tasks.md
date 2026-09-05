@@ -396,3 +396,23 @@ Task: "编写 internal/domain/quota_test.go 与 traffic_test.go"
 - 每个影响访问权的变更（创建、启停、轮换、删除、封禁、恢复）× 六类故障（数据库提交失败、RPC 超时、RPC 成功后进程崩溃、Xray 重启、重复请求、协调器重放）由 T119 的故障矩阵系统性覆盖；各故事的 worker/E2E 测试为补充，不替代矩阵
 - 每个任务或逻辑组完成后提交；在任一 Checkpoint 停下独立验证该故事
 - 避免：模糊任务、同文件并行冲突、破坏故事独立性的跨故事依赖
+
+---
+
+## Phase 9: Convergence
+
+- [ ] T128 CRITICAL 为 `internal/persistence/sqlite/store_sync.go` 的阶段推进、重试重排和永久失败写入增加 operation state、租约 owner 与 allocation desired revision 的条件更新；旧操作被 supersede 或新意图已提交时只结束旧操作，不得把当前 allocation 改回 pending/error，并增加 worker 与 SQLite 并发回归测试 per Constitution IV / FR-021 (contradicts)
+- [ ] T129 CRITICAL 重构采集越界、手动流量重置、调额和周期切换事务，使其在写事务内重读最新 policy、admin_enabled、lifecycle、open cycle 与 allocation revision 后重算最终状态，并以 revision/CAS 防止事务外旧快照覆盖较新的管理员意图；覆盖边界时刻并发调额、禁用、重置、采集与 rollover 的确定性测试 per Constitution IV / FR-021 (contradicts)
+- [ ] T130 CRITICAL 将 `internal/application/reconciliation_service.go` 对 SQLite 无记录的 `xpanel-` 漂移身份移除改为 RPC 前持久化、可租约和可重试的漂移移除意图及关联审计结果，由串行 synchronizer 执行，并覆盖 RPC 超时、进程崩溃和重放 per Constitution I / Constitution IV / FR-020 (contradicts)
+- [ ] T131 为 profile 验证结果增加 profile revision 条件提交，把 compatibility、实例健康和验证审计按一致的事务边界写入；让 revalidate 接收 `_version`/`_request_id` 并幂等排队，验证期间发生编辑时丢弃旧结果并验证最新 revision per FR-021 (partial)
+- [ ] T132 将 handler 生成的 session+action+target+canonical-payload fingerprint 传入所有状态变更命令并持久比较；修复 profile 创建 fingerprint 对随机新 profile ID 的依赖，使同 session 同请求重放返回原 canonical result、跨 session 或不同载荷复用返回 409，并补 profile/setting/user HTTP 回归测试 per FR-021 / FR-027 (partial)
+- [X] T133 为已有 allocation 的 profile 限制或实现可恢复的 inbound_tag/method/bootstrap identity 变更：不得在旧入站遗留可用用户，method 变化必须校验或轮换现有 user/server keys，所有受影响 projection 必须经持久操作收敛，并增加在线用户迁移/拒绝测试 per FR-006 / FR-007 / FR-020 / FR-030 (partial)
+- [X] T134 修改 bootstrap identity 注册以区分同 profile 幂等重放与跨 profile 全局冲突，冲突时不得把 profile 标为 compatible；增加多 profile bootstrap/managed statistics ID 全实例唯一测试 per data-model: XrayUserIdentity / contract gate 9 (partial)
+- [ ] T135 修正 `deploy/xray-v26.3.27.example.json` 和 `tests/contract/xray` 运行时配置以满足固定 Xray API `tag` 契约，改为从 `XRAY_BIN` 构建信息验证 `github.com/xtls/xray-core@v1.260327.0`，失败时输出安全的进程诊断，并让固定二进制的真实契约套件能够启动和通过 per plan: Xray contract and deployment config (partial)
+- [ ] T136 扩展真实 Xray 契约门禁 7–9：用应用 reconciler/synchronizer 验证重启后仅恢复 active 用户，用持久操作验证可能已生效的超时经读后写收敛，并用多个 profile 验证统计 ID 全局唯一与 bootstrap 排除，而非在测试中手工重加用户 per plan: Xray compatibility gates 7-9 (partial)
+- [X] T137 将流量采集目标按最多 20 个 statistics ID 分批执行并合并为同一安全提交语义，使超过 20 个活跃 allocation 时继续计量、标记陈旧和执行配额封禁，同时只撤销性能承诺而不停止功能，并增加 21+ 用户回归测试 per FR-013 / FR-017 (contradicts)
+- [ ] T138 加强 `tests/integration/failure_matrix_test.go` 与 `tests/e2e/success_criteria_test.go`：每个故障单元格断言对应动作/结果的审计、operation 唯一性、流量不重复且不为负；对 SC-008 的 leak count 显式断言为零，确保缺少审计或发生泄露时门禁失败 per SC-007 / SC-008 (partial)
+- [X] T139 调整用户状态筛选，使 admin enabled 且 within-limit 的 enabling/pending/error 用户仍命中“启用”业务筛选，同时也命中“待同步”筛选，并增加正交筛选组合测试 per FR-008 (partial)
+- [X] T140 为无效及限流登录记录不枚举账号且不含密码的 failed 审计，并确保 logout 的会话撤销与审计失败不会被静默报告为完整成功；补齐成功/失败/限流认证路径的审计覆盖率断言 per FR-025 / FR-026 / SC-008 (partial)
+- [ ] T141 为嵌入式 CSS/JS 生成内容哈希资源名并仅对静态资源返回 `Cache-Control: public, max-age=31536000, immutable`，继续对认证 HTML 返回 `no-store`，增加缓存头和模板引用测试 per plan: performance and static delivery decision (contradicts)
+- [X] T142 在创建和编辑用户时保存去除首尾空白的 display_name，并保持 NFKC/大小写不敏感 normalized_name 唯一语义，增加展示值与名称复用测试 per T041 / FR-005 (partial)

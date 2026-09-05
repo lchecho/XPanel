@@ -255,7 +255,8 @@ func matchesStatus(record ports.UserRecord, status string) bool {
 	case "pending":
 		return record.User.Lifecycle != domain.LifecycleDeleted && record.Allocation.PendingSync()
 	case string(domain.DisplayActive):
-		return state == domain.DisplayActive
+		// 业务筛选“启用”= 管理员启用且配额内（含启用中/待同步），与“待同步”筛选正交（FR-008）。
+		return record.Allocation.DesiredPresent(record.User)
 	case string(domain.DisplayDisabled):
 		return state == domain.DisplayDisabled || state == domain.DisplayDisabling
 	case string(domain.DisplayQuotaExceeded):

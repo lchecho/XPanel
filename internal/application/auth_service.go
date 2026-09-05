@@ -81,6 +81,7 @@ func (s *AuthService) Login(ctx context.Context, username string, password []byt
 	now := s.clock.Now()
 	key := normalized + "|" + source
 	if retry, limited := s.limited(key, now); limited {
+		s.auditFailure(ctx, "login throttled")
 		return nil, &domain.RateLimitError{RetryAfter: retry}
 	}
 	var admin *ports.AdministratorRecord
@@ -102,6 +103,7 @@ func (s *AuthService) Login(ctx context.Context, username string, password []byt
 		return nil, err
 	}
 	if !matchedUser || !ok {
+		s.auditFailure(ctx, "login failed: invalid credentials")
 		if retry, limited := s.recordFailure(key, now); limited {
 			return nil, &domain.RateLimitError{RetryAfter: retry}
 		}
@@ -177,6 +179,22 @@ func (s *AuthService) audit(ctx context.Context, admin ports.AdministratorRecord
 		return tx.AppendAudit(ctx, domain.AuditEvent{ID: id, OccurredAt: s.clock.Now(), ActorType: domain.ActorAdministrator,
 			ActorID: &actorID, TargetType: "administrator", TargetID: admin.ID, Action: action,
 			Result: domain.AuditSucceeded, SafeSummary: summary})
+	})
+}
+
+// auditFailure 记录失败或被限流的登录：不区分用户名是否存在、不含密码，目标固定为面板管理员身份（FR-025/FR-026）。
+func (s *AuthService) auditFailure(ctx context.Context, summary string) {
+	id, err := domain.NewID()
+	if err != nil {
+		return
+	}
+	_ = s.store.WithWriteTx(ctx, func(tx ports.WriteTx) error {
+		target := domain.ID("00000000-0000-4000-8000-000000000000")
+		if admin, err := tx.Administrator(ctx); err == nil && admin != nil {
+			target = admin.ID
+		}
+		return tx.AppendAudit(ctx, domain.AuditEvent{ID: id, OccurredAt: s.clock.Now(), ActorType: domain.ActorSystem,
+			TargetType: "administrator", TargetID: target, Action: domain.ActionLogin, Result: domain.AuditFailed, SafeSummary: summary})
 	})
 }
 

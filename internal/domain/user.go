@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type LifecycleState string
 
@@ -42,7 +45,7 @@ func NewManagedUser(id ID, displayName string, now time.Time) (ManagedUser, erro
 	if err != nil {
 		return ManagedUser{}, &ValidationError{Field: "display_name", Message: err.Error()}
 	}
-	return ManagedUser{ID: id, DisplayName: displayName, NormalizedName: normalized, Lifecycle: LifecycleActive,
+	return ManagedUser{ID: id, DisplayName: strings.TrimSpace(displayName), NormalizedName: normalized, Lifecycle: LifecycleActive,
 		CreatedAt: now.UTC(), UpdatedAt: now.UTC()}, nil
 }
 

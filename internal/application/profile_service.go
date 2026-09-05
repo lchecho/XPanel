@@ -206,6 +206,11 @@ func (s *ProfileService) RunValidation(ctx context.Context, id domain.ID) error 
 	}
 	if err := s.store.RegisterBootstrapIdentity(ctx, domain.XrayUserIdentity{ID: identityID, InstanceID: record.Profile.InstanceID,
 		ProfileID: id, StatisticsID: record.Profile.BootstrapStatisticsID, Kind: domain.IdentityBootstrap, CreatedAt: now}); err != nil {
+		var conflict *domain.ConflictError
+		if errors.As(err, &conflict) {
+			// 跨 profile 复用同一 bootstrap 统计标识：全实例唯一性被破坏，不得标为 compatible（contract gate 9）。
+			return s.finishValidation(ctx, record, domain.CompatibilityIncompatible, conflict.Message, &observation, now)
+		}
 		return err
 	}
 	return s.finishValidation(ctx, record, domain.CompatibilityCompatible, "", &observation, now)

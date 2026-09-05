@@ -138,9 +138,27 @@ func TestSuccessCriteriaEvidence(t *testing.T) {
 	if actions != 7 {
 		t.Fatalf("audited action kinds = %d", actions)
 	}
+	// 每个仍存在的用户的真实密码与连接 URI 都不得出现在任何审计摘要中；泄露计数必须为零。
+	patterns := []string{"%ss://%", "%" + app.Password + "%"}
+	for _, record := range records {
+		info, err := app.Connections.BuildConnectionInfo(context.Background(), record.User.ID)
+		if err != nil {
+			continue // 已删除用户没有连接信息
+		}
+		patterns = append(patterns, "%"+info.Password.Reveal()+"%", "%"+info.URI.Reveal()+"%")
+	}
 	var leaks int
-	_ = app.Store.DB().Read.QueryRow(`SELECT count(*) FROM audit_events WHERE safe_summary LIKE '%ss://%' OR safe_summary LIKE ?`, "%"+app.Password+"%").Scan(&leaks)
-	evidence("SC-008", "audited action kinds=%d/7 expected; credential leaks in audit=%d", actions, leaks)
+	for _, pattern := range patterns {
+		var hits int
+		if err := app.Store.DB().Read.QueryRow(`SELECT count(*) FROM audit_events WHERE safe_summary LIKE ?`, pattern).Scan(&hits); err != nil {
+			t.Fatal(err)
+		}
+		leaks += hits
+	}
+	if leaks != 0 {
+		t.Fatalf("credential material leaked into %d audit summaries", leaks)
+	}
+	evidence("SC-008", "audited action kinds=%d/7 expected; credential leaks in audit=%d (asserted zero across %d patterns)", actions, leaks, len(patterns))
 
 	// SC-011：本机密码重置后既有会话全部失效。
 	if err := app.Auth.ResetPassword(context.Background(), []byte("another long passphrase 42")); err != nil {

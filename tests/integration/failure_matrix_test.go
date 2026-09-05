@@ -85,13 +85,17 @@ type change struct {
 	storeWrite string
 	rpc        string
 	reason     string
+	audit      string // 变更本身必须留下的审计动作（SC-008）
 	present    bool
+	uplink     func(m *matrixApp) int64 // 收敛后当前周期应记入的精确上行字节数（SC-007）
 	setup      func(m *matrixApp)
 	apply      func(m *matrixApp) error
 }
 
+func zeroUplink(*matrixApp) int64 { return 0 }
+
 var changes = []change{
-	{name: "create", storeWrite: "CreateUser", rpc: "add_user", reason: "create", present: true,
+	{name: "create", storeWrite: "CreateUser", rpc: "add_user", reason: "create", audit: domain.ActionUserCreated, present: true, uplink: zeroUplink,
 		setup: func(m *matrixApp) {
 			// 创建的是一个新用户；把矩阵对象切换为新用户。
 			m.enabled(false)
@@ -105,35 +109,36 @@ var changes = []change{
 			}
 			return err
 		}},
-	{name: "enable", storeWrite: "UpdateUser", rpc: "add_user", reason: "enable", present: true,
+	{name: "enable", storeWrite: "UpdateUser", rpc: "add_user", reason: "enable", audit: domain.ActionUserEnabled, present: true, uplink: zeroUplink,
 		setup: func(m *matrixApp) { m.enabled(false); m.drain() },
 		apply: func(m *matrixApp) error {
 			_, err := m.users.SetAdminEnabled(context.Background(), application.SetEnabledInput{ID: m.record.User.ID, Enabled: true,
 				ExpectedRevision: m.record.User.Revision, RequestID: m.requestID, ActorID: m.AdminID})
 			return err
 		}},
-	{name: "disable", storeWrite: "UpdateUser", rpc: "remove_user", reason: "disable", present: false,
+	{name: "disable", storeWrite: "UpdateUser", rpc: "remove_user", reason: "disable", audit: domain.ActionUserDisabled, present: false, uplink: zeroUplink,
 		apply: func(m *matrixApp) error {
 			_, err := m.users.SetAdminEnabled(context.Background(), application.SetEnabledInput{ID: m.record.User.ID, Enabled: false,
 				ExpectedRevision: m.record.User.Revision, RequestID: m.requestID, ActorID: m.AdminID})
 			return err
 		}},
-	{name: "rotate", storeWrite: "RotateCredential", rpc: "add_user", reason: "rotate", present: true,
+	{name: "rotate", storeWrite: "RotateCredential", rpc: "add_user", reason: "rotate", audit: domain.ActionCredentialRotated, present: true, uplink: zeroUplink,
 		apply: func(m *matrixApp) error {
 			_, err := m.users.RotateCredential(context.Background(), application.LifecycleInput{ID: m.record.User.ID,
 				ExpectedRevision: m.record.User.Revision, RequestID: m.requestID, ActorID: m.AdminID})
 			return err
 		}},
-	{name: "delete", storeWrite: "SoftDeleteUser", rpc: "remove_user", reason: "delete", present: false,
+	{name: "delete", storeWrite: "SoftDeleteUser", rpc: "remove_user", reason: "delete", audit: domain.ActionUserDeleted, present: false, uplink: zeroUplink,
 		apply: func(m *matrixApp) error {
 			_, err := m.users.DeleteUser(context.Background(), application.LifecycleInput{ID: m.record.User.ID,
 				ExpectedRevision: m.record.User.Revision, RequestID: m.requestID, ActorID: m.AdminID})
 			return err
 		}},
-	{name: "quota_block", storeWrite: "CommitTrafficBatch", rpc: "remove_user", reason: "quota_block", present: false,
-		setup: func(m *matrixApp) { m.SetTraffic(m.record, uint64(m.limit), 0) },
-		apply: func(m *matrixApp) error { _, err := m.traffic.CollectOnce(context.Background()); return err }},
-	{name: "cycle_restore", storeWrite: "RolloverCycle", rpc: "add_user", reason: "quota_restore", present: true,
+	{name: "quota_block", storeWrite: "CommitTrafficBatch", rpc: "remove_user", reason: "quota_block", audit: domain.ActionQuotaExceeded, present: false,
+		uplink: func(m *matrixApp) int64 { return m.limit },
+		setup:  func(m *matrixApp) { m.SetTraffic(m.record, uint64(m.limit), 0) },
+		apply:  func(m *matrixApp) error { _, err := m.traffic.CollectOnce(context.Background()); return err }},
+	{name: "cycle_restore", storeWrite: "RolloverCycle", rpc: "add_user", reason: "quota_restore", audit: domain.ActionCycleRestored, present: true, uplink: zeroUplink,
 		setup: func(m *matrixApp) {
 			m.blockByTraffic()
 			m.drain()
@@ -287,15 +292,34 @@ func assertConverged(t *testing.T, m *matrixApp, c change) {
 	if record.Cycle.AccountedUplinkBytes < 0 || record.Cycle.AccountedDownlinkBytes < 0 {
 		t.Fatal("negative traffic recorded")
 	}
-	var operations int
-	_ = m.Store.DB().Read.QueryRow(`SELECT count(*) FROM synchronization_operations WHERE allocation_id=? AND reason=? AND state IN ('succeeded','superseded')`,
-		record.Allocation.ID.String(), c.reason).Scan(&operations)
-	if operations == 0 {
-		t.Fatalf("no %s operation recorded for the change", c.reason)
+	// SC-007：流量精确记入一次——重复采集、重启、重试都不得重复计量。
+	if want := c.uplink(m); record.Cycle.AccountedUplinkBytes != want || record.Cycle.AccountedDownlinkBytes != 0 {
+		t.Fatalf("accounted traffic up=%d down=%d want up=%d down=0", record.Cycle.AccountedUplinkBytes, record.Cycle.AccountedDownlinkBytes, want)
 	}
-	var audits int
-	_ = m.Store.DB().Read.QueryRow(`SELECT count(*) FROM audit_events WHERE target_id=?`, record.User.ID.String()).Scan(&audits)
-	if audits == 0 {
-		t.Fatal("no audit events for the change")
+	if c.name == "cycle_restore" {
+		var previous int64
+		_ = m.Store.DB().Read.QueryRow(`SELECT accounted_uplink_bytes FROM quota_cycles WHERE allocation_id=? AND id<>? ORDER BY starts_at_utc DESC LIMIT 1`,
+			record.Allocation.ID.String(), record.Cycle.ID.String()).Scan(&previous)
+		if previous != m.limit {
+			t.Fatalf("closed cycle accounted %d want %d", previous, m.limit)
+		}
+	}
+	// 操作唯一性：该变更恰好一个成功操作，且分配下没有任何未终结操作。
+	var succeeded, open int
+	_ = m.Store.DB().Read.QueryRow(`SELECT count(*) FROM synchronization_operations WHERE allocation_id=? AND reason=? AND state='succeeded'`,
+		record.Allocation.ID.String(), c.reason).Scan(&succeeded)
+	_ = m.Store.DB().Read.QueryRow(`SELECT count(*) FROM synchronization_operations WHERE allocation_id=? AND state NOT IN ('succeeded','superseded')`,
+		record.Allocation.ID.String()).Scan(&open)
+	if succeeded != 1 || open != 0 {
+		t.Fatalf("operations for %s: succeeded=%d open=%d (want 1/0)", c.reason, succeeded, open)
+	}
+	// SC-008：变更动作与成功同步各有审计，且审计不含凭证或连接 URI。
+	var intent, confirmed, leaks int
+	_ = m.Store.DB().Read.QueryRow(`SELECT count(*) FROM audit_events WHERE target_id=? AND action=?`, record.User.ID.String(), c.audit).Scan(&intent)
+	_ = m.Store.DB().Read.QueryRow(`SELECT count(*) FROM audit_events a JOIN synchronization_operations o ON o.id=a.operation_id
+        WHERE a.target_id=? AND a.action=? AND a.result='succeeded' AND o.reason=?`, record.User.ID.String(), domain.ActionSyncSucceeded, c.reason).Scan(&confirmed)
+	_ = m.Store.DB().Read.QueryRow(`SELECT count(*) FROM audit_events WHERE safe_summary LIKE '%ss://%' OR safe_summary LIKE '%server_key%'`).Scan(&leaks)
+	if intent == 0 || confirmed != 1 || leaks != 0 {
+		t.Fatalf("audit for %s: intent=%d confirmed_sync=%d leaks=%d (want >=1/1/0)", c.audit, intent, confirmed, leaks)
 	}
 }

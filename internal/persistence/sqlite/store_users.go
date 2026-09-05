@@ -266,3 +266,91 @@ func matchesStatus(record ports.UserRecord, status string) bool {
 		return false
 	}
 }
+
+// RotateCredential 保存下一版本 pending 凭证并写入 remove_old 阶段的轮换操作；同一时间只允许一次轮换进行。
+func (s *Store) RotateCredential(ctx context.Context, record ports.RotationRecord) (bool, error) {
+	replay := false
+	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
+		tx := write.(*txStore)
+		var err error
+		replay, err = commandReplay(ctx, tx, record.Command)
+		if err != nil || replay {
+			return err
+		}
+		result, err := tx.tx.ExecContext(ctx, `UPDATE managed_users SET revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NULL`,
+			millis(record.Now), record.UserID.String(), record.ExpectedRevision)
+		if err != nil {
+			return err
+		}
+		if rows, _ := result.RowsAffected(); rows != 1 {
+			return &domain.ConflictError{Message: "user changed since the page was loaded"}
+		}
+		var pending int
+		if err := tx.tx.QueryRowContext(ctx, `SELECT count(*) FROM access_credentials WHERE allocation_id=? AND state='pending'`, record.AllocationID.String()).Scan(&pending); err != nil {
+			return err
+		}
+		if pending > 0 {
+			return &domain.ConflictError{Message: "credential rotation already in progress"}
+		}
+		c := record.Credential
+		if _, err := tx.tx.ExecContext(ctx, `INSERT INTO access_credentials
+            (id,allocation_id,version,state,key_ciphertext,key_nonce,key_encryption_version,created_at,activated_at,retired_at)
+            VALUES (?,?,?,?,?,?,?,?,NULL,NULL)`, c.ID.String(), c.AllocationID.String(), c.Version, c.State, c.KeyCiphertext, c.KeyNonce,
+			c.KeyEncryptionVersion, millis(c.CreatedAt)); err != nil {
+			return translateConstraint(err, "credential rotation already in progress")
+		}
+		op := record.Operation
+		if err := supersedeOlder(ctx, tx.tx, op.AllocationID, op.DesiredRevision, record.Now); err != nil {
+			return err
+		}
+		if err := insertOperation(ctx, tx.tx, op); err != nil {
+			return err
+		}
+		if _, err := tx.tx.ExecContext(ctx, `UPDATE access_allocations SET desired_credential_version=?,desired_revision=?,projection_state='pending',updated_at=? WHERE id=?`,
+			c.Version, op.DesiredRevision, millis(record.Now), record.AllocationID.String()); err != nil {
+			return err
+		}
+		if err := tx.SaveCommand(ctx, record.Command); err != nil {
+			return err
+		}
+		return tx.AppendAudit(ctx, record.Audit)
+	})
+	return replay, err
+}
+
+// SoftDeleteUser 把用户标记为 deleted、清除启用意图并写入移除操作；密钥销毁在移除确认事务中完成。
+func (s *Store) SoftDeleteUser(ctx context.Context, record ports.DeleteRecord) (bool, error) {
+	replay := false
+	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
+		tx := write.(*txStore)
+		var err error
+		replay, err = commandReplay(ctx, tx, record.Command)
+		if err != nil || replay {
+			return err
+		}
+		result, err := tx.tx.ExecContext(ctx, `UPDATE managed_users SET lifecycle_state='deleted',deleted_at=?,revision=revision+1,updated_at=?
+            WHERE id=? AND revision=? AND deleted_at IS NULL`, millis(record.Now), millis(record.Now), record.UserID.String(), record.ExpectedRevision)
+		if err != nil {
+			return err
+		}
+		if rows, _ := result.RowsAffected(); rows != 1 {
+			return &domain.ConflictError{Message: "user changed since the page was loaded"}
+		}
+		op := record.Operation
+		if err := supersedeOlder(ctx, tx.tx, op.AllocationID, op.DesiredRevision, record.Now); err != nil {
+			return err
+		}
+		if err := insertOperation(ctx, tx.tx, op); err != nil {
+			return err
+		}
+		if _, err := tx.tx.ExecContext(ctx, `UPDATE access_allocations SET admin_enabled=0,desired_revision=?,projection_state='pending',updated_at=? WHERE id=?`,
+			op.DesiredRevision, millis(record.Now), record.AllocationID.String()); err != nil {
+			return err
+		}
+		if err := tx.SaveCommand(ctx, record.Command); err != nil {
+			return err
+		}
+		return tx.AppendAudit(ctx, record.Audit)
+	})
+	return replay, err
+}

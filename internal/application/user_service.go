@@ -1,6 +1,7 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strconv"
@@ -167,7 +168,17 @@ func (s *UserService) UpdateUser(ctx context.Context, input UpdateUserInput) (bo
 	if err := domain.ValidateQuotaPolicy(input.LimitBytes, input.ResetDay); err != nil {
 		return false, err
 	}
-	if replayed, err := s.commandReplayed(ctx, input.RequestID); err != nil || replayed {
+	normalized, err := domain.NormalizeDisplayName(input.DisplayName)
+	if err != nil {
+		return false, &domain.ValidationError{Field: "display_name", Message: err.Error()}
+	}
+	limit := "unlimited"
+	if input.LimitBytes != nil {
+		limit = strconv.FormatInt(*input.LimitBytes, 10)
+	}
+	fingerprint := domain.Fingerprint(domain.ActionUserUpdated, input.ID.String(), normalized, limit,
+		strconv.Itoa(input.ResetDay), strconv.FormatBool(input.AdminEnabled), strconv.FormatInt(int64(input.ExpectedRevision), 10))
+	if replayed, err := s.commandReplayed(ctx, input.RequestID, fingerprint); err != nil || replayed {
 		return replayed, err
 	}
 	record, err := s.store.User(ctx, input.ID)
@@ -195,19 +206,14 @@ func (s *UserService) UpdateUser(ctx context.Context, input UpdateUserInput) (bo
 	wasPresent := record.Allocation.DesiredPresent(record.User)
 	willBePresent := next.DesiredPresent(record.User)
 	actor := input.ActorID
-	limit := "unlimited"
-	if input.LimitBytes != nil {
-		limit = strconv.FormatInt(*input.LimitBytes, 10)
-	}
 	completed := now
 	update := ports.UserUpdateRecord{UserID: record.User.ID, ExpectedRevision: input.ExpectedRevision, DisplayName: renamed.DisplayName,
 		NormalizedName: renamed.NormalizedName, LimitBytes: input.LimitBytes, ResetDay: input.ResetDay, AdminEnabled: input.AdminEnabled,
 		QuotaState: next.QuotaState, Now: now,
 		Command: domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor, CommandType: domain.ActionUserUpdated,
 			TargetType: "user", TargetID: record.User.ID,
-			RequestFingerprint: domain.Fingerprint(domain.ActionUserUpdated, record.User.ID.String(), renamed.NormalizedName, limit,
-				strconv.Itoa(input.ResetDay), strconv.FormatBool(input.AdminEnabled), strconv.FormatInt(int64(input.ExpectedRevision), 10)),
-			State: domain.CommandCompleted, ResultReference: "/users/" + record.User.ID.String(), CreatedAt: now, CompletedAt: &completed}}
+			RequestFingerprint: fingerprint,
+			State:              domain.CommandCompleted, ResultReference: "/users/" + record.User.ID.String(), CreatedAt: now, CompletedAt: &completed}}
 	var operationID *domain.ID
 	if willBePresent != wasPresent {
 		opID, err := domain.NewID()
@@ -318,13 +324,167 @@ func (s *UserService) ResetTraffic(ctx context.Context, input ResetTrafficInput)
 	return replay, nil
 }
 
-// commandReplayed 在版本校验之前识别重复提交：同一 _request_id 直接返回原结果（http.md §General Rules）。
-func (s *UserService) commandReplayed(ctx context.Context, requestID domain.ID) (bool, error) {
+// commandReplayed 在版本校验之前识别重复提交：同一 _request_id 且同一载荷直接返回原结果，
+// 同一 _request_id 但载荷不同返回冲突（http.md §General Rules）。
+func (s *UserService) commandReplayed(ctx context.Context, requestID domain.ID, fingerprint []byte) (bool, error) {
 	var existing *domain.DomainCommand
 	err := s.store.WithReadTx(ctx, func(tx ports.ReadTx) error {
 		var inner error
 		existing, inner = tx.FindCommand(ctx, requestID)
 		return inner
 	})
-	return existing != nil, err
+	if err != nil || existing == nil {
+		return false, err
+	}
+	if !bytes.Equal(existing.RequestFingerprint, fingerprint) {
+		return false, &domain.ConflictError{Message: "request identifier was reused with different input"}
+	}
+	return true, nil
+}
+
+// SetEnabledInput 描述启用/禁用按钮提交。
+type SetEnabledInput struct {
+	ID               domain.ID
+	Enabled          bool
+	ExpectedRevision domain.Revision
+	RequestID        domain.ID
+	ActorID          domain.ID
+}
+
+// SetAdminEnabled 只切换管理员启用意图，其余字段沿用当前值；重新启用先检查配额（spec FR-010）。
+func (s *UserService) SetAdminEnabled(ctx context.Context, input SetEnabledInput) (bool, error) {
+	record, err := s.store.User(ctx, input.ID)
+	if err != nil {
+		return false, err
+	}
+	return s.UpdateUser(ctx, UpdateUserInput{ID: input.ID, DisplayName: record.User.DisplayName, LimitBytes: record.Policy.LimitBytes,
+		ResetDay: record.Policy.ResetDay, AdminEnabled: input.Enabled, ExpectedRevision: input.ExpectedRevision,
+		RequestID: input.RequestID, ActorID: input.ActorID})
+}
+
+// LifecycleInput 描述轮换与删除提交。
+type LifecycleInput struct {
+	ID               domain.ID
+	ExpectedRevision domain.Revision
+	RequestID        domain.ID
+	ActorID          domain.ID
+}
+
+// RotateCredential 生成下一版本密钥并启动 remove_old → add_desired → confirm 三阶段轮换（spec FR-011）。
+// 轮换进行中再次轮换返回冲突；旧凭证在确认事务中销毁。
+func (s *UserService) RotateCredential(ctx context.Context, input LifecycleInput) (bool, error) {
+	if !input.RequestID.Valid() {
+		return false, &domain.ValidationError{Field: "_request_id", Message: "invalid request identifier"}
+	}
+	fingerprint := domain.Fingerprint(domain.ActionCredentialRotated, input.ID.String(), strconv.FormatInt(int64(input.ExpectedRevision), 10))
+	if replayed, err := s.commandReplayed(ctx, input.RequestID, fingerprint); err != nil || replayed {
+		return replayed, err
+	}
+	record, err := s.store.User(ctx, input.ID)
+	if err != nil {
+		return false, err
+	}
+	if record.User.Lifecycle == domain.LifecycleDeleted {
+		return false, &domain.InvalidStateError{Message: "user is deleted"}
+	}
+	if record.User.Revision != input.ExpectedRevision {
+		return false, &domain.ConflictError{Message: "user changed since the page was loaded"}
+	}
+	if record.Credential.State == domain.CredentialPending {
+		return false, &domain.ConflictError{Message: "credential rotation already in progress"}
+	}
+	now := s.clock.Now().UTC()
+	credentialID, err := domain.NewID()
+	if err != nil {
+		return false, err
+	}
+	key, err := security.GenerateUserKey(record.Profile.Profile.Method)
+	if err != nil {
+		return false, err
+	}
+	version := record.Credential.Version + 1
+	ciphertext, nonce, err := s.keyring.Encrypt([]byte(key.Reveal()), security.SecretAAD("access_credentials", record.Allocation.ID.String(), "user_key", 1))
+	if err != nil {
+		return false, err
+	}
+	opID, err := domain.NewID()
+	if err != nil {
+		return false, err
+	}
+	auditID, err := domain.NewID()
+	if err != nil {
+		return false, err
+	}
+	present := record.Allocation.DesiredPresent(record.User)
+	actor := input.ActorID
+	completed := now
+	rotation := ports.RotationRecord{UserID: record.User.ID, AllocationID: record.Allocation.ID, ExpectedRevision: input.ExpectedRevision, Now: now,
+		Credential: domain.AccessCredential{ID: credentialID, AllocationID: record.Allocation.ID, Version: version, State: domain.CredentialPending,
+			KeyCiphertext: ciphertext, KeyNonce: nonce, KeyEncryptionVersion: 1, CreatedAt: now},
+		Operation: domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1, present, &version,
+			domain.SyncRotate, domain.SyncRemoveOld, now),
+		Command: domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor, CommandType: domain.ActionCredentialRotated,
+			TargetType: "user", TargetID: record.User.ID,
+			RequestFingerprint: fingerprint,
+			State:              domain.CommandCompleted, ResultReference: "/users/" + record.User.ID.String(), CreatedAt: now, CompletedAt: &completed},
+		Audit: domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor, TargetType: "user",
+			TargetID: record.User.ID, Action: domain.ActionCredentialRotated, Result: domain.AuditAccepted, CommandID: &input.RequestID,
+			OperationID: &opID, SafeSummary: "credential rotation started; old credential retires after Xray confirms the new one"}}
+	replay, err := s.store.RotateCredential(ctx, rotation)
+	if err != nil {
+		return false, err
+	}
+	if !replay && s.notify != nil {
+		s.notify()
+	}
+	return replay, nil
+}
+
+// DeleteUser 软删除用户：保留流量历史与审计，移除确认后销毁全部密钥（spec FR-012）。
+func (s *UserService) DeleteUser(ctx context.Context, input LifecycleInput) (bool, error) {
+	if !input.RequestID.Valid() {
+		return false, &domain.ValidationError{Field: "_request_id", Message: "invalid request identifier"}
+	}
+	fingerprint := domain.Fingerprint(domain.ActionUserDeleted, input.ID.String(), strconv.FormatInt(int64(input.ExpectedRevision), 10))
+	if replayed, err := s.commandReplayed(ctx, input.RequestID, fingerprint); err != nil || replayed {
+		return replayed, err
+	}
+	record, err := s.store.User(ctx, input.ID)
+	if err != nil {
+		return false, err
+	}
+	if record.User.Lifecycle == domain.LifecycleDeleted {
+		return false, &domain.InvalidStateError{Message: "user is deleted"}
+	}
+	if record.User.Revision != input.ExpectedRevision {
+		return false, &domain.ConflictError{Message: "user changed since the page was loaded"}
+	}
+	now := s.clock.Now().UTC()
+	opID, err := domain.NewID()
+	if err != nil {
+		return false, err
+	}
+	auditID, err := domain.NewID()
+	if err != nil {
+		return false, err
+	}
+	actor := input.ActorID
+	completed := now
+	deletion := ports.DeleteRecord{UserID: record.User.ID, AllocationID: record.Allocation.ID, ExpectedRevision: input.ExpectedRevision, Now: now,
+		Operation: domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1, false, nil, domain.SyncDelete, domain.SyncRemoveOld, now),
+		Command: domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor, CommandType: domain.ActionUserDeleted,
+			TargetType: "user", TargetID: record.User.ID,
+			RequestFingerprint: fingerprint,
+			State:              domain.CommandCompleted, ResultReference: "/users", CreatedAt: now, CompletedAt: &completed},
+		Audit: domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor, TargetType: "user",
+			TargetID: record.User.ID, Action: domain.ActionUserDeleted, Result: domain.AuditAccepted, CommandID: &input.RequestID, OperationID: &opID,
+			SafeSummary: "user soft-deleted; removal from Xray requested; history retained"}}
+	replay, err := s.store.SoftDeleteUser(ctx, deletion)
+	if err != nil {
+		return false, err
+	}
+	if !replay && s.notify != nil {
+		s.notify()
+	}
+	return replay, nil
 }

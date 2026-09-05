@@ -33,11 +33,12 @@ type userFormData struct {
 }
 
 type userListData struct {
-	Users    []views.UserView
-	Query    string
-	Status   string
-	Statuses []statusOption
-	Total    int
+	Users          []views.UserView
+	Query          string
+	Status         string
+	Statuses       []statusOption
+	Total          int
+	IncludeDeleted bool
 }
 
 type statusOption struct{ Value, Label string }
@@ -69,7 +70,8 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 	if !validStatus(status) {
 		status = ""
 	}
-	records, err := h.Service.List(r.Context(), ports.UserFilter{Query: query, Status: status, IncludeDeleted: r.URL.Query().Get("deleted") == "1"})
+	includeDeleted := r.URL.Query().Get("deleted") == "1"
+	records, err := h.Service.List(r.Context(), ports.UserFilter{Query: query, Status: status, IncludeDeleted: includeDeleted})
 	if err != nil {
 		h.Fail(w, r, err)
 		return
@@ -77,7 +79,7 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 	page := h.NewPage(r, "用户")
 	page.Capacity = h.capacityNotice(r)
 	page.Data = userListData{Users: views.NewUserViews(records, h.Location(r)), Query: query, Status: status,
-		Statuses: statusOptions, Total: len(records)}
+		Statuses: statusOptions, Total: len(records), IncludeDeleted: includeDeleted}
 	h.Renderer.Page(w, http.StatusOK, "users_list.html", page)
 }
 
@@ -386,4 +388,127 @@ func (h *UserHandler) Reset(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Flash(r, "success", "本周期用量已清零；若配额是唯一阻断原因，访问将自动恢复")
 	http.Redirect(w, r, "/users/"+id.String(), http.StatusSeeOther)
+}
+
+// Enable / Disable 处理详情页的启停按钮（POST + 303）。
+func (h *UserHandler) Enable(w http.ResponseWriter, r *http.Request)  { h.setEnabled(w, r, true) }
+func (h *UserHandler) Disable(w http.ResponseWriter, r *http.Request) { h.setEnabled(w, r, false) }
+
+func (h *UserHandler) setEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
+	id, ok := pathID(r, "user_id")
+	if !ok {
+		h.Renderer.Error(w, http.StatusNotFound, "请求的资源不存在", "")
+		return
+	}
+	action := "user_disable"
+	if enabled {
+		action = "user_enable"
+	}
+	form, err := ParseCommandForm(r, h.SessionToken(r), action, id.String())
+	if err != nil || form.Version == nil {
+		h.Renderer.Error(w, http.StatusBadRequest, "表单格式无效或缺少资源版本", "")
+		return
+	}
+	if _, err := h.Service.SetAdminEnabled(r.Context(), application.SetEnabledInput{ID: id, Enabled: enabled,
+		ExpectedRevision: domain.Revision(*form.Version), RequestID: form.RequestID, ActorID: h.Actor(r)}); err != nil {
+		h.conflictOrFail(w, r, id, err)
+		return
+	}
+	if enabled {
+		h.Flash(r, "success", "已请求启用；若用量仍符合配额，节点确认后即可建立新连接")
+	} else {
+		h.Flash(r, "success", "已请求禁用；节点确认后拒绝新连接，已建立的连接可能继续")
+	}
+	http.Redirect(w, r, "/users/"+id.String(), http.StatusSeeOther)
+}
+
+// conflictOrFail 把 409 呈现为带最新状态的详情页（http.md §Response Semantics）。
+func (h *UserHandler) conflictOrFail(w http.ResponseWriter, r *http.Request, id domain.ID, cause error) {
+	failure := Classify(cause)
+	if failure.Status != http.StatusConflict {
+		h.Fail(w, r, cause)
+		return
+	}
+	record, err := h.Service.User(r.Context(), id)
+	if err != nil {
+		h.Fail(w, r, err)
+		return
+	}
+	page := h.NewPage(r, "用户："+record.User.DisplayName)
+	page.ErrorSummary = failure.Message
+	page.Version = int64(record.User.Revision)
+	confirmed := record.Credential.State == domain.CredentialActive && record.Allocation.DesiredCredentialVersion == record.Credential.Version
+	page.Data = userDetailData{User: views.NewUserView(record, h.Location(r)),
+		ConnectionAvailable: confirmed && record.User.Lifecycle != domain.LifecycleDeleted,
+		ConnectionPending:   !confirmed && record.User.Lifecycle != domain.LifecycleDeleted}
+	h.Renderer.Page(w, http.StatusConflict, "user_detail.html", page)
+}
+
+func (h *UserHandler) RotateForm(w http.ResponseWriter, r *http.Request) {
+	h.confirmationPage(w, r, "user_rotate.html", "轮换凭证：")
+}
+
+func (h *UserHandler) DeleteForm(w http.ResponseWriter, r *http.Request) {
+	h.confirmationPage(w, r, "user_delete.html", "删除用户：")
+}
+
+func (h *UserHandler) confirmationPage(w http.ResponseWriter, r *http.Request, template, titlePrefix string) {
+	id, ok := pathID(r, "user_id")
+	if !ok {
+		h.Renderer.Error(w, http.StatusNotFound, "请求的资源不存在", "")
+		return
+	}
+	record, err := h.Service.User(r.Context(), id)
+	if err != nil {
+		h.Fail(w, r, err)
+		return
+	}
+	if record.User.Lifecycle == domain.LifecycleDeleted {
+		h.Renderer.Error(w, http.StatusConflict, "已删除的用户不能再执行此操作", "")
+		return
+	}
+	page := h.NewPage(r, titlePrefix+record.User.DisplayName)
+	page.Version = int64(record.User.Revision)
+	page.Data = views.NewUserView(record, h.Location(r))
+	h.Renderer.Page(w, http.StatusOK, template, page)
+}
+
+func (h *UserHandler) Rotate(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "user_id")
+	if !ok {
+		h.Renderer.Error(w, http.StatusNotFound, "请求的资源不存在", "")
+		return
+	}
+	form, err := ParseCommandForm(r, h.SessionToken(r), "user_rotate", id.String())
+	if err != nil || form.Version == nil {
+		h.Renderer.Error(w, http.StatusBadRequest, "表单格式无效或缺少资源版本", "")
+		return
+	}
+	if _, err := h.Service.RotateCredential(r.Context(), application.LifecycleInput{ID: id, ExpectedRevision: domain.Revision(*form.Version),
+		RequestID: form.RequestID, ActorID: h.Actor(r)}); err != nil {
+		h.conflictOrFail(w, r, id, err)
+		return
+	}
+	h.Flash(r, "success", "凭证轮换已开始；节点确认新凭证后，连接信息页才会展示新密码，旧凭证随后失效")
+	http.Redirect(w, r, "/users/"+id.String(), http.StatusSeeOther)
+}
+
+func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "user_id")
+	if !ok {
+		h.Renderer.Error(w, http.StatusNotFound, "请求的资源不存在", "")
+		return
+	}
+	form, err := ParseCommandForm(r, h.SessionToken(r), "user_delete", id.String())
+	if err != nil || form.Version == nil {
+		h.Renderer.Error(w, http.StatusBadRequest, "表单格式无效或缺少资源版本", "")
+		return
+	}
+	if _, err := h.Service.DeleteUser(r.Context(), application.LifecycleInput{ID: id, ExpectedRevision: domain.Revision(*form.Version),
+		RequestID: form.RequestID, ActorID: h.Actor(r)}); err != nil {
+		h.conflictOrFail(w, r, id, err)
+		return
+	}
+	h.Flash(r, "success", "用户已删除；节点确认移除后凭证销毁，历史用量与审计保留")
+	http.Redirect(w, r, "/users", http.StatusSeeOther)
 }

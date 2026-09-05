@@ -219,14 +219,14 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 
 **Independent Test**: 对已有用户依次执行编辑、禁用、启用、轮换、删除，每个 POST 用相同 `_request_id` 提交两次并提交一次过期 `_version`，验证页面状态、fake Xray 中的用户集合与审计记录
 
-- [ ] T089 [US3] 扩展 `internal/persistence/sqlite/store_users.go`：按规范化名称搜索与按派生状态筛选（默认排除已删除，显式包含选项）、按 revision 更新显示名称、启用/禁用意图、软删除（`deleted_at`、`admin_enabled=false`）、凭证下一版本插入/激活/销毁（清空密文）
-- [ ] T090 [US3] 扩展 `internal/application/user_service.go`：`UpdateUser`（重名校验、revision）、`EnableUser`（先检查当前用量是否符合配额）、`DisableUser`、`RotateCredential`（生成下一版本密钥、`desired_credential_version`、phase=`remove_old` 操作、旧信息标为即将失效；轮换进行中再次轮换返回 409，禁用/删除 supersede 轮换）、`DeleteUser`（需确认、软删除、入队 remove、确认后销毁密钥；已删除用户的任何 POST 返回 409）；均经 `DomainCommand` 幂等与 revision 保护并写审计
-- [ ] T091 [US3] 扩展 `internal/worker/synchronizer.go` 【重试/协调】：轮换阶段 `remove_old → add_desired → confirm`（每阶段持久化后再执行，超时读后写，确认后新凭证 active、旧凭证 destroyed）；删除确认后销毁密钥；任一阶段失败保持 pending/error 重试，绝不重新发布旧密钥
-- [ ] T092 [P] [US3] 扩展 `internal/application/user_service_test.go` 与 `internal/worker/synchronizer_test.go`：轮换各阶段超时/重启/新意图 supersede、重复提交、过期版本、删除后重名创建获得新身份
-- [ ] T093 [US3] 实现 `internal/web/templates/pages/users_list.html` 并扩展 `internal/web/handlers/users.go`：`GET /users`（名称搜索、状态筛选 启用/手动禁用/配额超限/待同步/已删除、包含已删除选项、零状态、状态文字标签、表格 caption 与 scope）
-- [ ] T094 [US3] 实现 `internal/web/templates/pages/user_rotate.html`、`user_delete.html` 并扩展 `internal/web/handlers/users.go`：`GET/POST /users/{user_id}/rotate`、`GET/POST /users/{user_id}/delete`（无脚本确认页，说明旧凭证失效、已有连接可能继续、历史保留）、`POST /users/{user_id}/enable`、`POST /users/{user_id}/disable`
-- [ ] T095 [P] [US3] 编写 `internal/web/handlers/users_list_test.go` 与 `users_lifecycle_test.go`：筛选组合、409 过期版本显示当前状态、同 `_request_id` 重放返回原 303、同 id 不同载荷 409、已删除用户不在默认列表
-- [ ] T096 [US3] 编写 `tests/e2e/lifecycle_test.go`：编辑/禁用/启用/轮换/删除全流程，重复提交与过期版本，旧凭证在 fake Xray 中消失、新凭证出现，流量历史归属不变，删除后重名创建为新身份
+- [X] T089 [US3] 扩展 `internal/persistence/sqlite/store_users.go`：按规范化名称搜索与按派生状态筛选（默认排除已删除，显式包含选项）、按 revision 更新显示名称、启用/禁用意图、软删除（`deleted_at`、`admin_enabled=false`）、凭证下一版本插入/激活/销毁（清空密文）
+- [X] T090 [US3] 扩展 `internal/application/user_service.go`：`UpdateUser`（重名校验、revision）、`EnableUser`（先检查当前用量是否符合配额）、`DisableUser`、`RotateCredential`（生成下一版本密钥、`desired_credential_version`、phase=`remove_old` 操作、旧信息标为即将失效；轮换进行中再次轮换返回 409，禁用/删除 supersede 轮换）、`DeleteUser`（需确认、软删除、入队 remove、确认后销毁密钥；已删除用户的任何 POST 返回 409）；均经 `DomainCommand` 幂等与 revision 保护并写审计
+- [X] T091 [US3] 扩展 `internal/worker/synchronizer.go` 【重试/协调】：轮换阶段 `remove_old → add_desired → confirm`（每阶段持久化后再执行，超时读后写，确认后新凭证 active、旧凭证 destroyed）；删除确认后销毁密钥；任一阶段失败保持 pending/error 重试，绝不重新发布旧密钥
+- [X] T092 [P] [US3] 扩展 `internal/application/user_service_test.go` 与 `internal/worker/synchronizer_test.go`：轮换各阶段超时/重启/新意图 supersede、重复提交、过期版本、删除后重名创建获得新身份
+- [X] T093 [US3] 实现 `internal/web/templates/pages/users_list.html` 并扩展 `internal/web/handlers/users.go`：`GET /users`（名称搜索、状态筛选 启用/手动禁用/配额超限/待同步/已删除、包含已删除选项、零状态、状态文字标签、表格 caption 与 scope）
+- [X] T094 [US3] 实现 `internal/web/templates/pages/user_rotate.html`、`user_delete.html` 并扩展 `internal/web/handlers/users.go`：`GET/POST /users/{user_id}/rotate`、`GET/POST /users/{user_id}/delete`（无脚本确认页，说明旧凭证失效、已有连接可能继续、历史保留）、`POST /users/{user_id}/enable`、`POST /users/{user_id}/disable`
+- [X] T095 [P] [US3] 编写 `internal/web/handlers/users_list_test.go` 与 `users_lifecycle_test.go`：筛选组合、409 过期版本显示当前状态、同 `_request_id` 重放返回原 303、同 id 不同载荷 409、已删除用户不在默认列表
+- [X] T096 [US3] 编写 `tests/e2e/lifecycle_test.go`：编辑/禁用/启用/轮换/删除全流程，重复提交与过期版本，旧凭证在 fake Xray 中消失、新凭证出现，流量历史归属不变，删除后重名创建为新身份
 
 **Checkpoint**: 日常维护流程可替代手工编辑配置；幂等与并发保护可验证
 

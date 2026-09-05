@@ -49,6 +49,8 @@ type Store interface {
 	NextCycleEnd(context.Context) (*time.Time, error)
 	RolloverCycle(context.Context, CycleRollover) error
 	UpdateSettings(context.Context, string, domain.Revision, domain.DomainCommand, domain.AuditEvent) (bool, error)
+	RotateCredential(context.Context, RotationRecord) (bool, error)
+	SoftDeleteUser(context.Context, DeleteRecord) (bool, error)
 	Close() error
 }
 
@@ -261,4 +263,27 @@ type CycleRollover struct {
 	Operation    *domain.SynchronizationOperation
 	Audit        *domain.AuditEvent
 	Now          time.Time
+}
+
+// RotationRecord 描述凭证轮换的单事务写入（data-model §Atomic Transaction Boundaries 第 7 条）。
+type RotationRecord struct {
+	UserID           domain.ID
+	AllocationID     domain.ID
+	ExpectedRevision domain.Revision
+	Credential       domain.AccessCredential
+	Operation        domain.SynchronizationOperation
+	Command          domain.DomainCommand
+	Audit            domain.AuditEvent
+	Now              time.Time
+}
+
+// DeleteRecord 描述软删除的单事务写入（data-model §Atomic Transaction Boundaries 第 8 条）。
+type DeleteRecord struct {
+	UserID           domain.ID
+	AllocationID     domain.ID
+	ExpectedRevision domain.Revision
+	Operation        domain.SynchronizationOperation
+	Command          domain.DomainCommand
+	Audit            domain.AuditEvent
+	Now              time.Time
 }

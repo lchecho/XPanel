@@ -164,14 +164,14 @@ func (s *Store) ConfirmSync(ctx context.Context, operationID domain.ID, revision
 	if present {
 		projection = "present"
 		syncedCredential = credentialVersion
-		if _, err := tx.ExecContext(ctx, `UPDATE access_credentials SET state='active',activated_at=?
-            WHERE allocation_id=? AND version=? AND state='pending'`, millis(now), allocationID, credentialVersion); err != nil {
-			return false, err
-		}
-		// 轮换确认后立即销毁旧版本凭证密文（data-model §Credential rotation 第 4 步）。
+		// 先销毁旧版本凭证密文再激活新版本，满足“每个分配至多一个 active”的唯一索引（data-model §Credential rotation 第 4 步）。
 		if _, err := tx.ExecContext(ctx, `UPDATE access_credentials SET state='destroyed',key_ciphertext=NULL,key_nonce=NULL,
             key_encryption_version=NULL,retired_at=? WHERE allocation_id=? AND version<? AND state!='destroyed'`,
 			millis(now), allocationID, credentialVersion); err != nil {
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE access_credentials SET state='active',activated_at=?
+            WHERE allocation_id=? AND version=? AND state='pending'`, millis(now), allocationID, credentialVersion); err != nil {
 			return false, err
 		}
 	} else {

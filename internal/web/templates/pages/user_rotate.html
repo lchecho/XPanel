@@ -1,0 +1,16 @@
+{{define "user_rotate.html"}}{{template "head" .}}
+<body>{{template "nav" .}}<main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}
+<p>轮换会为该用户生成全新的客户端密钥。请确认你了解以下后果：</p>
+<ul>
+  <li>旧凭证只有在节点确认移除后才停止接受新连接；已经建立的连接可能继续一段时间。</li>
+  <li>节点确认新凭证之前，连接信息页不会展示新密码，也不会把任一凭证标为可用。</li>
+  <li>流量历史、配额周期与审计记录保持不变，仍归属于同一个用户。</li>
+</ul>
+<form method="post" action="/users/{{.Data.ID}}/rotate">
+  {{.CSRFField}}
+  <input type="hidden" name="_request_id" value="{{.RequestID}}">
+  <input type="hidden" name="_version" value="{{.Version}}">
+  <button type="submit">确认轮换凭证</button>
+</form>
+<p><a href="/users/{{.Data.ID}}">取消并返回</a></p>
+{{template "footer" .}}</main></body></html>{{end}}

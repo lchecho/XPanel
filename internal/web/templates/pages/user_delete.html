@@ -1,0 +1,16 @@
+{{define "user_delete.html"}}{{template "head" .}}
+<body>{{template "nav" .}}<main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}
+<p>删除是软删除，请确认你了解以下后果：</p>
+<ul>
+  <li>该用户的凭证在节点确认移除后无法再建立新连接；已经建立的连接可能继续一段时间。</li>
+  <li>用户不再出现在默认列表中，但历史用量与审计记录保留，可通过“包含已删除”查看。</li>
+  <li>移除确认后密钥材料被销毁，无法恢复；之后可以用相同显示名称创建全新的用户。</li>
+</ul>
+<form method="post" action="/users/{{.Data.ID}}/delete">
+  {{.CSRFField}}
+  <input type="hidden" name="_request_id" value="{{.RequestID}}">
+  <input type="hidden" name="_version" value="{{.Version}}">
+  <button type="submit">确认删除用户</button>
+</form>
+<p><a href="/users/{{.Data.ID}}">取消并返回</a></p>
+{{template "footer" .}}</main></body></html>{{end}}

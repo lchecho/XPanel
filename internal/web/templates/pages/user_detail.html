@@ -15,7 +15,12 @@
 <div class="actions">
   {{if .Data.ConnectionAvailable}}<a href="/users/{{.Data.User.ID}}/connection" class="button">查看连接信息</a>{{end}}
   {{if not .Data.User.Deleted}}<a href="/users/{{.Data.User.ID}}/edit" class="button">编辑</a>
-  <a href="/users/{{.Data.User.ID}}/reset-traffic" class="button">重置本周期流量</a>{{end}}
+  <a href="/users/{{.Data.User.ID}}/reset-traffic" class="button">重置本周期流量</a>
+  {{if .Data.User.AdminEnabled}}<form method="post" action="/users/{{.Data.User.ID}}/disable" class="inline">{{$.CSRFField}}<input type="hidden" name="_request_id" value="{{$.RequestID}}"><input type="hidden" name="_version" value="{{$.Version}}"><button type="submit">禁用</button></form>
+  {{else}}<form method="post" action="/users/{{.Data.User.ID}}/enable" class="inline">{{$.CSRFField}}<input type="hidden" name="_request_id" value="{{$.RequestID}}"><input type="hidden" name="_version" value="{{$.Version}}"><button type="submit">启用</button></form>{{end}}
+  <a href="/users/{{.Data.User.ID}}/rotate" class="button">轮换凭证</a>
+  <a href="/users/{{.Data.User.ID}}/delete" class="button">删除</a>{{end}}
+  {{if .Data.User.Deleted}}<p class="notice">该用户已删除，页面只读；历史用量与审计仍可查看。</p>{{end}}
   {{if .Data.ConnectionPending}}<p class="notice">连接信息将在节点确认凭证后可用。</p>{{end}}
 </div>
 <p><a href="/users">返回用户列表</a></p>

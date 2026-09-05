@@ -86,6 +86,12 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 		protected.HandleFunc("POST /users/{user_id}", users.Update)
 		protected.HandleFunc("GET /users/{user_id}/reset-traffic", users.ResetForm)
 		protected.HandleFunc("POST /users/{user_id}/reset-traffic", users.Reset)
+		protected.HandleFunc("POST /users/{user_id}/enable", users.Enable)
+		protected.HandleFunc("POST /users/{user_id}/disable", users.Disable)
+		protected.HandleFunc("GET /users/{user_id}/rotate", users.RotateForm)
+		protected.HandleFunc("POST /users/{user_id}/rotate", users.Rotate)
+		protected.HandleFunc("GET /users/{user_id}/delete", users.DeleteForm)
+		protected.HandleFunc("POST /users/{user_id}/delete", users.Delete)
 	}
 	if deps.Settings != nil {
 		settings := &handlers.SettingsHandler{Base: base, Service: deps.Settings}

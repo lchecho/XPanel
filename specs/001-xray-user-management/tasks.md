@@ -287,8 +287,8 @@ description: "Xray 多用户管理 MVP 的实现任务清单"
 - [X] T123 [P] 编写 `README.md`：构建、配置、`admin init`/`serve`/`reset-password`、quickstart 指引、软配额语义声明
 - [X] T124 编写 `tests/integration/perf_test.go`：20 个活跃 allocation 下管理操作反馈 <2s、一轮采集提交耗时记录（SC-002/SC-003 基线）
 - [X] T125 编写 `tests/e2e/success_criteria_test.go`：用 fake 时钟与 fake Adapter 为可自动化的成功标准产生证据并以结构化 `t.Log` 输出测量摘要：SC-003（20 个分配下数据从采集到页面 ≤10s）、SC-004（越界后 ≤10s 完成移除投影；失败路径 ≤30s 显示待同步）、SC-005（周期切换 ≤60s 恢复，手动禁用/已删除恢复数为 0）、SC-006（重连 ≤60s 收敛）、SC-007（负流量与重复计量为 0）、SC-008（受审计操作覆盖 100% 且无明文凭证）、SC-011（重置后旧会话可用数为 0）
-- [ ] T126 【待真实 Xray 环境：本机无 v26.3.27 二进制，2026-09-04 已完成自动化部分并生成 validation-report.md 骨架】按 `specs/001-xray-user-management/quickstart.md` §2–§9 使用真实 Xray v26.3.27 完成人工验收并记录到 `specs/001-xray-user-management/validation-report.md`：SC-001（从首次登录到复制出连接信息的计时）、SC-002（登录/搜索/创建/编辑/状态切换各执行 ≥20 次，记录 P95 反馈时间）、SC-010（纯键盘以及 360×640、390×844 视口各完成登录/创建/编辑/禁用/删除，记录成功率）；引用 T125 的自动化证据；SC-009 属可用性研究，需另行组织，不由本任务验证
-- [ ] T127 【fmt/vet/test/test-race 已通过并记录；contract 门禁待 XRAY_BIN】运行发布门禁 `make check`（`XRAY_BIN` 指向固定二进制并设置 `XPANEL_REQUIRE_CONTRACT=1`），全部通过后更新 `validation-report.md` 的门禁证据
+- [ ] T126 【2026-09-05：已用 `go install github.com/xtls/xray-core/main@v1.260327.0` 构建固定二进制并通过契约门禁 1–9（见 validation-report.md）；剩余 SC-001/SC-002/SC-010 需人工在浏览器中计时与操作，待用户执行】按 `specs/001-xray-user-management/quickstart.md` §2–§9 使用真实 Xray v26.3.27 完成人工验收并记录到 `specs/001-xray-user-management/validation-report.md`：SC-001（从首次登录到复制出连接信息的计时）、SC-002（登录/搜索/创建/编辑/状态切换各执行 ≥20 次，记录 P95 反馈时间）、SC-010（纯键盘以及 360×640、390×844 视口各完成登录/创建/编辑/禁用/删除，记录成功率）；引用 T125 的自动化证据；SC-009 属可用性研究，需另行组织，不由本任务验证
+- [X] T127 【2026-09-05：`XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 make check` 全部通过，证据已写入 validation-report.md】运行发布门禁 `make check`（`XRAY_BIN` 指向固定二进制并设置 `XPANEL_REQUIRE_CONTRACT=1`），全部通过后更新 `validation-report.md` 的门禁证据
 
 ---
 
@@ -408,8 +408,8 @@ Task: "编写 internal/domain/quota_test.go 与 traffic_test.go"
 - [X] T132 将 handler 生成的 session+action+target+canonical-payload fingerprint 传入所有状态变更命令并持久比较；修复 profile 创建 fingerprint 对随机新 profile ID 的依赖，使同 session 同请求重放返回原 canonical result、跨 session 或不同载荷复用返回 409，并补 profile/setting/user HTTP 回归测试 per FR-021 / FR-027 (partial)
 - [X] T133 为已有 allocation 的 profile 限制或实现可恢复的 inbound_tag/method/bootstrap identity 变更：不得在旧入站遗留可用用户，method 变化必须校验或轮换现有 user/server keys，所有受影响 projection 必须经持久操作收敛，并增加在线用户迁移/拒绝测试 per FR-006 / FR-007 / FR-020 / FR-030 (partial)
 - [X] T134 修改 bootstrap identity 注册以区分同 profile 幂等重放与跨 profile 全局冲突，冲突时不得把 profile 标为 compatible；增加多 profile bootstrap/managed statistics ID 全实例唯一测试 per data-model: XrayUserIdentity / contract gate 9 (partial)
-- [ ] T135 修正 `deploy/xray-v26.3.27.example.json` 和 `tests/contract/xray` 运行时配置以满足固定 Xray API `tag` 契约，改为从 `XRAY_BIN` 构建信息验证 `github.com/xtls/xray-core@v1.260327.0`，失败时输出安全的进程诊断，并让固定二进制的真实契约套件能够启动和通过 per plan: Xray contract and deployment config (partial)
-- [ ] T136 扩展真实 Xray 契约门禁 7–9：用应用 reconciler/synchronizer 验证重启后仅恢复 active 用户，用持久操作验证可能已生效的超时经读后写收敛，并用多个 profile 验证统计 ID 全局唯一与 bootstrap 排除，而非在测试中手工重加用户 per plan: Xray compatibility gates 7-9 (partial)
+- [X] T135 修正 `deploy/xray-v26.3.27.example.json` 和 `tests/contract/xray` 运行时配置以满足固定 Xray API `tag` 契约，改为从 `XRAY_BIN` 构建信息验证 `github.com/xtls/xray-core@v1.260327.0`，失败时输出安全的进程诊断，并让固定二进制的真实契约套件能够启动和通过 per plan: Xray contract and deployment config (partial)
+- [X] T136 扩展真实 Xray 契约门禁 7–9：用应用 reconciler/synchronizer 验证重启后仅恢复 active 用户，用持久操作验证可能已生效的超时经读后写收敛，并用多个 profile 验证统计 ID 全局唯一与 bootstrap 排除，而非在测试中手工重加用户 per plan: Xray compatibility gates 7-9 (partial)
 - [X] T137 将流量采集目标按最多 20 个 statistics ID 分批执行并合并为同一安全提交语义，使超过 20 个活跃 allocation 时继续计量、标记陈旧和执行配额封禁，同时只撤销性能承诺而不停止功能，并增加 21+ 用户回归测试 per FR-013 / FR-017 (contradicts)
 - [X] T138 加强 `tests/integration/failure_matrix_test.go` 与 `tests/e2e/success_criteria_test.go`：每个故障单元格断言对应动作/结果的审计、operation 唯一性、流量不重复且不为负；对 SC-008 的 leak count 显式断言为零，确保缺少审计或发生泄露时门禁失败 per SC-007 / SC-008 (partial)
 - [X] T139 调整用户状态筛选，使 admin enabled 且 within-limit 的 enabling/pending/error 用户仍命中“启用”业务筛选，同时也命中“待同步”筛选，并增加正交筛选组合测试 per FR-008 (partial)

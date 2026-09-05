@@ -68,8 +68,17 @@ const (
 	BootstrapID     = "bootstrap"
 )
 
+// Options 允许契约测试注入真实 Xray Adapter 与目标；零值等同 New（fake Adapter）。
+type Options struct {
+	Adapter ports.Adapter
+	Target  *ports.InstanceTarget
+}
+
 // New 装配应用并初始化管理员；不登录。
-func New(t *testing.T) *App {
+func New(t *testing.T) *App { return NewWith(t, Options{}) }
+
+// NewWith 按 Options 装配应用：注入真实 Adapter 时 App.Adapter 为 nil，fake 专用助手不可用。
+func NewWith(t *testing.T, options Options) *App {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -93,15 +102,25 @@ func New(t *testing.T) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.EnsureSingletons(ctx, "UTC", "127.0.0.1:10085", config.SupportedXrayVersion, verifier, nonce, clock.Now()); err != nil {
+	target := ports.InstanceTarget{APIEndpoint: "127.0.0.1:10085", ExpectedVersion: config.SupportedXrayVersion, RPCTimeout: time.Second}
+	if options.Target != nil {
+		target = *options.Target
+	}
+	if err := store.EnsureSingletons(ctx, "UTC", target.APIEndpoint, config.SupportedXrayVersion, verifier, nonce, clock.Now()); err != nil {
 		t.Fatal(err)
 	}
-	adapter := fake.New()
-	adapter.Now = clock.Now
-	adapter.BootEpoch = clock.Now().Add(-time.Hour)
-	target := ports.InstanceTarget{APIEndpoint: "127.0.0.1:10085", ExpectedVersion: config.SupportedXrayVersion, RPCTimeout: time.Second}
+	var adapter ports.Adapter
+	var fakeAdapter *fake.Adapter
+	if options.Adapter != nil {
+		adapter = options.Adapter
+	} else {
+		fakeAdapter = fake.New()
+		fakeAdapter.Now = clock.Now
+		fakeAdapter.BootEpoch = clock.Now().Add(-time.Hour)
+		adapter = fakeAdapter
+	}
 	node := &sync.Mutex{}
-	app := &App{T: t, Store: store, Keyring: keyring, Clock: clock, Adapter: adapter, Node: node, Target: target,
+	app := &App{T: t, Store: store, Keyring: keyring, Clock: clock, Adapter: fakeAdapter, Node: node, Target: target,
 		Username: DefaultUsername, Password: DefaultPassword}
 
 	app.Auth, err = application.NewAuthService(store, clock)

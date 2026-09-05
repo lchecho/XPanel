@@ -8,7 +8,8 @@
 ## 前提
 
 - Go `1.26.8`（`go.mod` 的 toolchain 指令会自动获取）。
-- Xray `v26.3.27`，API 只监听回环地址，并已配置至少一个保留初始用户的 SS2022 多用户入站（见 `deploy/xray-v26.3.27.example.json`）。
+- Xray `v26.3.27`，API 只监听回环地址且 `api.tag` 非空，并已配置至少一个保留初始用户的 SS2022 多用户入站（见 `deploy/xray-v26.3.27.example.json`）。
+  没有官方二进制时可从固定模块构建：`GOBIN=$PWD/bin go install github.com/xtls/xray-core/main@v1.260327.0 && mv bin/main bin/xray`。
 - 本地持久磁盘目录（`0700`）存放 SQLite；独立保存的 32 字节主密钥文件（`0600`）。
 
 ## 构建与门禁
@@ -18,7 +19,10 @@ make build          # CGO_ENABLED=0，产出 bin/xpanel
 make test           # 单元 + 集成 + 端到端（fake Xray）
 make check          # fmt + vet + test + test-race + 固定 Xray 契约套件（需 XRAY_BIN）
 XRAY_BIN=/usr/local/bin/xray make contract
+XRAY_BIN=/usr/local/bin/xray XPANEL_REQUIRE_CONTRACT=1 make check   # 发布门禁：缺少二进制视为失败
 ```
+
+契约套件会用 `xray version` 与 `go version -m $XRAY_BIN` 双重核对运行时 `26.3.27` 与模块 `v1.260327.0`。
 
 ## 运行
 

@@ -38,6 +38,7 @@ is intentionally invalid for this feature.
 ```json
 {
   "api": {
+    "tag": "api",
     "listen": "127.0.0.1:10085",
     "services": ["HandlerService", "StatsService"]
   },

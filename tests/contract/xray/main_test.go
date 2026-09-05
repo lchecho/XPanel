@@ -9,7 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"runtime/debug"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -40,40 +40,85 @@ func contractBinary(t *testing.T) string {
 	return path
 }
 
+// 契约门禁 1：固定二进制的运行时版本与其构建信息中的 xray-core 模块版本必须同时匹配（contracts/xray-adapter.md）。
 func TestPinnedRuntimeAndModule(t *testing.T) {
 	bin := contractBinary(t)
 	out, err := exec.Command(bin, "version").CombinedOutput()
 	if err != nil {
-		t.Fatalf("xray version failed")
+		t.Fatalf("xray version failed: %s", sanitize(out))
 	}
 	if !bytes.Contains(out, []byte("26.3.27")) {
-		t.Fatalf("Xray runtime does not match %s", wantRuntime)
+		t.Fatalf("Xray runtime does not match %s: %s", wantRuntime, sanitize(out))
 	}
-	info, ok := debug.ReadBuildInfo()
+	module, ok := binaryModuleVersion(t, bin)
 	if !ok {
-		t.Fatal("Go build information unavailable")
+		t.Logf("WARNING: Go toolchain unavailable; xray-core module version of %s not verified from build info", wantModule)
+		return
 	}
-	found := false
-	for _, dependency := range info.Deps {
-		if dependency.Path == "github.com/xtls/xray-core" {
-			found = dependency.Version == wantModule
-		}
-	}
-	if !found {
-		t.Fatalf("Xray Go module does not match %s", wantModule)
+	if module != wantModule {
+		t.Fatalf("Xray binary was built from xray-core %q, want %s", module, wantModule)
 	}
 }
 
-type liveRuntime struct {
-	client    *xrayadapter.Client
-	cancel    context.CancelFunc
-	command   *exec.Cmd
-	output    *bytes.Buffer
-	inbound   string
-	serverKey string
-	api       string
-	config    string
+// binaryModuleVersion 用 `go version -m` 读取 XRAY_BIN 的主模块版本；没有 go 工具链时返回 ok=false（尽力而为）。
+func binaryModuleVersion(t *testing.T, bin string) (string, bool) {
+	t.Helper()
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		return "", false
+	}
+	out, err := exec.Command(goTool, "version", "-m", bin).Output()
+	if err != nil {
+		t.Fatalf("go version -m failed: %s", sanitize(out))
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[0] == "mod" && fields[1] == "github.com/xtls/xray-core" {
+			return fields[2], true
+		}
+	}
+	t.Fatalf("go version -m did not report the xray-core module: %s", sanitize(out))
+	return "", false
 }
+
+// sanitize 去掉进程输出中的密钥材料（32 字节 base64 = 44 字符）与多余空白，只保留可安全打印的最后几行。
+func sanitize(output []byte) string {
+	redacted := base64Key.ReplaceAllString(string(output), "[redacted-key]")
+	lines := strings.Split(strings.TrimSpace(redacted), "\n")
+	if len(lines) > 12 {
+		lines = lines[len(lines)-12:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+var base64Key = regexp.MustCompile(`[A-Za-z0-9+/]{43}=`)
+
+// liveRuntime 是一个受控的真实 Xray 进程：主 inbound `managed`（bootstrap `bootstrap`）、
+// 第二 inbound `managed2`（bootstrap `bootstrap2`）用于多 profile 门禁，
+// 第三 inbound `managed3` 故意复用 bootstrap 邮箱 `bootstrap`（Xray 允许，但统计计数器按邮箱全局共享）。
+type liveRuntime struct {
+	client     *xrayadapter.Client
+	cancel     context.CancelFunc
+	command    *exec.Cmd
+	output     *bytes.Buffer
+	inbound    string
+	inbound2   string
+	inbound3   string
+	serverKey  string
+	serverKey2 string
+	serverKey3 string
+	api        string
+	config     string
+}
+
+const (
+	secondInboundTag = "managed2"
+	secondBootstrap  = "bootstrap2"
+	thirdInboundTag  = "managed3"
+)
+
+// diagnostics 返回脱敏后的进程输出尾部，用于失败时定位（不含密钥）。
+func (r *liveRuntime) diagnostics() string { return sanitize(r.output.Bytes()) }
 
 func freeAddress(t *testing.T) string {
 	t.Helper()
@@ -97,13 +142,25 @@ func runtimeConfig(apiAddress, inboundAddress, method, serverKey string, clients
 	var port int
 	_, _ = fmt.Sscanf(portText, "%d", &port)
 	return map[string]any{
-		"api":    map[string]any{"listen": apiAddress, "services": []string{"HandlerService", "StatsService"}},
+		// Xray 要求 api.tag 非空（"API tag can't be empty"）；与 deploy/xray-v26.3.27.example.json 保持一致。
+		"api":    map[string]any{"tag": "api", "listen": apiAddress, "services": []string{"HandlerService", "StatsService"}},
 		"stats":  map[string]any{},
 		"policy": map[string]any{"levels": map[string]any{"0": map[string]any{"statsUserUplink": true, "statsUserDownlink": true}}},
 		"inbounds": []any{map[string]any{"tag": "managed", "listen": host, "port": port, "protocol": "shadowsocks",
 			"settings": map[string]any{"method": method, "password": serverKey, "network": "tcp,udp", "clients": clients}}},
 		"outbounds": []any{map[string]any{"protocol": "freedom", "tag": "direct"}},
 	}
+}
+
+// withInbound 追加一个 SS2022 多用户 inbound，用于多 profile 场景。
+func withInbound(config map[string]any, tag, address, method, serverKey string, clients []map[string]string) map[string]any {
+	host, portText, _ := net.SplitHostPort(address)
+	var port int
+	_, _ = fmt.Sscanf(portText, "%d", &port)
+	inbounds, _ := config["inbounds"].([]any)
+	config["inbounds"] = append(inbounds, map[string]any{"tag": tag, "listen": host, "port": port, "protocol": "shadowsocks",
+		"settings": map[string]any{"method": method, "password": serverKey, "network": "tcp,udp", "clients": clients}})
+	return config
 }
 
 func writeRuntimeConfig(t *testing.T, config map[string]any) string {
@@ -121,10 +178,33 @@ func writeRuntimeConfig(t *testing.T, config map[string]any) string {
 
 func startRuntime(t *testing.T) *liveRuntime {
 	t.Helper()
-	bin := contractBinary(t)
-	apiAddress, inboundAddress := freeAddress(t), freeAddress(t)
+	apiAddress, inboundAddress, secondAddress, thirdAddress := freeAddress(t), freeAddress(t), freeAddress(t), freeAddress(t)
 	config := runtimeConfig(apiAddress, inboundAddress, "2022-blake3-aes-256-gcm", testKey('s'),
 		[]map[string]string{{"email": "bootstrap", "password": testKey('b')}})
+	config = withInbound(config, secondInboundTag, secondAddress, "2022-blake3-aes-256-gcm", testKey('S'),
+		[]map[string]string{{"email": secondBootstrap, "password": testKey('B')}})
+	config = withInbound(config, thirdInboundTag, thirdAddress, "2022-blake3-aes-256-gcm", testKey('T'),
+		[]map[string]string{{"email": "bootstrap", "password": testKey('C')}})
+	runtime := launchRuntime(t, apiAddress, config)
+	runtime.inbound, runtime.inbound2, runtime.inbound3 = inboundAddress, secondAddress, thirdAddress
+	runtime.serverKey, runtime.serverKey2, runtime.serverKey3 = testKey('s'), testKey('S'), testKey('T')
+	return runtime
+}
+
+// startCustomRuntime 只启动主 inbound `managed`，clients 由调用方指定（用于运行期负例，如空 clients 的单用户模式）。
+func startCustomRuntime(t *testing.T, clients []map[string]string) *liveRuntime {
+	t.Helper()
+	apiAddress, inboundAddress := freeAddress(t), freeAddress(t)
+	config := runtimeConfig(apiAddress, inboundAddress, "2022-blake3-aes-256-gcm", testKey('s'), clients)
+	runtime := launchRuntime(t, apiAddress, config)
+	runtime.inbound, runtime.serverKey = inboundAddress, testKey('s')
+	return runtime
+}
+
+// launchRuntime 写入配置、启动进程并等待 API 就绪；失败时输出脱敏诊断。
+func launchRuntime(t *testing.T, apiAddress string, config map[string]any) *liveRuntime {
+	t.Helper()
+	bin := contractBinary(t)
 	path := writeRuntimeConfig(t, config)
 	ctx, cancel := context.WithCancel(context.Background())
 	command := exec.CommandContext(ctx, bin, "run", "-config", path)
@@ -132,7 +212,7 @@ func startRuntime(t *testing.T) *liveRuntime {
 	command.Stdout, command.Stderr = output, output
 	if err := command.Start(); err != nil {
 		cancel()
-		t.Fatalf("start Xray runtime")
+		t.Fatalf("start Xray runtime: %v", err)
 	}
 	target := ports.InstanceTarget{APIEndpoint: apiAddress, ExpectedVersion: wantRuntime, RPCTimeout: 500 * time.Millisecond}
 	client, err := xrayadapter.New(target)
@@ -150,11 +230,11 @@ func startRuntime(t *testing.T) *liveRuntime {
 			_ = client.Close()
 			cancel()
 			_ = command.Wait()
-			t.Fatalf("Xray API did not become ready")
+			t.Fatalf("Xray API did not become ready: %v\n%s", err, sanitize(output.Bytes()))
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	runtime := &liveRuntime{client: client, cancel: cancel, command: command, output: output, inbound: inboundAddress, serverKey: testKey('s'), api: apiAddress, config: path}
+	runtime := &liveRuntime{client: client, cancel: cancel, command: command, output: output, api: apiAddress, config: path}
 	t.Cleanup(func() {
 		_ = client.Close()
 		cancel()
@@ -185,7 +265,7 @@ func (r *liveRuntime) restart(t *testing.T, bin string) {
 	command.Stdout, command.Stderr = r.output, r.output
 	if err := command.Start(); err != nil {
 		cancel()
-		t.Fatalf("restart Xray runtime")
+		t.Fatalf("restart Xray runtime: %v", err)
 	}
 	r.cancel, r.command = cancel, command
 	target := ports.InstanceTarget{APIEndpoint: r.api, ExpectedVersion: wantRuntime, RPCTimeout: 500 * time.Millisecond}
@@ -195,7 +275,7 @@ func (r *liveRuntime) restart(t *testing.T, bin string) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("Xray API did not come back after restart")
+			t.Fatalf("Xray API did not come back after restart\n%s", r.diagnostics())
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

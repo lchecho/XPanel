@@ -47,9 +47,9 @@ func (f *faultStore) CreateUser(ctx context.Context, record ports.UserCreateReco
 	return f.Store.CreateUser(ctx, record)
 }
 
-func (f *faultStore) UpdateUser(ctx context.Context, record ports.UserUpdateRecord) (bool, error) {
+func (f *faultStore) UpdateUser(ctx context.Context, record ports.UserUpdateRecord) (bool, bool, error) {
 	if f.take("UpdateUser") {
-		return false, errInjected
+		return false, false, errInjected
 	}
 	return f.Store.UpdateUser(ctx, record)
 }
@@ -68,16 +68,16 @@ func (f *faultStore) SoftDeleteUser(ctx context.Context, record ports.DeleteReco
 	return f.Store.SoftDeleteUser(ctx, record)
 }
 
-func (f *faultStore) CommitTrafficBatch(ctx context.Context, batch ports.TrafficBatch) error {
+func (f *faultStore) CommitTrafficBatch(ctx context.Context, batch ports.TrafficBatch) (int, error) {
 	if f.take("CommitTrafficBatch") {
-		return errInjected
+		return 0, errInjected
 	}
 	return f.Store.CommitTrafficBatch(ctx, batch)
 }
 
-func (f *faultStore) RolloverCycle(ctx context.Context, rollover ports.CycleRollover) error {
+func (f *faultStore) RolloverCycle(ctx context.Context, rollover ports.CycleRollover) (bool, bool, error) {
 	if f.take("RolloverCycle") {
-		return errInjected
+		return false, false, errInjected
 	}
 	return f.Store.RolloverCycle(ctx, rollover)
 }

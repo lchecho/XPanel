@@ -89,7 +89,7 @@ func (s *TrafficService) CollectOnce(ctx context.Context) (CollectionSummary, er
 	}
 	batch := ports.TrafficBatch{ObservedAt: observedAt}
 	for _, target := range targets {
-		update, blocked, skipped, err := s.buildUpdate(target, samples[target.Identity.StatisticsID], round.Observation, observedAt)
+		update, skipped, err := s.buildUpdate(target, samples[target.Identity.StatisticsID], round.Observation, observedAt)
 		if err != nil {
 			return summary, err
 		}
@@ -97,16 +97,15 @@ func (s *TrafficService) CollectOnce(ctx context.Context) (CollectionSummary, er
 			summary.Skipped++
 			continue
 		}
-		if blocked {
-			summary.Blocked++
-		}
 		summary.Events += len(update.Events)
 		summary.Applied++
 		batch.Updates = append(batch.Updates, update)
 	}
-	if err := s.store.CommitTrafficBatch(ctx, batch); err != nil {
+	blocked, err := s.store.CommitTrafficBatch(ctx, batch)
+	if err != nil {
 		return summary, err
 	}
+	summary.Blocked = blocked
 	if summary.Blocked > 0 && s.notify != nil {
 		s.notify()
 	}
@@ -143,12 +142,12 @@ func (s *TrafficService) readAll(ctx context.Context, ids []string) (ports.Traff
 }
 
 func (s *TrafficService) buildUpdate(target ports.CollectionTarget, samples map[ports.Direction]domain.TrafficSample,
-	observation ports.InstanceObservation, observedAt time.Time) (ports.TrafficUpdate, bool, bool, error) {
+	observation ports.InstanceObservation, observedAt time.Time) (ports.TrafficUpdate, bool, error) {
 	cursor := target.Cursor
 	if cursor.LastObservedAt != nil && observedAt.Before(*cursor.LastObservedAt) {
 		// 规则 7：迟到或乱序响应整体丢弃。
 		s.logger.Warn("late traffic sample dropped", logging.FieldAllocationID, target.Allocation.ID.String())
-		return ports.TrafficUpdate{}, false, true, nil
+		return ports.TrafficUpdate{}, true, nil
 	}
 	restart := false
 	if cursor.BootEpoch != "" {
@@ -178,13 +177,11 @@ func (s *TrafficService) buildUpdate(target ports.CollectionTarget, samples map[
 		downDelta = 0
 		events = append(events, domain.ContinuityEvent{Type: domain.EventOverflow, Direction: string(ports.Downlink), Summary: "lifetime total would overflow"})
 	}
-	accountedUp, err := domain.AddDelta(target.Cycle.AccountedUplinkBytes, upDelta)
-	if err != nil {
-		upDelta, accountedUp = 0, target.Cycle.AccountedUplinkBytes
+	if _, err := domain.AddDelta(target.Cycle.AccountedUplinkBytes, upDelta); err != nil {
+		upDelta = 0
 	}
-	accountedDown, err := domain.AddDelta(target.Cycle.AccountedDownlinkBytes, downDelta)
-	if err != nil {
-		downDelta, accountedDown = 0, target.Cycle.AccountedDownlinkBytes
+	if _, err := domain.AddDelta(target.Cycle.AccountedDownlinkBytes, downDelta); err != nil {
+		downDelta = 0
 	}
 	location, err := time.LoadLocation(target.Cycle.Timezone)
 	if err != nil {
@@ -214,33 +211,23 @@ func (s *TrafficService) buildUpdate(target ports.CollectionTarget, samples map[
 	for _, event := range events {
 		id, err := domain.NewID()
 		if err != nil {
-			return update, false, false, err
+			return update, false, err
 		}
 		update.Events = append(update.Events, ports.ContinuityEventRecord{ID: id, AllocationID: target.Allocation.ID, Event: event, OccurredAt: observedAt})
 	}
-	blocked := false
-	if target.Allocation.QuotaState == domain.QuotaWithinLimit && domain.IsQuotaExceeded(target.Policy.LimitBytes, accountedUp, accountedDown) {
-		update.MarkExceeded = true
-		auditID, err := domain.NewID()
-		if err != nil {
-			return update, false, false, err
-		}
-		audit := domain.AuditEvent{ID: auditID, OccurredAt: observedAt, ActorType: domain.ActorSystem, TargetType: "user",
-			TargetID: target.User.ID, Action: domain.ActionQuotaExceeded, Result: domain.AuditAccepted, SafeSummary: "accounted usage reached the quota; removal requested"}
-		if target.Allocation.AdminEnabled && target.User.Lifecycle == domain.LifecycleActive {
-			opID, err := domain.NewID()
-			if err != nil {
-				return update, false, false, err
-			}
-			op := domain.NewSynchronizationOperation(opID, target.Allocation.ID, target.Allocation.DesiredRevision+1, false, nil,
-				domain.SyncQuotaBlock, domain.SyncRemoveOld, observedAt)
-			update.QuotaBlock = &op
-			audit.OperationID = &opID
-			blocked = true
-		}
-		update.Audit = &audit
+	// 越界判定与封禁操作由 Store 在事务内按最新事实决定；这里只提供 ID 模板（data-model §Write Ordering）。
+	opID, err := domain.NewID()
+	if err != nil {
+		return update, false, err
 	}
-	return update, blocked, false, nil
+	auditID, err := domain.NewID()
+	if err != nil {
+		return update, false, err
+	}
+	update.QuotaBlock = &domain.SynchronizationOperation{ID: opID, AllocationID: target.Allocation.ID, CreatedAt: observedAt}
+	update.Audit = &domain.AuditEvent{ID: auditID, OccurredAt: observedAt, ActorType: domain.ActorSystem, TargetType: "user",
+		TargetID: target.User.ID, Action: domain.ActionQuotaExceeded, Result: domain.AuditAccepted, SafeSummary: "accounted usage reached the quota; removal requested"}
+	return update, false, nil
 }
 
 // dedupeRestart 把两个方向各自的 node_restart 合并为一条全局事件。

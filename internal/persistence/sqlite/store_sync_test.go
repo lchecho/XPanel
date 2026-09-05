@@ -50,8 +50,16 @@ func TestSyncRescheduleAndSupersede(t *testing.T) {
 	if _, _, err := store.CreateUser(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Reschedule(context.Background(), record.Operation.ID, 2, now.Add(5*time.Second), "instance_unavailable", "temporarily unavailable"); err != nil {
+	if work, err := store.LeaseDue(context.Background(), "worker-a", now, time.Second); err != nil || work == nil {
+		t.Fatalf("lease = %#v, %v", work, err)
+	}
+	if err := store.Reschedule(context.Background(), record.Operation.ID, "worker-a", 2, now.Add(5*time.Second), "instance_unavailable", "temporarily unavailable"); err != nil {
 		t.Fatal(err)
+	}
+	var state string
+	_ = store.db.Read.QueryRow(`SELECT state FROM synchronization_operations WHERE id=?`, record.Operation.ID.String()).Scan(&state)
+	if state != string(domain.SyncRetryWait) {
+		t.Fatalf("state after reschedule = %s", state)
 	}
 	if count, err := store.Supersede(context.Background(), record.Allocation.ID, 2, now.Add(time.Second)); err != nil || count != 1 {
 		t.Fatalf("supersede = %d, %v", count, err)

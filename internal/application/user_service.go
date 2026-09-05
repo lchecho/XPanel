@@ -157,9 +157,11 @@ type UpdateUserInput struct {
 	ExpectedRevision domain.Revision
 	RequestID        domain.ID
 	ActorID          domain.ID
+	Fingerprint      []byte
 }
 
-// UpdateUser 按 data-model §Atomic Transaction Boundaries 第 2 条提交编辑；期望存在状态变化时写入同步操作。
+// UpdateUser 按 data-model §Atomic Transaction Boundaries 第 2 条提交编辑。配额状态与是否需要同步操作由 Store 在写事务内
+// 用最新事实（策略、启用意图、生命周期、open 周期用量、revision）通过 domain.DecideTransition 决定，避免事务外旧快照覆盖较新意图。
 // 调低配额至不高于当前用量立即封禁；调高或改为无限制且配额是唯一阻断原因时立即恢复（spec FR-009/FR-010）。
 func (s *UserService) UpdateUser(ctx context.Context, input UpdateUserInput) (bool, error) {
 	if !input.RequestID.Valid() {
@@ -176,8 +178,11 @@ func (s *UserService) UpdateUser(ctx context.Context, input UpdateUserInput) (bo
 	if input.LimitBytes != nil {
 		limit = strconv.FormatInt(*input.LimitBytes, 10)
 	}
-	fingerprint := domain.Fingerprint(domain.ActionUserUpdated, input.ID.String(), normalized, limit,
-		strconv.Itoa(input.ResetDay), strconv.FormatBool(input.AdminEnabled), strconv.FormatInt(int64(input.ExpectedRevision), 10))
+	fingerprint := input.Fingerprint
+	if len(fingerprint) == 0 {
+		fingerprint = domain.Fingerprint(domain.ActionUserUpdated, input.ID.String(), normalized, limit,
+			strconv.Itoa(input.ResetDay), strconv.FormatBool(input.AdminEnabled), strconv.FormatInt(int64(input.ExpectedRevision), 10))
+	}
 	if replayed, err := s.commandReplayed(ctx, input.RequestID, fingerprint); err != nil || replayed {
 		return replayed, err
 	}
@@ -196,71 +201,46 @@ func (s *UserService) UpdateUser(ctx context.Context, input UpdateUserInput) (bo
 	if err != nil {
 		return false, err
 	}
-	exceeded := domain.IsQuotaExceeded(input.LimitBytes, record.Cycle.AccountedUplinkBytes, record.Cycle.AccountedDownlinkBytes)
-	next := record.Allocation
-	next.AdminEnabled = input.AdminEnabled
-	next.QuotaState = domain.QuotaWithinLimit
-	if exceeded {
-		next.QuotaState = domain.QuotaExceeded
-	}
-	wasPresent := record.Allocation.DesiredPresent(record.User)
-	willBePresent := next.DesiredPresent(record.User)
-	actor := input.ActorID
-	completed := now
-	update := ports.UserUpdateRecord{UserID: record.User.ID, ExpectedRevision: input.ExpectedRevision, DisplayName: renamed.DisplayName,
-		NormalizedName: renamed.NormalizedName, LimitBytes: input.LimitBytes, ResetDay: input.ResetDay, AdminEnabled: input.AdminEnabled,
-		QuotaState: next.QuotaState, Now: now,
-		Command: domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor, CommandType: domain.ActionUserUpdated,
-			TargetType: "user", TargetID: record.User.ID,
-			RequestFingerprint: fingerprint,
-			State:              domain.CommandCompleted, ResultReference: "/users/" + record.User.ID.String(), CreatedAt: now, CompletedAt: &completed}}
-	var operationID *domain.ID
-	if willBePresent != wasPresent {
-		opID, err := domain.NewID()
+	ids := make([]domain.ID, 0, 4)
+	for i := 0; i < 4; i++ {
+		id, err := domain.NewID()
 		if err != nil {
 			return false, err
 		}
-		reason, phase := domain.SyncDisable, domain.SyncRemoveOld
-		switch {
-		case !willBePresent && exceeded && record.Allocation.QuotaState == domain.QuotaWithinLimit && input.AdminEnabled:
-			reason = domain.SyncQuotaBlock
-		case willBePresent && record.Allocation.QuotaState == domain.QuotaExceeded && record.Allocation.AdminEnabled:
-			reason, phase = domain.SyncQuotaRestore, domain.SyncAddDesired
-		case willBePresent:
-			reason, phase = domain.SyncEnable, domain.SyncAddDesired
-		}
-		version := record.Allocation.DesiredCredentialVersion
-		op := domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1, willBePresent, &version, reason, phase, now)
-		update.Operation = &op
-		operationID = &opID
+		ids = append(ids, id)
 	}
-	audits := []struct {
+	actor := input.ActorID
+	completed := now
+	update := ports.UserUpdateRecord{UserID: record.User.ID, ExpectedRevision: input.ExpectedRevision, DisplayName: renamed.DisplayName,
+		NormalizedName: renamed.NormalizedName, LimitBytes: input.LimitBytes, ResetDay: input.ResetDay, AdminEnabled: input.AdminEnabled, Now: now,
+		OperationTemplate: domain.SynchronizationOperation{ID: ids[0], CreatedAt: now},
+		QuotaAudit: &domain.AuditEvent{ID: ids[1], OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor, TargetType: "user",
+			TargetID: record.User.ID, Result: domain.AuditAccepted, CommandID: &input.RequestID},
+		Command: domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor, CommandType: domain.ActionUserUpdated,
+			TargetType: "user", TargetID: record.User.ID, RequestFingerprint: fingerprint,
+			State: domain.CommandCompleted, ResultReference: "/users/" + record.User.ID.String(), CreatedAt: now, CompletedAt: &completed}}
+	intents := []struct {
 		action, summary string
 		when            bool
 	}{
 		{domain.ActionUserUpdated, "user profile or quota policy updated", true},
 		{domain.ActionUserDisabled, "administrator disabled access", record.Allocation.AdminEnabled && !input.AdminEnabled},
 		{domain.ActionUserEnabled, "administrator enabled access", !record.Allocation.AdminEnabled && input.AdminEnabled},
-		{domain.ActionQuotaExceeded, "quota lowered to or below current usage; removal requested", exceeded && record.Allocation.QuotaState == domain.QuotaWithinLimit},
-		{domain.ActionCycleRestored, "quota raised above current usage; access restore requested", !exceeded && record.Allocation.QuotaState == domain.QuotaExceeded},
 	}
-	for _, item := range audits {
+	next := 2
+	for _, item := range intents {
 		if !item.when {
 			continue
 		}
-		auditID, err := domain.NewID()
-		if err != nil {
-			return false, err
-		}
-		update.Audits = append(update.Audits, domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor,
-			TargetType: "user", TargetID: record.User.ID, Action: item.action, Result: domain.AuditAccepted, CommandID: &input.RequestID,
-			OperationID: operationID, SafeSummary: item.summary})
+		update.Audits = append(update.Audits, domain.AuditEvent{ID: ids[next], OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor,
+			TargetType: "user", TargetID: record.User.ID, Action: item.action, Result: domain.AuditAccepted, CommandID: &input.RequestID, SafeSummary: item.summary})
+		next++
 	}
-	replay, err := s.store.UpdateUser(ctx, update)
+	replay, created, err := s.store.UpdateUser(ctx, update)
 	if err != nil {
 		return false, err
 	}
-	if !replay && update.Operation != nil && s.notify != nil {
+	if !replay && created && s.notify != nil {
 		s.notify()
 	}
 	return replay, nil
@@ -268,12 +248,13 @@ func (s *UserService) UpdateUser(ctx context.Context, input UpdateUserInput) (bo
 
 // ResetTrafficInput 描述手动重置本周期流量。
 type ResetTrafficInput struct {
-	ID        domain.ID
-	RequestID domain.ID
-	ActorID   domain.ID
+	ID          domain.ID
+	RequestID   domain.ID
+	ActorID     domain.ID
+	Fingerprint []byte
 }
 
-// ResetTraffic 清零当前周期 accounted 用量；配额超限是唯一阻断原因时立即请求恢复（spec FR-032）。
+// ResetTraffic 清零当前周期 accounted 用量；是否恢复由事务内最新事实决定（配额超限是唯一阻断原因时立即恢复，spec FR-032）。
 func (s *UserService) ResetTraffic(ctx context.Context, input ResetTrafficInput) (bool, error) {
 	if !input.RequestID.Valid() {
 		return false, &domain.ValidationError{Field: "_request_id", Message: "invalid request identifier"}
@@ -284,6 +265,13 @@ func (s *UserService) ResetTraffic(ctx context.Context, input ResetTrafficInput)
 	}
 	if record.User.Lifecycle == domain.LifecycleDeleted {
 		return false, &domain.InvalidStateError{Message: "user is deleted"}
+	}
+	fingerprint := input.Fingerprint
+	if len(fingerprint) == 0 {
+		fingerprint = domain.Fingerprint(domain.ActionTrafficReset, record.User.ID.String(), record.Cycle.ID.String())
+	}
+	if replayed, err := s.commandReplayed(ctx, input.RequestID, fingerprint); err != nil || replayed {
+		return replayed, err
 	}
 	now := s.clock.Now().UTC()
 	actor := input.ActorID
@@ -296,29 +284,23 @@ func (s *UserService) ResetTraffic(ctx context.Context, input ResetTrafficInput)
 	if err != nil {
 		return false, err
 	}
+	opID, err := domain.NewID()
+	if err != nil {
+		return false, err
+	}
 	reset := ports.QuotaResetRecord{AllocationID: record.Allocation.ID, CycleID: record.Cycle.ID, EventID: eventID, ActorID: input.ActorID, Now: now,
+		OperationTemplate: domain.SynchronizationOperation{ID: opID, CreatedAt: now},
 		Command: domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor, CommandType: domain.ActionTrafficReset,
-			TargetType: "user", TargetID: record.User.ID, RequestFingerprint: domain.Fingerprint(domain.ActionTrafficReset, record.User.ID.String(), record.Cycle.ID.String()),
+			TargetType: "user", TargetID: record.User.ID, RequestFingerprint: fingerprint,
 			State: domain.CommandCompleted, ResultReference: "/users/" + record.User.ID.String(), CreatedAt: now, CompletedAt: &completed},
 		Audit: domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor, TargetType: "user",
 			TargetID: record.User.ID, Action: domain.ActionTrafficReset, Result: domain.AuditAccepted, CommandID: &input.RequestID,
 			SafeSummary: "current cycle accounted usage reset to zero"}}
-	if record.Allocation.QuotaState == domain.QuotaExceeded && record.Allocation.AdminEnabled {
-		opID, err := domain.NewID()
-		if err != nil {
-			return false, err
-		}
-		version := record.Allocation.DesiredCredentialVersion
-		op := domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1, true, &version,
-			domain.SyncQuotaRestore, domain.SyncAddDesired, now)
-		reset.Operation = &op
-		reset.Audit.OperationID = &opID
-	}
-	replay, err := s.store.ResetCycleTraffic(ctx, reset)
+	replay, created, err := s.store.ResetCycleTraffic(ctx, reset)
 	if err != nil {
 		return false, err
 	}
-	if !replay && reset.Operation != nil && s.notify != nil {
+	if !replay && created && s.notify != nil {
 		s.notify()
 	}
 	return replay, nil

@@ -10,9 +10,10 @@ import (
 	"xpanel/internal/ports"
 )
 
-// UpdateUser 在一个事务中提交显示名称、配额策略、启用意图、配额状态与可选的同步操作。
-func (s *Store) UpdateUser(ctx context.Context, record ports.UserUpdateRecord) (bool, error) {
-	replay := false
+// UpdateUser 在一个事务中提交显示名称、配额策略与启用意图；配额状态与同步操作由事务内重读的最新事实决定。
+// 返回 (replay, operationCreated, err)。
+func (s *Store) UpdateUser(ctx context.Context, record ports.UserUpdateRecord) (bool, bool, error) {
+	replay, created := false, false
 	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
 		tx := write.(*txStore)
 		var err error
@@ -37,38 +38,56 @@ func (s *Store) UpdateUser(ctx context.Context, record ports.UserUpdateRecord) (
 			nullableInt64(record.LimitBytes), record.ResetDay, millis(record.Now), allocationID); err != nil {
 			return err
 		}
-		if record.Operation != nil {
-			op := record.Operation
-			if err := supersedeOlder(ctx, tx.tx, op.AllocationID, op.DesiredRevision, record.Now); err != nil {
-				return err
-			}
-			if err := insertOperation(ctx, tx.tx, *op); err != nil {
-				return err
-			}
-			if _, err := tx.tx.ExecContext(ctx, `UPDATE access_allocations SET admin_enabled=?,quota_state=?,desired_revision=?,projection_state='pending',updated_at=? WHERE id=?`,
-				boolInt(record.AdminEnabled), record.QuotaState, op.DesiredRevision, millis(record.Now), allocationID); err != nil {
-				return err
-			}
-		} else if _, err := tx.tx.ExecContext(ctx, `UPDATE access_allocations SET admin_enabled=?,quota_state=?,updated_at=? WHERE id=?`,
-			boolInt(record.AdminEnabled), record.QuotaState, millis(record.Now), allocationID); err != nil {
+		facts, err := readFacts(ctx, tx.tx, allocationID)
+		if err != nil {
 			return err
+		}
+		exceeded := domain.IsQuotaExceeded(facts.limit, facts.accountedUplink, facts.accountedDownlink)
+		decision := domain.DecideTransition(facts.AllocationFacts, record.AdminEnabled, exceeded)
+		template := record.OperationTemplate
+		created, err = applyDecision(ctx, tx.tx, allocationID, facts, decision, record.AdminEnabled, &template, record.Now)
+		if err != nil {
+			return err
+		}
+		if record.QuotaAudit != nil {
+			audit := *record.QuotaAudit
+			write := false
+			switch {
+			case exceeded && facts.QuotaState == domain.QuotaWithinLimit:
+				audit.Action, audit.SafeSummary, write = domain.ActionQuotaExceeded, "quota lowered to or below current usage; removal requested", true
+			case !exceeded && facts.QuotaState == domain.QuotaExceeded:
+				audit.Action, audit.SafeSummary, write = domain.ActionCycleRestored, "quota raised above current usage; access restore requested", true
+			}
+			if write {
+				if created {
+					operationID := template.ID
+					audit.OperationID = &operationID
+				}
+				if err := tx.AppendAudit(ctx, audit); err != nil {
+					return err
+				}
+			}
 		}
 		if err := tx.SaveCommand(ctx, record.Command); err != nil {
 			return err
 		}
 		for _, audit := range record.Audits {
+			if created {
+				operationID := template.ID
+				audit.OperationID = &operationID
+			}
 			if err := tx.AppendAudit(ctx, audit); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
-	return replay, err
+	return replay, created, err
 }
 
-// ResetCycleTraffic 清零当前周期 accounted 值并记录重置事件；gross、lifetime、daily 与周期边界保持不变。
-func (s *Store) ResetCycleTraffic(ctx context.Context, record ports.QuotaResetRecord) (bool, error) {
-	replay := false
+// ResetCycleTraffic 清零当前周期 accounted 值并记录重置事件；恢复操作由事务内最新事实决定。
+func (s *Store) ResetCycleTraffic(ctx context.Context, record ports.QuotaResetRecord) (bool, bool, error) {
+	replay, created := false, false
 	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
 		tx := write.(*txStore)
 		var err error
@@ -102,25 +121,24 @@ func (s *Store) ResetCycleTraffic(ctx context.Context, record ports.QuotaResetRe
 			record.CycleID.String()); err != nil {
 			return err
 		}
-		if record.Operation != nil {
-			op := record.Operation
-			if err := supersedeOlder(ctx, tx.tx, op.AllocationID, op.DesiredRevision, record.Now); err != nil {
-				return err
-			}
-			if err := insertOperation(ctx, tx.tx, *op); err != nil {
-				return err
-			}
-			if _, err := tx.tx.ExecContext(ctx, `UPDATE access_allocations SET quota_state='within_limit',desired_revision=?,projection_state='pending',updated_at=? WHERE id=?`,
-				op.DesiredRevision, millis(record.Now), record.AllocationID.String()); err != nil {
-				return err
-			}
-		} else if _, err := tx.tx.ExecContext(ctx, `UPDATE access_allocations SET quota_state='within_limit',updated_at=? WHERE id=?`,
-			millis(record.Now), record.AllocationID.String()); err != nil {
+		facts, err := readFacts(ctx, tx.tx, record.AllocationID.String())
+		if err != nil {
 			return err
 		}
-		return tx.AppendAudit(ctx, record.Audit)
+		decision := domain.DecideTransition(facts.AllocationFacts, facts.AdminEnabled, false)
+		template := record.OperationTemplate
+		created, err = applyDecision(ctx, tx.tx, record.AllocationID.String(), facts, decision, facts.AdminEnabled, &template, record.Now)
+		if err != nil {
+			return err
+		}
+		audit := record.Audit
+		if created {
+			operationID := template.ID
+			audit.OperationID = &operationID
+		}
+		return tx.AppendAudit(ctx, audit)
 	})
-	return replay, err
+	return replay, created, err
 }
 
 // DueCycles 返回结束时间已到的 open 周期所属用户（含已删除用户，删除后周期仍需结算但不恢复）。
@@ -154,9 +172,10 @@ func (s *Store) NextCycleEnd(ctx context.Context) (*time.Time, error) {
 	return &result, nil
 }
 
-// RolloverCycle 幂等地关闭旧周期并打开新周期；重复执行不会重复结算或重复恢复。
-func (s *Store) RolloverCycle(ctx context.Context, rollover ports.CycleRollover) error {
-	return s.WithWriteTx(ctx, func(write ports.WriteTx) error {
+// RolloverCycle 幂等地关闭旧周期并打开新周期；是否恢复访问由事务内最新事实决定。返回 (rolled, restored, err)。
+func (s *Store) RolloverCycle(ctx context.Context, rollover ports.CycleRollover) (bool, bool, error) {
+	rolled, restored := false, false
+	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
 		tx := write.(*txStore)
 		result, err := tx.tx.ExecContext(ctx, `UPDATE quota_cycles SET status='closed',closed_at=? WHERE id=? AND status='open'`,
 			millis(rollover.Now), rollover.OldCycleID.String())
@@ -166,6 +185,7 @@ func (s *Store) RolloverCycle(ctx context.Context, rollover ports.CycleRollover)
 		if rows, _ := result.RowsAffected(); rows != 1 {
 			return nil // 已由更早的一次切换处理。
 		}
+		rolled = true
 		c := rollover.NewCycle
 		if _, err := tx.tx.ExecContext(ctx, `INSERT INTO quota_cycles
             (id,allocation_id,starts_at_utc,ends_at_utc,timezone_name,reset_day,status,gross_uplink_bytes,gross_downlink_bytes,
@@ -174,25 +194,23 @@ func (s *Store) RolloverCycle(ctx context.Context, rollover ports.CycleRollover)
 			c.ID.String(), c.AllocationID.String(), millis(c.StartsAt), millis(c.EndsAt), c.Timezone, c.ResetDay, millis(rollover.Now)); err != nil {
 			return err
 		}
-		if rollover.Operation != nil {
-			op := rollover.Operation
-			if err := supersedeOlder(ctx, tx.tx, op.AllocationID, op.DesiredRevision, rollover.Now); err != nil {
-				return err
-			}
-			if err := insertOperation(ctx, tx.tx, *op); err != nil {
-				return err
-			}
-			if _, err := tx.tx.ExecContext(ctx, `UPDATE access_allocations SET quota_state='within_limit',desired_revision=?,projection_state='pending',updated_at=? WHERE id=?`,
-				op.DesiredRevision, millis(rollover.Now), rollover.AllocationID.String()); err != nil {
-				return err
-			}
-		} else if _, err := tx.tx.ExecContext(ctx, `UPDATE access_allocations SET quota_state='within_limit',updated_at=? WHERE id=?`,
-			millis(rollover.Now), rollover.AllocationID.String()); err != nil {
+		facts, err := readFacts(ctx, tx.tx, rollover.AllocationID.String())
+		if err != nil {
 			return err
 		}
-		if rollover.Audit != nil {
-			return tx.AppendAudit(ctx, *rollover.Audit)
+		decision := domain.DecideTransition(facts.AllocationFacts, facts.AdminEnabled, false)
+		template := rollover.OperationTemplate
+		restored, err = applyDecision(ctx, tx.tx, rollover.AllocationID.String(), facts, decision, facts.AdminEnabled, &template, rollover.Now)
+		if err != nil {
+			return err
+		}
+		if restored && rollover.Audit != nil {
+			audit := *rollover.Audit
+			operationID := template.ID
+			audit.OperationID = &operationID
+			return tx.AppendAudit(ctx, audit)
 		}
 		return nil
 	})
+	return rolled, restored, err
 }

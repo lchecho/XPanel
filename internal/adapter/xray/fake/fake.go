@@ -32,6 +32,8 @@ type Adapter struct {
 	Now       func() time.Time
 	// Delay 模拟慢 RPC；调用会等待 Delay 或 ctx 取消（用于优雅关闭与超时测试）。
 	Delay time.Duration
+	// OnReadTraffic 在每次 ReadTraffic 前（锁外）调用一次，用于模拟采集与管理员操作的并发竞争。
+	OnReadTraffic func()
 }
 
 func New() *Adapter {
@@ -146,6 +148,13 @@ func (a *Adapter) RemoveUser(ctx context.Context, command ports.RemoveUserComman
 }
 
 func (a *Adapter) ReadTraffic(_ context.Context, query ports.TrafficQuery) (ports.TrafficRound, error) {
+	a.mu.Lock()
+	hook := a.OnReadTraffic
+	a.OnReadTraffic = nil
+	a.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.Calls = append(a.Calls, Call{Operation: "read_traffic"})

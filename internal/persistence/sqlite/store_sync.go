@@ -50,8 +50,8 @@ func (s *Store) ConfirmIfRevisionCurrent(ctx context.Context, operationID domain
 	return s.ConfirmSync(ctx, operationID, revision, credentialVersion, present, now)
 }
 
-func (s *Store) Reschedule(ctx context.Context, id domain.ID, attempts int, next time.Time, code, summary string) error {
-	return s.RescheduleSync(ctx, id, attempts, next, code, summary)
+func (s *Store) Reschedule(ctx context.Context, id domain.ID, owner string, attempts int, next time.Time, code, summary string) error {
+	return s.RescheduleSync(ctx, id, owner, attempts, next, code, summary)
 }
 
 func (s *Store) Supersede(ctx context.Context, allocationID domain.ID, revision domain.Revision, now time.Time) (int64, error) {
@@ -66,8 +66,8 @@ func (s *Store) Supersede(ctx context.Context, allocationID domain.ID, revision 
 	return result.RowsAffected()
 }
 
-func (s *Store) RecordError(ctx context.Context, id domain.ID, code, summary string, now time.Time) error {
-	return s.FailSync(ctx, id, code, summary, now)
+func (s *Store) RecordError(ctx context.Context, id domain.ID, owner, code, summary string, now time.Time) error {
+	return s.FailSync(ctx, id, owner, code, summary, now)
 }
 
 func (s *Store) LeaseDueSync(ctx context.Context, owner string, now time.Time, leaseDuration time.Duration) (*ports.SyncWork, error) {
@@ -200,57 +200,74 @@ func (s *Store) ConfirmSync(ctx context.Context, operationID domain.ID, revision
 	return true, tx.Commit()
 }
 
-// AdvancePhase 持久化轮换阶段推进（remove_old → add_desired），用于重启后从正确阶段恢复。
-func (s *Store) AdvancePhase(ctx context.Context, id domain.ID, phase domain.SyncPhase, now time.Time) error {
-	result, err := s.db.Write.ExecContext(ctx, `UPDATE synchronization_operations SET phase=?,lease_expires_at=? WHERE id=? AND state='leased'`,
-		phase, millis(now.Add(30*time.Second)), id.String())
+// AdvancePhase 持久化轮换阶段推进（remove_old → add_desired）；只有当前租约持有者可以推进。
+func (s *Store) AdvancePhase(ctx context.Context, id domain.ID, owner string, phase domain.SyncPhase, now time.Time) error {
+	result, err := s.db.Write.ExecContext(ctx, `UPDATE synchronization_operations SET phase=?,lease_expires_at=? WHERE id=? AND state='leased' AND lease_owner=?`,
+		phase, millis(now.Add(30*time.Second)), id.String(), owner)
 	if err != nil {
 		return err
 	}
 	rows, _ := result.RowsAffected()
 	if rows != 1 {
-		return &domain.InvalidStateError{Message: "operation is no longer leased"}
+		return &domain.InvalidStateError{Message: "operation is no longer leased by this worker"}
 	}
 	return nil
 }
 
-func (s *Store) RescheduleSync(ctx context.Context, id domain.ID, attempts int, next time.Time, code, summary string) error {
-	tx, err := s.db.Write.BeginTx(ctx, nil)
-	if err != nil {
+// RescheduleSync 把失败的操作排入重试；只在本 worker 仍持有租约且 allocation 没有更新意图时修改 allocation 的投影状态。
+// 若已有更高 revision 的意图，旧操作只被标记为 superseded，不得把当前 allocation 改回 pending。
+func (s *Store) RescheduleSync(ctx context.Context, id domain.ID, owner string, attempts int, next time.Time, code, summary string) error {
+	return s.finishLeased(ctx, id, owner, func(tx *sql.Tx, allocationID string) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE synchronization_operations SET state='retry_wait',attempt_count=?,next_attempt_at=?,
+            lease_owner=NULL,lease_expires_at=NULL,last_error_code=?,last_error_summary=? WHERE id=?`, attempts, millis(next), code, summary, id.String()); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE access_allocations SET projection_state='pending',last_sync_error_code=?,
+            last_sync_error_summary=?,updated_at=? WHERE id=?`, code, summary, millis(next), allocationID)
 		return err
-	}
-	defer tx.Rollback()
-	var allocationID string
-	if err := tx.QueryRowContext(ctx, `SELECT allocation_id FROM synchronization_operations WHERE id=?`, id.String()).Scan(&allocationID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE synchronization_operations SET state='retry_wait',attempt_count=?,next_attempt_at=?,
-        lease_owner=NULL,lease_expires_at=NULL,last_error_code=?,last_error_summary=? WHERE id=?`, attempts, millis(next), code, summary, id.String()); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE access_allocations SET projection_state='pending',last_sync_error_code=?,
-        last_sync_error_summary=?,updated_at=? WHERE id=?`, code, summary, millis(next), allocationID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	})
 }
 
-func (s *Store) FailSync(ctx context.Context, id domain.ID, code, summary string, now time.Time) error {
+// FailSync 标记永久失败；同样只对当前意图生效。
+func (s *Store) FailSync(ctx context.Context, id domain.ID, owner, code, summary string, now time.Time) error {
+	return s.finishLeased(ctx, id, owner, func(tx *sql.Tx, allocationID string) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE synchronization_operations SET state='permanent_failed',lease_owner=NULL,
+            lease_expires_at=NULL,last_error_code=?,last_error_summary=?,completed_at=? WHERE id=?`, code, summary, millis(now), id.String()); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE access_allocations SET projection_state='error',last_sync_error_code=?,
+            last_sync_error_summary=?,updated_at=? WHERE id=?`, code, summary, millis(now), allocationID)
+		return err
+	})
+}
+
+// finishLeased 校验操作仍由 owner 租用；若 allocation 已提交更新的意图则只结束旧操作（superseded），否则执行 apply。
+func (s *Store) finishLeased(ctx context.Context, id domain.ID, owner string, apply func(tx *sql.Tx, allocationID string) error) error {
 	tx, err := s.db.Write.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var allocationID string
-	if err := tx.QueryRowContext(ctx, `SELECT allocation_id FROM synchronization_operations WHERE id=?`, id.String()).Scan(&allocationID); err != nil {
+	var allocationID, state string
+	var leaseOwner sql.NullString
+	var opRevision, allocationRevision int64
+	err = tx.QueryRowContext(ctx, `SELECT o.allocation_id,o.state,o.lease_owner,o.desired_revision,a.desired_revision
+        FROM synchronization_operations o JOIN access_allocations a ON a.id=o.allocation_id WHERE o.id=?`, id.String()).Scan(
+		&allocationID, &state, &leaseOwner, &opRevision, &allocationRevision)
+	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE synchronization_operations SET state='permanent_failed',lease_owner=NULL,
-        lease_expires_at=NULL,last_error_code=?,last_error_summary=?,completed_at=? WHERE id=?`, code, summary, millis(now), id.String()); err != nil {
-		return err
+	if state != string(domain.SyncLeased) || !leaseOwner.Valid || leaseOwner.String != owner {
+		return nil // 租约已被回收或操作已被其他路径结束：本 worker 的结果作废。
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE access_allocations SET projection_state='error',last_sync_error_code=?,
-        last_sync_error_summary=?,updated_at=? WHERE id=?`, code, summary, millis(now), allocationID); err != nil {
+	if opRevision != allocationRevision {
+		if _, err := tx.ExecContext(ctx, `UPDATE synchronization_operations SET state='superseded',lease_owner=NULL,lease_expires_at=NULL,completed_at=? WHERE id=?`,
+			millis(time.Now().UTC()), id.String()); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if err := apply(tx, allocationID); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -167,7 +167,7 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 		if !op.DesiredPresence {
 			return s.confirm(ctx, work, false, 0, logger, started)
 		}
-		if err := s.store.AdvancePhase(ctx, op.ID, domain.SyncAddDesired, s.clock.Now()); err != nil {
+		if err := s.store.AdvancePhase(ctx, op.ID, s.owner, domain.SyncAddDesired, s.clock.Now()); err != nil {
 			return err
 		}
 		op.Phase = domain.SyncAddDesired
@@ -256,7 +256,7 @@ func (s *Synchronizer) retry(ctx context.Context, work *ports.SyncWork, cause er
 		return s.fail(ctx, work, kind, summary, logger, started)
 	}
 	next := now.Add(domain.NextBackoff(attempts, s.maxRetry, s.random))
-	if err := s.store.RescheduleSync(ctx, work.Operation.ID, attempts, next, kind, summary); err != nil {
+	if err := s.store.RescheduleSync(ctx, work.Operation.ID, s.owner, attempts, next, kind, summary); err != nil {
 		return err
 	}
 	logger.Warn("synchronization retry scheduled", logging.FieldResult, "retry_wait", logging.FieldErrorKind, kind,
@@ -266,7 +266,7 @@ func (s *Synchronizer) retry(ctx context.Context, work *ports.SyncWork, cause er
 
 func (s *Synchronizer) fail(ctx context.Context, work *ports.SyncWork, kind, summary string, logger *slog.Logger, started time.Time) error {
 	now := s.clock.Now()
-	if err := s.store.FailSync(ctx, work.Operation.ID, kind, summary, now); err != nil {
+	if err := s.store.FailSync(ctx, work.Operation.ID, s.owner, kind, summary, now); err != nil {
 		return err
 	}
 	logger.Error("synchronization failed permanently", logging.FieldResult, "permanent_failed", logging.FieldErrorKind, kind,

@@ -83,3 +83,51 @@ func DayBounds(at time.Time, location *time.Location) (time.Time, string) {
 	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
 	return start.UTC(), start.Format("2006-01-02")
 }
+
+// AllocationFacts 是事务内重读的最新分配事实（data-model §Write Ordering Under Contention）。
+type AllocationFacts struct {
+	Lifecycle                LifecycleState
+	AdminEnabled             bool
+	QuotaState               QuotaState
+	DesiredRevision          Revision
+	DesiredCredentialVersion int64
+}
+
+// TransitionDecision 是根据最新事实计算出的最终状态与所需同步操作。
+type TransitionDecision struct {
+	QuotaState    QuotaState
+	WasPresent    bool
+	WillBePresent bool
+	Reason        SyncReason
+	Phase         SyncPhase
+}
+
+func (d TransitionDecision) NeedsOperation() bool { return d.WasPresent != d.WillBePresent }
+
+// DecideTransition 统一决定调额、采集越界、手动重置、周期切换与启停后的配额状态与投影意图。
+// 所有调用方都在写事务内以最新事实调用它，因此事务外的旧快照不可能覆盖较新的管理员意图。
+func DecideTransition(before AllocationFacts, adminEnabled, exceeded bool) TransitionDecision {
+	quota := QuotaWithinLimit
+	if exceeded {
+		quota = QuotaExceeded
+	}
+	active := before.Lifecycle == LifecycleActive
+	decision := TransitionDecision{QuotaState: quota,
+		WasPresent:    active && before.AdminEnabled && before.QuotaState == QuotaWithinLimit,
+		WillBePresent: active && adminEnabled && quota == QuotaWithinLimit}
+	switch {
+	case decision.WasPresent && !decision.WillBePresent:
+		decision.Phase = SyncRemoveOld
+		decision.Reason = SyncDisable
+		if exceeded && before.QuotaState == QuotaWithinLimit && adminEnabled {
+			decision.Reason = SyncQuotaBlock
+		}
+	case !decision.WasPresent && decision.WillBePresent:
+		decision.Phase = SyncAddDesired
+		decision.Reason = SyncEnable
+		if before.QuotaState == QuotaExceeded && !exceeded && before.AdminEnabled && adminEnabled {
+			decision.Reason = SyncQuotaRestore
+		}
+	}
+	return decision
+}

@@ -31,23 +31,23 @@ type Store interface {
 	Enqueue(context.Context, domain.SynchronizationOperation) error
 	LeaseDue(context.Context, string, time.Time, time.Duration) (*SyncWork, error)
 	ConfirmIfRevisionCurrent(context.Context, domain.ID, domain.Revision, int64, bool, time.Time) (bool, error)
-	Reschedule(context.Context, domain.ID, int, time.Time, string, string) error
+	Reschedule(context.Context, domain.ID, string, int, time.Time, string, string) error
 	Supersede(context.Context, domain.ID, domain.Revision, time.Time) (int64, error)
-	RecordError(context.Context, domain.ID, string, string, time.Time) error
+	RecordError(context.Context, domain.ID, string, string, string, time.Time) error
 	LeaseDueSync(context.Context, string, time.Time, time.Duration) (*SyncWork, error)
 	ConfirmSync(context.Context, domain.ID, domain.Revision, int64, bool, time.Time) (bool, error)
-	RescheduleSync(context.Context, domain.ID, int, time.Time, string, string) error
-	FailSync(context.Context, domain.ID, string, string, time.Time) error
-	AdvancePhase(context.Context, domain.ID, domain.SyncPhase, time.Time) error
+	RescheduleSync(context.Context, domain.ID, string, int, time.Time, string, string) error
+	FailSync(context.Context, domain.ID, string, string, string, time.Time) error
+	AdvancePhase(context.Context, domain.ID, string, domain.SyncPhase, time.Time) error
 	MarkInstanceHealthy(context.Context, string, time.Time) error
 	MarkInstanceUnreachable(context.Context, string, string, time.Time) error
 	CollectionTargets(context.Context) ([]CollectionTarget, error)
-	CommitTrafficBatch(context.Context, TrafficBatch) error
-	UpdateUser(context.Context, UserUpdateRecord) (bool, error)
-	ResetCycleTraffic(context.Context, QuotaResetRecord) (bool, error)
+	CommitTrafficBatch(context.Context, TrafficBatch) (int, error)
+	UpdateUser(context.Context, UserUpdateRecord) (bool, bool, error)
+	ResetCycleTraffic(context.Context, QuotaResetRecord) (bool, bool, error)
 	DueCycles(context.Context, time.Time) ([]UserRecord, error)
 	NextCycleEnd(context.Context) (*time.Time, error)
-	RolloverCycle(context.Context, CycleRollover) error
+	RolloverCycle(context.Context, CycleRollover) (bool, bool, error)
 	UpdateSettings(context.Context, string, domain.Revision, domain.DomainCommand, domain.AuditEvent) (bool, error)
 	RotateCredential(context.Context, RotationRecord) (bool, error)
 	SoftDeleteUser(context.Context, DeleteRecord) (bool, error)
@@ -226,9 +226,9 @@ type TrafficUpdate struct {
 	LocalDate     string
 	Timezone      string
 	Events        []ContinuityEventRecord
-	MarkExceeded  bool
-	QuotaBlock    *domain.SynchronizationOperation
-	Audit         *domain.AuditEvent
+	// QuotaBlock 与 Audit 是模板：是否越界、operation 的 revision 与 presence 由事务内重读的事实决定。
+	QuotaBlock *domain.SynchronizationOperation
+	Audit      *domain.AuditEvent
 }
 
 type TrafficBatch struct {
@@ -245,33 +245,35 @@ type UserUpdateRecord struct {
 	LimitBytes       *int64
 	ResetDay         int
 	AdminEnabled     bool
-	QuotaState       domain.QuotaState
-	Operation        *domain.SynchronizationOperation
-	Command          domain.DomainCommand
-	Audits           []domain.AuditEvent
-	Now              time.Time
+	// OperationTemplate 提供 ID 与创建时间；reason/phase/presence/revision 由事务内 DecideTransition 决定。
+	OperationTemplate domain.SynchronizationOperation
+	// QuotaAudit 是配额状态变化时写入的审计模板（quota_exceeded 或 cycle_restored 由事务内决定）。
+	QuotaAudit *domain.AuditEvent
+	Command    domain.DomainCommand
+	Audits     []domain.AuditEvent
+	Now        time.Time
 }
 
 // QuotaResetRecord 描述手动重置本周期流量（data-model §Atomic Transaction Boundaries 第 4 条）。
 type QuotaResetRecord struct {
-	AllocationID domain.ID
-	CycleID      domain.ID
-	EventID      domain.ID
-	ActorID      domain.ID
-	Command      domain.DomainCommand
-	Operation    *domain.SynchronizationOperation
-	Audit        domain.AuditEvent
-	Now          time.Time
+	AllocationID      domain.ID
+	CycleID           domain.ID
+	EventID           domain.ID
+	ActorID           domain.ID
+	Command           domain.DomainCommand
+	OperationTemplate domain.SynchronizationOperation
+	Audit             domain.AuditEvent
+	Now               time.Time
 }
 
 // CycleRollover 描述周期切换（data-model §Atomic Transaction Boundaries 第 5 条）。
 type CycleRollover struct {
-	AllocationID domain.ID
-	OldCycleID   domain.ID
-	NewCycle     QuotaCycleRecord
-	Operation    *domain.SynchronizationOperation
-	Audit        *domain.AuditEvent
-	Now          time.Time
+	AllocationID      domain.ID
+	OldCycleID        domain.ID
+	NewCycle          QuotaCycleRecord
+	OperationTemplate domain.SynchronizationOperation
+	Audit             *domain.AuditEvent
+	Now               time.Time
 }
 
 // RotationRecord 描述凭证轮换的单事务写入（data-model §Atomic Transaction Boundaries 第 7 条）。

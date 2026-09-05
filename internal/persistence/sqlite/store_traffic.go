@@ -86,71 +86,135 @@ func (s *Store) CollectionTargets(ctx context.Context) ([]ports.CollectionTarget
 	return result, rows.Err()
 }
 
-// CommitTrafficBatch 在一个短事务中写入一轮采集的全部结果：游标、累计、日聚合、周期、事件与首次越界的封禁操作。
-func (s *Store) CommitTrafficBatch(ctx context.Context, batch ports.TrafficBatch) error {
+// CommitTrafficBatch 在一个短事务中写入一轮采集的全部结果：游标、累计、日聚合、周期、事件，
+// 并在事务内按最新事实（策略、启用意图、生命周期、open 周期）重新判定越界，返回本轮新建的封禁操作数。
+func (s *Store) CommitTrafficBatch(ctx context.Context, batch ports.TrafficBatch) (int, error) {
 	if len(batch.Updates) == 0 {
-		return nil
+		return 0, nil
 	}
 	tx, err := s.db.Write.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer tx.Rollback()
+	blocked := 0
 	for _, update := range batch.Updates {
 		c := update.Cursor
 		if _, err := tx.ExecContext(ctx, `UPDATE traffic_cursors SET boot_epoch=?,uplink_counter=?,downlink_counter=?,uplink_epoch=?,
             downlink_epoch=?,last_observed_at=?,last_success_at=?,missing_since=?,updated_at=? WHERE allocation_id=?`,
 			nullString(c.BootEpoch), nullableInt64(c.UplinkCounter), nullableInt64(c.DownlinkCounter), c.UplinkEpoch, c.DownlinkEpoch,
 			nullTime(c.LastObservedAt), nullTime(c.LastSuccessAt), nullTime(c.MissingSince), millis(batch.ObservedAt), update.AllocationID.String()); err != nil {
-			return fmt.Errorf("update cursor: %w", err)
+			return 0, fmt.Errorf("update cursor: %w", err)
 		}
 		if update.UplinkDelta != 0 || update.DownlinkDelta != 0 {
 			if _, err := tx.ExecContext(ctx, `UPDATE allocation_traffic_totals SET uplink_bytes=uplink_bytes+?,downlink_bytes=downlink_bytes+?,updated_at=? WHERE allocation_id=?`,
 				update.UplinkDelta, update.DownlinkDelta, millis(batch.ObservedAt), update.AllocationID.String()); err != nil {
-				return fmt.Errorf("update totals: %w", err)
+				return 0, fmt.Errorf("update totals: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO daily_traffic_aggregates(allocation_id,day_start_utc,local_date,timezone_name,uplink_bytes,downlink_bytes,updated_at)
                 VALUES (?,?,?,?,?,?,?) ON CONFLICT(allocation_id,day_start_utc) DO UPDATE SET uplink_bytes=uplink_bytes+excluded.uplink_bytes,
                 downlink_bytes=downlink_bytes+excluded.downlink_bytes,updated_at=excluded.updated_at`,
 				update.AllocationID.String(), millis(update.DayStartUTC), update.LocalDate, update.Timezone, update.UplinkDelta, update.DownlinkDelta, millis(batch.ObservedAt)); err != nil {
-				return fmt.Errorf("update daily aggregate: %w", err)
+				return 0, fmt.Errorf("update daily aggregate: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE quota_cycles SET gross_uplink_bytes=gross_uplink_bytes+?,gross_downlink_bytes=gross_downlink_bytes+?,
                 accounted_uplink_bytes=accounted_uplink_bytes+?,accounted_downlink_bytes=accounted_downlink_bytes+? WHERE allocation_id=? AND status='open'`,
 				update.UplinkDelta, update.DownlinkDelta, update.UplinkDelta, update.DownlinkDelta, update.AllocationID.String()); err != nil {
-				return fmt.Errorf("update cycle: %w", err)
+				return 0, fmt.Errorf("update cycle: %w", err)
 			}
 		}
 		for _, event := range update.Events {
 			if err := insertContinuityEvent(ctx, tx, event); err != nil {
-				return err
+				return 0, err
 			}
 		}
-		if update.MarkExceeded {
-			if update.QuotaBlock != nil {
-				op := update.QuotaBlock
-				if err := supersedeOlder(ctx, tx, op.AllocationID, op.DesiredRevision, batch.ObservedAt); err != nil {
-					return err
-				}
-				if err := insertOperation(ctx, tx, *op); err != nil {
-					return err
-				}
-				if _, err := tx.ExecContext(ctx, `UPDATE access_allocations SET quota_state='exceeded',desired_revision=?,projection_state='pending',updated_at=? WHERE id=?`,
-					op.DesiredRevision, millis(batch.ObservedAt), update.AllocationID.String()); err != nil {
-					return err
-				}
-			} else if _, err := tx.ExecContext(ctx, `UPDATE access_allocations SET quota_state='exceeded',updated_at=? WHERE id=?`,
-				millis(batch.ObservedAt), update.AllocationID.String()); err != nil {
-				return err
-			}
+		facts, err := readFacts(ctx, tx, update.AllocationID.String())
+		if err != nil {
+			return 0, err
+		}
+		exceeded := domain.IsQuotaExceeded(facts.limit, facts.accountedUplink, facts.accountedDownlink)
+		if !exceeded || facts.QuotaState != domain.QuotaWithinLimit {
+			continue
+		}
+		decision := domain.DecideTransition(facts.AllocationFacts, facts.AdminEnabled, true)
+		created, err := applyDecision(ctx, tx, update.AllocationID.String(), facts, decision, facts.AdminEnabled, update.QuotaBlock, batch.ObservedAt)
+		if err != nil {
+			return 0, err
+		}
+		if created {
+			blocked++
 		}
 		if update.Audit != nil {
-			if err := (&txStore{tx: tx}).AppendAudit(ctx, *update.Audit); err != nil {
-				return err
+			audit := *update.Audit
+			if created {
+				operationID := update.QuotaBlock.ID
+				audit.OperationID = &operationID
+			}
+			if err := (&txStore{tx: tx}).AppendAudit(ctx, audit); err != nil {
+				return 0, err
 			}
 		}
 	}
-	return tx.Commit()
+	return blocked, tx.Commit()
+}
+
+// allocationFacts 是事务内重读的分配事实，含当前策略与 open 周期 accounted 值。
+type allocationFacts struct {
+	domain.AllocationFacts
+	limit             *int64
+	accountedUplink   int64
+	accountedDownlink int64
+}
+
+func readFacts(ctx context.Context, tx *sql.Tx, allocationID string) (allocationFacts, error) {
+	var facts allocationFacts
+	var limit sql.NullInt64
+	err := tx.QueryRowContext(ctx, `SELECT u.lifecycle_state,a.admin_enabled,a.quota_state,a.desired_revision,a.desired_credential_version,
+        qp.limit_bytes,qc.accounted_uplink_bytes,qc.accounted_downlink_bytes
+        FROM access_allocations a JOIN managed_users u ON u.id=a.user_id JOIN quota_policies qp ON qp.allocation_id=a.id
+        JOIN quota_cycles qc ON qc.allocation_id=a.id AND qc.status='open' WHERE a.id=?`, allocationID).Scan(
+		&facts.Lifecycle, &facts.AdminEnabled, &facts.QuotaState, &facts.DesiredRevision, &facts.DesiredCredentialVersion,
+		&limit, &facts.accountedUplink, &facts.accountedDownlink)
+	if err != nil {
+		return facts, fmt.Errorf("read allocation facts: %w", err)
+	}
+	if limit.Valid {
+		value := limit.Int64
+		facts.limit = &value
+	}
+	return facts, nil
+}
+
+// applyDecision 写入决策结果：配额状态、启用意图，以及（需要时）以事务内 revision+1 创建的同步操作。
+func applyDecision(ctx context.Context, tx *sql.Tx, allocationID string, facts allocationFacts, decision domain.TransitionDecision,
+	adminEnabled bool, template *domain.SynchronizationOperation, now time.Time) (bool, error) {
+	if decision.NeedsOperation() && template != nil {
+		op := *template
+		op.AllocationID = domain.ID(allocationID)
+		op.DesiredRevision = facts.DesiredRevision + 1
+		op.DesiredPresence = decision.WillBePresent
+		version := facts.DesiredCredentialVersion
+		op.DesiredCredentialVersion = &version
+		op.Reason, op.Phase, op.State = decision.Reason, decision.Phase, domain.SyncPending
+		op.IdempotencyKey = domain.SyncIdempotencyKey(op.AllocationID, op.DesiredRevision, op.Phase)
+		op.AttemptCount, op.LeaseOwner, op.LeaseExpiresAt = 0, "", nil
+		op.NextAttemptAt = now
+		if op.CreatedAt.IsZero() {
+			op.CreatedAt = now
+		}
+		if err := supersedeOlder(ctx, tx, op.AllocationID, op.DesiredRevision, now); err != nil {
+			return false, err
+		}
+		if err := insertOperation(ctx, tx, op); err != nil {
+			return false, err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE access_allocations SET admin_enabled=?,quota_state=?,desired_revision=?,projection_state='pending',updated_at=? WHERE id=?`,
+			boolInt(adminEnabled), decision.QuotaState, op.DesiredRevision, millis(now), allocationID)
+		return err == nil, err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE access_allocations SET admin_enabled=?,quota_state=?,updated_at=? WHERE id=?`,
+		boolInt(adminEnabled), decision.QuotaState, millis(now), allocationID)
+	return false, err
 }
 
 func insertContinuityEvent(ctx context.Context, tx *sql.Tx, record ports.ContinuityEventRecord) error {

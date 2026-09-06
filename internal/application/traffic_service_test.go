@@ -31,7 +31,8 @@ func presentUser(t *testing.T, fixture *featureFixture, name string, limit *int6
 	if err := fixture.store.DB().Read.QueryRow(`SELECT id FROM synchronization_operations WHERE allocation_id=(SELECT id FROM access_allocations WHERE user_id=?)`, id.String()).Scan(&operationID); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := fixture.store.ConfirmIfRevisionCurrent(context.Background(), domain.ID(operationID), 1, 1, true, fixture.clock.Now()); err != nil || !ok {
+	leaseForTest(t, fixture, domain.ID(operationID))
+	if ok, err := fixture.store.ConfirmIfRevisionCurrent(context.Background(), domain.ID(operationID), "test", 1, 1, true, fixture.clock.Now()); err != nil || !ok {
 		t.Fatalf("confirm = %v, %v", ok, err)
 	}
 	record, err := fixture.store.User(context.Background(), id)

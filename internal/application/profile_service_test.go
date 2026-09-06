@@ -142,3 +142,12 @@ func TestProfileIncompatibilityReasonIsSafe(t *testing.T) {
 		t.Fatal("compatibility reason leaked the server key")
 	}
 }
+
+// leaseForTest 把操作直接置为 "test" 持有的租约，供不经 worker 的确认测试使用（ConfirmSync 要求租约 owner 匹配）。
+func leaseForTest(t *testing.T, fixture *featureFixture, id domain.ID) {
+	t.Helper()
+	if _, err := fixture.store.DB().Write.Exec(`UPDATE synchronization_operations SET state='leased',lease_owner='test',lease_expires_at=? WHERE id=?`,
+		fixture.clock.Now().Add(time.Minute).UnixMilli(), id.String()); err != nil {
+		t.Fatal(err)
+	}
+}

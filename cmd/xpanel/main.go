@@ -159,7 +159,7 @@ func runServe(args []string, stderr io.Writer) int {
 	}
 	profiles := application.NewProfileService(store, xrayClient, keyring, clock, target, requestValidation)
 	synchronizer := worker.NewSynchronizer(store, xrayClient, keyring, clock, logger, node, worker.SynchronizerOptions{
-		MaxRetryInterval: cfg.Workers.MaxRetryInterval.Duration, OnProfileRecovered: requestValidation})
+		MaxRetryInterval: cfg.Workers.MaxRetryInterval.Duration, RPCTimeout: cfg.Xray.RPCTimeout.Duration, OnProfileRecovered: requestValidation})
 	users := application.NewUserService(store, keyring, clock, synchronizer.Wake)
 	connections := application.NewConnectionService(store, keyring)
 	settings := application.NewSettingsService(store).WithClock(clock)

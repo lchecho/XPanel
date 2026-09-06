@@ -36,6 +36,9 @@ type Adapter struct {
 	OnReadTraffic func()
 	// OnValidateProfile 在每次 ValidateProfile 前（锁外）调用一次，用于模拟验证期间的编辑。
 	OnValidateProfile func()
+	// OnAddUser / OnRemoveUser 在下一次对应调用开始时（锁外、等待前）调用一次，用于模拟 RPC 在途期间的并发事件。
+	OnAddUser    func()
+	OnRemoveUser func()
 }
 
 func New() *Adapter {
@@ -113,6 +116,13 @@ func (a *Adapter) ListUsers(_ context.Context, profile ports.RuntimeProfile) ([]
 }
 
 func (a *Adapter) AddUser(ctx context.Context, command ports.AddUserCommand) (ports.MutationReceipt, error) {
+	a.mu.Lock()
+	hook := a.OnAddUser
+	a.OnAddUser = nil
+	a.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	if err := a.wait(ctx, "add_user"); err != nil {
 		return ports.MutationReceipt{}, err
 	}
@@ -137,6 +147,13 @@ func (a *Adapter) AddUser(ctx context.Context, command ports.AddUserCommand) (po
 }
 
 func (a *Adapter) RemoveUser(ctx context.Context, command ports.RemoveUserCommand) (ports.MutationReceipt, error) {
+	a.mu.Lock()
+	hook := a.OnRemoveUser
+	a.OnRemoveUser = nil
+	a.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	if err := a.wait(ctx, "remove_user"); err != nil {
 		return ports.MutationReceipt{}, err
 	}

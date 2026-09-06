@@ -46,8 +46,8 @@ func (s *Store) LeaseDue(ctx context.Context, owner string, now time.Time, lease
 	return s.LeaseDueSync(ctx, owner, now, leaseDuration)
 }
 
-func (s *Store) ConfirmIfRevisionCurrent(ctx context.Context, operationID domain.ID, revision domain.Revision, credentialVersion int64, present bool, now time.Time) (bool, error) {
-	return s.ConfirmSync(ctx, operationID, revision, credentialVersion, present, now)
+func (s *Store) ConfirmIfRevisionCurrent(ctx context.Context, operationID domain.ID, owner string, revision domain.Revision, credentialVersion int64, present bool, now time.Time) (bool, error) {
+	return s.ConfirmSync(ctx, operationID, owner, revision, credentialVersion, present, now)
 }
 
 func (s *Store) Reschedule(ctx context.Context, id domain.ID, owner string, attempts int, next time.Time, code, summary string) error {
@@ -93,9 +93,11 @@ func (s *Store) LeaseDueSync(ctx context.Context, owner string, now time.Time, l
 		return nil, err
 	}
 	leaseUntil := now.Add(leaseDuration)
+	// CAS：只有仍到期（pending/retry_wait 且到时，或 leased 且租约已过期并仍属于刚读到的旧 owner）才能领取（Constitution IV 租约 fencing）。
 	result, err := tx.ExecContext(ctx, `UPDATE synchronization_operations SET state='leased',lease_owner=?,lease_expires_at=?,
-        started_at=COALESCE(started_at,?) WHERE id=? AND state IN ('pending','retry_wait','leased')`, owner, millis(leaseUntil),
-		millis(now), operation.ID.String())
+        started_at=COALESCE(started_at,?) WHERE id=? AND ((state IN ('pending','retry_wait') AND next_attempt_at<=?)
+        OR (state='leased' AND lease_expires_at<=? AND COALESCE(lease_owner,'')=?))`, owner, millis(leaseUntil),
+		millis(now), operation.ID.String(), millis(now), millis(now), operation.LeaseOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -139,17 +141,22 @@ func scanOperation(row scanner) (domain.SynchronizationOperation, error) {
 	return op, nil
 }
 
-func (s *Store) ConfirmSync(ctx context.Context, operationID domain.ID, revision domain.Revision, credentialVersion int64, present bool, now time.Time) (bool, error) {
+// ConfirmSync 确认操作已在 Xray 生效：必须仍由 owner 租用（否则结果作废，不改任何状态）且 revision 仍是最新（否则标记 superseded）。
+func (s *Store) ConfirmSync(ctx context.Context, operationID domain.ID, owner string, revision domain.Revision, credentialVersion int64, present bool, now time.Time) (bool, error) {
 	tx, err := s.db.Write.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	var allocationID string
+	var allocationID, state string
+	var leaseOwner sql.NullString
 	var current domain.Revision
-	if err := tx.QueryRowContext(ctx, `SELECT o.allocation_id,a.desired_revision FROM synchronization_operations o
-        JOIN access_allocations a ON a.id=o.allocation_id WHERE o.id=?`, operationID.String()).Scan(&allocationID, &current); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT o.allocation_id,o.state,o.lease_owner,a.desired_revision FROM synchronization_operations o
+        JOIN access_allocations a ON a.id=o.allocation_id WHERE o.id=?`, operationID.String()).Scan(&allocationID, &state, &leaseOwner, &current); err != nil {
 		return false, err
+	}
+	if state != string(domain.SyncLeased) || !leaseOwner.Valid || leaseOwner.String != owner {
+		return false, nil // 租约已被回收或操作已由其他路径结束：本 worker 的成功结果作废。
 	}
 	if current != revision {
 		_, err := tx.ExecContext(ctx, `UPDATE synchronization_operations SET state='superseded',lease_owner=NULL,
@@ -200,10 +207,10 @@ func (s *Store) ConfirmSync(ctx context.Context, operationID domain.ID, revision
 	return true, tx.Commit()
 }
 
-// AdvancePhase 持久化轮换阶段推进（remove_old → add_desired）；只有当前租约持有者可以推进。
+// AdvancePhase 持久化轮换阶段推进（remove_old → add_desired）；只有当前租约持有者可以推进，租约续期由 RenewSyncLease 负责。
 func (s *Store) AdvancePhase(ctx context.Context, id domain.ID, owner string, phase domain.SyncPhase, now time.Time) error {
-	result, err := s.db.Write.ExecContext(ctx, `UPDATE synchronization_operations SET phase=?,lease_expires_at=? WHERE id=? AND state='leased' AND lease_owner=?`,
-		phase, millis(now.Add(30*time.Second)), id.String(), owner)
+	result, err := s.db.Write.ExecContext(ctx, `UPDATE synchronization_operations SET phase=? WHERE id=? AND state='leased' AND lease_owner=?`,
+		phase, id.String(), owner)
 	if err != nil {
 		return err
 	}
@@ -212,6 +219,19 @@ func (s *Store) AdvancePhase(ctx context.Context, id domain.ID, owner string, ph
 		return &domain.InvalidStateError{Message: "operation is no longer leased by this worker"}
 	}
 	return nil
+}
+
+// RenewSyncLease 在每次 Xray 调用前续租并重新确认：操作仍由 owner 租用，且其 desired revision 仍是分配的最新意图。
+// 返回 false 表示租约已被回收或意图已变化，worker 必须放弃本操作（不再调用或确认 Xray）。
+func (s *Store) RenewSyncLease(ctx context.Context, id domain.ID, owner string, now time.Time, lease time.Duration) (bool, error) {
+	result, err := s.db.Write.ExecContext(ctx, `UPDATE synchronization_operations SET lease_expires_at=? WHERE id=? AND state='leased' AND lease_owner=?
+        AND desired_revision=(SELECT desired_revision FROM access_allocations WHERE id=synchronization_operations.allocation_id)`,
+		millis(now.Add(lease)), id.String(), owner)
+	if err != nil {
+		return false, err
+	}
+	rows, _ := result.RowsAffected()
+	return rows == 1, nil
 }
 
 // RescheduleSync 把失败的操作排入重试；只在本 worker 仍持有租约且 allocation 没有更新意图时修改 allocation 的投影状态。

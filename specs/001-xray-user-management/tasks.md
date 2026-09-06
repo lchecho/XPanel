@@ -416,3 +416,13 @@ Task: "编写 internal/domain/quota_test.go 与 traffic_test.go"
 - [X] T140 为无效及限流登录记录不枚举账号且不含密码的 failed 审计，并确保 logout 的会话撤销与审计失败不会被静默报告为完整成功；补齐成功/失败/限流认证路径的审计覆盖率断言 per FR-025 / FR-026 / SC-008 (partial)
 - [X] T141 为嵌入式 CSS/JS 生成内容哈希资源名并仅对静态资源返回 `Cache-Control: public, max-age=31536000, immutable`，继续对认证 HTML 返回 `no-store`，增加缓存头和模板引用测试 per plan: performance and static delivery decision (contradicts)
 - [X] T142 在创建和编辑用户时保存去除首尾空白的 display_name，并保持 NFKC/大小写不敏感 normalized_name 唯一语义，增加展示值与名称复用测试 per T041 / FR-005 (partial)
+
+---
+
+## Phase 10: Convergence
+
+- [X] T143 CRITICAL 为 `internal/persistence/sqlite/store_sync.go`、`store_drift.go` 与 `internal/worker/synchronizer.go` 补齐租约 fencing：领取必须以到期状态/旧 owner 做 CAS，worker 获得 node 锁后在 RPC 前重新确认租约与最新 desired revision，成功确认也必须携带并校验 lease owner（不能只校验 revision），且 lease 时长必须覆盖 RPC 或可续租；用“慢 RPC 超过租期 + 第二 worker 回收 + 并发新管理员意图”测试断言旧 worker 不再调用/确认 Xray、不会短暂恢复旧意图，漂移移除也不重复执行 per Constitution IV / FR-020 / FR-021 / FR-022 (partial: T128/T130)
+- [ ] T144 CRITICAL 收紧 `internal/persistence/sqlite/store_profiles.go` 的契约字段变更条件并稳定漂移目标：修改 inbound_tag/method/bootstrap 前必须处理所有 allocation（包括已 soft-delete 但 remove 尚未确认者）、未终结 synchronization operation 与 drift removal；选择拒绝直到旧投影确认 absent/意图终结，或为操作持久化原 inbound tag 并完成可恢复迁移。增加“删除事务已提交但尚未 Drain 即编辑 profile”及“未知身份移除已排队即改 tag”的回归测试，断言旧入站不遗留可用 `xpanel-` 身份 per FR-006 / FR-012 / FR-020 / T130 / T133 (partial)
+- [ ] T145 CRITICAL 重构 `internal/persistence/sqlite/store_quota.go` 与 `store_traffic.go` 的周期边界提交：rollover 在同一写事务中重读当前 open cycle、最新 quota policy/reset_day、面板时区、lifecycle/admin_enabled 与 allocation revision 后计算新周期；采集提交按样本完成时间确保已跨边界的增量进入正确的新周期，而不是仍写入过期 open cycle。覆盖 rollover 与 reset_day/时区修改、禁用、重置及采集在两种提交顺序下的确定性测试，断言唯一 open cycle、周期边界与恢复操作均正确且流量只记一次 per data-model: Write Ordering Under Contention / FR-016 / FR-018 / FR-021 / FR-032 (partial: T129)
+- [ ] T146 在 `internal/application/traffic_service.go` 合并 20-ID 分批结果时校验每批 `InstanceObservation` 属于同一 boot epoch 且时间顺序一致；若批间 Xray 重启或 observation 不一致，整轮不得提交任何 cursor/total/quota 变更，必须安全重试并记录连续性/健康诊断。增加 21+ allocation 在第一、第二批之间重启的 fake 回归测试，断言无混合 epoch、负增量、重复计量或漏掉的配额封禁 per FR-013 / FR-017 / FR-023 / SC-007 (partial: T137)
+- [ ] T147 统一 `internal/application/auth_service.go`、`internal/web/handlers/auth.go` 与 SQLite session store 的认证结果语义：失败/限流登录的审计写入错误不得被无条件吞掉；logout 的当前 session 撤销与审计结果必须一致，只有确认撤销后才能记录/返回 succeeded，任一步失败都不得留下“登出成功但 session 仍有效”的审计状态。增加 audit insert、session delete/commit 故障注入测试，并断言 HTTP 不返回成功、session 可用性与 succeeded/failed 审计结果吻合且不泄露用户名或密码 per FR-002 / FR-025 / FR-026 / FR-027 / SC-008 (partial: T140)

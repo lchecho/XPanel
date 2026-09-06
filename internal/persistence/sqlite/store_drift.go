@@ -36,20 +36,23 @@ func (s *Store) LeaseDueDriftRemoval(ctx context.Context, owner string, now time
 	var removal ports.DriftRemoval
 	var id, profileID string
 	var next int64
-	err = tx.QueryRowContext(ctx, `SELECT d.id,d.profile_id,p.inbound_tag,d.statistics_id,d.state,d.attempt_count,d.next_attempt_at
+	var previousOwner sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT d.id,d.profile_id,p.inbound_tag,d.statistics_id,d.state,d.attempt_count,d.next_attempt_at,d.lease_owner
         FROM drift_removals d JOIN access_profiles p ON p.id=d.profile_id
         WHERE ((d.state IN ('pending','retry_wait') AND d.next_attempt_at<=?) OR (d.state='leased' AND d.lease_expires_at<=?))
           AND p.compatibility_state IN ('compatible','unreachable')
         ORDER BY d.next_attempt_at,d.created_at LIMIT 1`, millis(now), millis(now)).Scan(
-		&id, &profileID, &removal.InboundTag, &removal.StatisticsID, &removal.State, &removal.AttemptCount, &next)
+		&id, &profileID, &removal.InboundTag, &removal.StatisticsID, &removal.State, &removal.AttemptCount, &next, &previousOwner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE drift_removals SET state='leased',lease_owner=?,lease_expires_at=? WHERE id=? AND state IN ('pending','retry_wait','leased')`,
-		owner, millis(now.Add(lease)), id)
+	// CAS：只领取仍到期的记录；过期租约只能从刚读到的旧 owner 手中回收。
+	result, err := tx.ExecContext(ctx, `UPDATE drift_removals SET state='leased',lease_owner=?,lease_expires_at=? WHERE id=?
+        AND ((state IN ('pending','retry_wait') AND next_attempt_at<=?) OR (state='leased' AND lease_expires_at<=? AND COALESCE(lease_owner,'')=?))`,
+		owner, millis(now.Add(lease)), id, millis(now), millis(now), previousOwner.String)
 	if err != nil {
 		return nil, err
 	}
@@ -61,6 +64,17 @@ func (s *Store) LeaseDueDriftRemoval(ctx context.Context, owner string, now time
 	}
 	removal.ID, removal.ProfileID, removal.NextAttemptAt, removal.State = domain.ID(id), domain.ID(profileID), fromMillis(next), domain.SyncLeased
 	return &removal, nil
+}
+
+// RenewDriftRemovalLease 在调用 Xray 前续租并确认仍持有租约；false 表示已被回收，worker 必须放弃。
+func (s *Store) RenewDriftRemovalLease(ctx context.Context, id domain.ID, owner string, now time.Time, lease time.Duration) (bool, error) {
+	result, err := s.db.Write.ExecContext(ctx, `UPDATE drift_removals SET lease_expires_at=? WHERE id=? AND state='leased' AND lease_owner=?`,
+		millis(now.Add(lease)), id.String(), owner)
+	if err != nil {
+		return false, err
+	}
+	rows, _ := result.RowsAffected()
+	return rows == 1, nil
 }
 
 func (s *Store) finishDriftRemoval(ctx context.Context, id domain.ID, owner string, apply func(tx *sql.Tx) error) error {

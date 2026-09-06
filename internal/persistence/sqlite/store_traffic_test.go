@@ -15,10 +15,20 @@ func presentUser(t *testing.T, store *Store, now time.Time, name string) ports.U
 	if _, _, err := store.CreateUser(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := store.ConfirmSync(context.Background(), record.Operation.ID, 1, 1, true, now); err != nil || !ok {
+	leaseForTest(t, store, record.Operation.ID, "test")
+	if ok, err := store.ConfirmSync(context.Background(), record.Operation.ID, "test", 1, 1, true, now); err != nil || !ok {
 		t.Fatalf("confirm = %v, %v", ok, err)
 	}
 	return record
+}
+
+// leaseForTest 把操作直接置为 owner 持有的租约，供不经 worker 的确认测试使用。
+func leaseForTest(t *testing.T, store *Store, id domain.ID, owner string) {
+	t.Helper()
+	if _, err := store.DB().Write.Exec(`UPDATE synchronization_operations SET state='leased',lease_owner=?,lease_expires_at=? WHERE id=?`,
+		owner, time.Now().Add(time.Minute).UnixMilli(), id.String()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCollectionTargetsAndAtomicBatch(t *testing.T) {

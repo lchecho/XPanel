@@ -19,8 +19,11 @@ import (
 //
 //	不负责决定期望状态（由 application 层写入操作）。
 //
-// 约束：任何 Xray 变更只在持有 node 锁时执行；不确定结果先读后写；退避有界（max_retry_interval）。
-// AI-LOCK：不得在数据库事务内调用 Adapter；不得在 revision 已变化时确认旧操作。
+// 约束：任何 Xray 变更只在持有 node 锁时执行；每次 Xray 调用前必须续租并重新确认租约与最新意图（fence），
+//
+//	丢失租约即放弃（不再调用、不再确认）；不确定结果先读后写；退避有界（max_retry_interval）。
+//
+// AI-LOCK：不得在数据库事务内调用 Adapter；不得在 revision 已变化或租约不属于本 worker 时确认旧操作。
 //
 // 下游：Xray via gRPC（经 ports.Adapter）
 // 失败处理：可重试错误按 full jitter 指数退避；不可重试错误标记 permanent_failed 并审计。
@@ -45,9 +48,11 @@ type Synchronizer struct {
 }
 
 type SynchronizerOptions struct {
-	Owner              string
-	MaxRetryInterval   time.Duration
-	LeaseDuration      time.Duration
+	Owner            string
+	MaxRetryInterval time.Duration
+	LeaseDuration    time.Duration
+	// RPCTimeout 是单次 Xray 调用的上限；租约至少覆盖 3 次 RPC，保证调用期间租约不会自然到期。
+	RPCTimeout         time.Duration
 	PollInterval       time.Duration
 	Random             func(int64) int64
 	OnProfileRecovered func(domain.ID)
@@ -71,6 +76,9 @@ func NewSynchronizer(store ports.Store, adapter ports.Adapter, keyring *security
 	}
 	if options.LeaseDuration <= 0 {
 		options.LeaseDuration = defaultLeaseDuration
+	}
+	if options.RPCTimeout > 0 && options.LeaseDuration < 3*options.RPCTimeout {
+		options.LeaseDuration = 3 * options.RPCTimeout
 	}
 	if options.PollInterval <= 0 {
 		options.PollInterval = defaultPollInterval
@@ -156,11 +164,17 @@ func (s *Synchronizer) handleDriftRemoval(ctx context.Context, removal *ports.Dr
 	now := s.clock.Now()
 	logger := s.logger.With("drift_removal_id", removal.ID.String(), "profile_id", removal.ProfileID.String(), logging.FieldTargetState, "absent")
 	profile := ports.RuntimeProfile{ID: removal.ProfileID, InboundTag: removal.InboundTag}
+	if held, err := s.fenceDrift(ctx, removal, logger); err != nil || !held {
+		return err
+	}
 	_, err := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: removal.ID, ProfileTag: removal.InboundTag, StatisticsID: removal.StatisticsID})
 	if err != nil {
 		kind, retryable := describe(err)
 		converged := kind == ports.ErrorUserNotFound
 		if !converged && retryable && kind != ports.ErrorInstanceUnavailable {
+			if held, err := s.fenceDrift(ctx, removal, logger); err != nil || !held {
+				return err
+			}
 			present, observeErr := s.observe(ctx, profile, removal.StatisticsID)
 			converged = observeErr == nil && !present
 		}
@@ -179,6 +193,30 @@ func (s *Synchronizer) handleDriftRemoval(ctx context.Context, removal *ports.Dr
 	logger.Info("unknown namespace identity removed", logging.FieldResult, "succeeded")
 	return s.store.CompleteDriftRemoval(ctx, removal.ID, s.owner, now,
 		s.driftAudit(removal, domain.AuditSucceeded, "removed unknown identity "+removal.StatisticsID+" from the managed namespace", now))
+}
+
+// fenceDrift 在每次 Xray 调用前续租；租约丢失时记录并放弃（返回 false）。
+func (s *Synchronizer) fenceDrift(ctx context.Context, removal *ports.DriftRemoval, logger *slog.Logger) (bool, error) {
+	held, err := s.store.RenewDriftRemovalLease(ctx, removal.ID, s.owner, s.clock.Now(), s.lease)
+	if err != nil {
+		return false, err
+	}
+	if !held {
+		logger.Warn("drift removal lease lost; abandoning without calling Xray", logging.FieldResult, "abandoned")
+	}
+	return held, nil
+}
+
+// fence 在每次 Xray 调用前续租并重新确认最新意图；租约丢失或意图已变化时放弃本操作（不再调用、不再确认 Xray）。
+func (s *Synchronizer) fence(ctx context.Context, work *ports.SyncWork, logger *slog.Logger) (bool, error) {
+	held, err := s.store.RenewSyncLease(ctx, work.Operation.ID, s.owner, s.clock.Now(), s.lease)
+	if err != nil {
+		return false, err
+	}
+	if !held {
+		logger.Warn("synchronization lease lost or intent changed; abandoning without calling Xray", logging.FieldResult, "abandoned")
+	}
+	return held, nil
 }
 
 func (s *Synchronizer) driftAudit(removal *ports.DriftRemoval, result domain.AuditResult, summary string, now time.Time) domain.AuditEvent {
@@ -204,6 +242,9 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 		logging.FieldTargetState, targetState, logging.FieldNodeID, work.Profile.Profile.InstanceID.String())
 
 	if !op.DesiredPresence || op.Phase == domain.SyncRemoveOld {
+		if held, err := s.fence(ctx, work, logger); err != nil || !held {
+			return err
+		}
 		_, err := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: op.ID, ProfileTag: profile.InboundTag, StatisticsID: statisticsID})
 		if err != nil {
 			kind, retryable := describe(err)
@@ -211,6 +252,9 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 			case kind == ports.ErrorUserNotFound:
 				// 删除不存在视为收敛。
 			case retryable && kind != ports.ErrorInstanceUnavailable:
+				if held, err := s.fence(ctx, work, logger); err != nil || !held {
+					return err
+				}
 				present, observeErr := s.observe(ctx, profile, statisticsID)
 				if observeErr != nil || present {
 					return s.retry(ctx, work, err, logger, started)
@@ -223,6 +267,11 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 			return s.confirm(ctx, work, false, 0, logger, started)
 		}
 		if err := s.store.AdvancePhase(ctx, op.ID, s.owner, domain.SyncAddDesired, s.clock.Now()); err != nil {
+			var invalid *domain.InvalidStateError
+			if errors.As(err, &invalid) {
+				logger.Warn("synchronization lease lost before rotation add phase; abandoned", logging.FieldResult, "abandoned")
+				return nil
+			}
 			return err
 		}
 		op.Phase = domain.SyncAddDesired
@@ -236,20 +285,32 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 	}
 	command := ports.AddUserCommand{OperationID: op.ID, ProfileTag: profile.InboundTag, AllocationID: work.Allocation.ID,
 		StatisticsID: statisticsID, CredentialVersion: work.Credential.Version, UserKey: security.NewRedactedString(string(key))}
+	if held, err := s.fence(ctx, work, logger); err != nil || !held {
+		return err
+	}
 	if _, err := s.adapter.AddUser(ctx, command); err != nil {
 		kind, retryable := describe(err)
 		switch {
 		case kind == ports.ErrorUserAlreadyExists:
 			// 受控修复：先移除再添加，保证 Xray 中的密钥就是期望版本。
+			if held, err := s.fence(ctx, work, logger); err != nil || !held {
+				return err
+			}
 			if _, removeErr := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: op.ID, ProfileTag: profile.InboundTag, StatisticsID: statisticsID}); removeErr != nil {
 				if removeKind, _ := describe(removeErr); removeKind != ports.ErrorUserNotFound {
 					return s.retry(ctx, work, removeErr, logger, started)
 				}
 			}
+			if held, err := s.fence(ctx, work, logger); err != nil || !held {
+				return err
+			}
 			if _, addErr := s.adapter.AddUser(ctx, command); addErr != nil {
 				return s.retry(ctx, work, addErr, logger, started)
 			}
 		case retryable && kind != ports.ErrorInstanceUnavailable:
+			if held, err := s.fence(ctx, work, logger); err != nil || !held {
+				return err
+			}
 			present, observeErr := s.observe(ctx, profile, statisticsID)
 			if observeErr != nil || !present {
 				return s.retry(ctx, work, err, logger, started)
@@ -276,13 +337,13 @@ func (s *Synchronizer) observe(ctx context.Context, profile ports.RuntimeProfile
 
 func (s *Synchronizer) confirm(ctx context.Context, work *ports.SyncWork, present bool, version int64, logger *slog.Logger, started time.Time) error {
 	now := s.clock.Now()
-	confirmed, err := s.store.ConfirmSync(ctx, work.Operation.ID, work.Operation.DesiredRevision, version, present, now)
+	confirmed, err := s.store.ConfirmSync(ctx, work.Operation.ID, s.owner, work.Operation.DesiredRevision, version, present, now)
 	if err != nil {
 		return err
 	}
 	s.recordSuccess(ctx, work, now)
 	if !confirmed {
-		logger.Info("synchronization superseded", logging.FieldResult, "superseded", logging.FieldDurationMS, now.Sub(started).Milliseconds())
+		logger.Info("synchronization result discarded: superseded or lease lost", logging.FieldResult, "superseded", logging.FieldDurationMS, now.Sub(started).Milliseconds())
 		return nil
 	}
 	logger.Info("synchronization confirmed", logging.FieldResult, "succeeded", logging.FieldDurationMS, now.Sub(started).Milliseconds())

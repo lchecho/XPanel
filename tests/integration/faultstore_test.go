@@ -82,9 +82,9 @@ func (f *faultStore) RolloverCycle(ctx context.Context, rollover ports.CycleRoll
 	return f.Store.RolloverCycle(ctx, rollover)
 }
 
-func (f *faultStore) ConfirmSync(ctx context.Context, id domain.ID, revision domain.Revision, version int64, present bool, now time.Time) (bool, error) {
+func (f *faultStore) ConfirmSync(ctx context.Context, id domain.ID, owner string, revision domain.Revision, version int64, present bool, now time.Time) (bool, error) {
 	if f.take("ConfirmSync") {
 		return false, errInjected
 	}
-	return f.Store.ConfirmSync(ctx, id, revision, version, present, now)
+	return f.Store.ConfirmSync(ctx, id, owner, revision, version, present, now)
 }

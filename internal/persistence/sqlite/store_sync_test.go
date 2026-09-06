@@ -30,7 +30,7 @@ func TestSyncLeaseRecoveryAndRevisionGuard(t *testing.T) {
 	if _, err := store.db.Write.Exec(`UPDATE access_allocations SET desired_revision=2 WHERE id=?`, record.Allocation.ID.String()); err != nil {
 		t.Fatal(err)
 	}
-	confirmed, err := store.ConfirmIfRevisionCurrent(context.Background(), record.Operation.ID, 1, 1, true, now.Add(3*time.Second))
+	confirmed, err := store.ConfirmIfRevisionCurrent(context.Background(), record.Operation.ID, "worker-b", 1, 1, true, now.Add(3*time.Second))
 	if err != nil || confirmed {
 		t.Fatalf("stale confirmation = %v, %v", confirmed, err)
 	}

@@ -32,12 +32,13 @@ type Store interface {
 	ListUsers(context.Context, UserFilter) ([]UserRecord, error)
 	Enqueue(context.Context, domain.SynchronizationOperation) error
 	LeaseDue(context.Context, string, time.Time, time.Duration) (*SyncWork, error)
-	ConfirmIfRevisionCurrent(context.Context, domain.ID, domain.Revision, int64, bool, time.Time) (bool, error)
+	ConfirmIfRevisionCurrent(context.Context, domain.ID, string, domain.Revision, int64, bool, time.Time) (bool, error)
 	Reschedule(context.Context, domain.ID, string, int, time.Time, string, string) error
 	Supersede(context.Context, domain.ID, domain.Revision, time.Time) (int64, error)
 	RecordError(context.Context, domain.ID, string, string, string, time.Time) error
 	LeaseDueSync(context.Context, string, time.Time, time.Duration) (*SyncWork, error)
-	ConfirmSync(context.Context, domain.ID, domain.Revision, int64, bool, time.Time) (bool, error)
+	ConfirmSync(context.Context, domain.ID, string, domain.Revision, int64, bool, time.Time) (bool, error)
+	RenewSyncLease(context.Context, domain.ID, string, time.Time, time.Duration) (bool, error)
 	RescheduleSync(context.Context, domain.ID, string, int, time.Time, string, string) error
 	FailSync(context.Context, domain.ID, string, string, string, time.Time) error
 	AdvancePhase(context.Context, domain.ID, string, domain.SyncPhase, time.Time) error
@@ -64,6 +65,7 @@ type Store interface {
 	AuditEvents(context.Context, AuditFilter) ([]domain.AuditEvent, *AuditCursor, error)
 	EnqueueDriftRemoval(context.Context, domain.ID, string, time.Time) (bool, error)
 	LeaseDueDriftRemoval(context.Context, string, time.Time, time.Duration) (*DriftRemoval, error)
+	RenewDriftRemovalLease(context.Context, domain.ID, string, time.Time, time.Duration) (bool, error)
 	CompleteDriftRemoval(context.Context, domain.ID, string, time.Time, domain.AuditEvent) error
 	RescheduleDriftRemoval(context.Context, domain.ID, string, int, time.Time, string, string) error
 	FailDriftRemoval(context.Context, domain.ID, string, string, string, time.Time, domain.AuditEvent) error

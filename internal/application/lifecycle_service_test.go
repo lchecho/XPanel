@@ -69,7 +69,8 @@ func TestRotateCredentialCreatesPendingVersionAndDestroysOldOnConfirm(t *testing
 	}
 	var opID string
 	_ = fixture.store.DB().Read.QueryRow(`SELECT id FROM synchronization_operations WHERE allocation_id=? AND desired_revision=2`, record.Allocation.ID.String()).Scan(&opID)
-	if ok, err := fixture.store.ConfirmSync(context.Background(), domain.ID(opID), 2, 2, true, fixture.clock.Now()); err != nil || !ok {
+	leaseForTest(t, fixture, domain.ID(opID))
+	if ok, err := fixture.store.ConfirmSync(context.Background(), domain.ID(opID), "test", 2, 2, true, fixture.clock.Now()); err != nil || !ok {
 		t.Fatalf("confirm = %v, %v", ok, err)
 	}
 	states := credentialStates(t, fixture, record.Allocation.ID)
@@ -108,7 +109,8 @@ func TestDeleteUserKeepsHistoryDestroysKeysAndAllowsNameReuse(t *testing.T) {
 	}
 	var opID string
 	_ = fixture.store.DB().Read.QueryRow(`SELECT id FROM synchronization_operations WHERE allocation_id=? AND reason='delete'`, record.Allocation.ID.String()).Scan(&opID)
-	if ok, err := fixture.store.ConfirmSync(context.Background(), domain.ID(opID), 2, 0, false, fixture.clock.Now()); err != nil || !ok {
+	leaseForTest(t, fixture, domain.ID(opID))
+	if ok, err := fixture.store.ConfirmSync(context.Background(), domain.ID(opID), "test", 2, 0, false, fixture.clock.Now()); err != nil || !ok {
 		t.Fatalf("confirm removal = %v, %v", ok, err)
 	}
 	if states := credentialStates(t, fixture, record.Allocation.ID); states[1] != string(domain.CredentialDestroyed) {

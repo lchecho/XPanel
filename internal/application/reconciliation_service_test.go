@@ -19,7 +19,8 @@ func confirmLatest(t *testing.T, fixture *featureFixture, allocationID domain.ID
         WHERE allocation_id=? AND state IN ('pending','retry_wait','leased') ORDER BY desired_revision DESC LIMIT 1`, allocationID.String()).Scan(&opID, &revision, &version); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := fixture.store.ConfirmSync(context.Background(), domain.ID(opID), domain.Revision(revision), version, present, fixture.clock.Now()); err != nil || !ok {
+	leaseForTest(t, fixture, domain.ID(opID))
+	if ok, err := fixture.store.ConfirmSync(context.Background(), domain.ID(opID), "test", domain.Revision(revision), version, present, fixture.clock.Now()); err != nil || !ok {
 		t.Fatalf("confirm = %v, %v", ok, err)
 	}
 }

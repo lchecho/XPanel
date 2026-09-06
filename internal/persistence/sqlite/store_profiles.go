@@ -120,18 +120,25 @@ func (s *Store) UpdateProfile(ctx context.Context, record ports.ProfileRecord, m
 		}
 		p := record.Profile
 		var currentTag, currentMethod, currentBootstrap string
-		var managedUsers int
+		var liveAllocations, openOperations, openRemovals int
+		// 契约字段（inbound_tag/method/bootstrap）只在旧入站上没有任何“可能仍存在”的面板身份时才允许变更：
+		// 未删除用户、已软删除但移除尚未确认 absent 的分配、未终结的同步操作与漂移移除都算在内（FR-006/FR-012/FR-020）。
 		if err := tx.tx.QueryRowContext(ctx, `SELECT inbound_tag,method,bootstrap_statistics_id,
-            (SELECT count(*) FROM access_allocations a JOIN managed_users u ON u.id=a.user_id WHERE a.profile_id=access_profiles.id AND u.deleted_at IS NULL)
-            FROM access_profiles WHERE id=?`, p.ID.String()).Scan(&currentTag, &currentMethod, &currentBootstrap, &managedUsers); err != nil {
+            (SELECT count(*) FROM access_allocations a JOIN managed_users u ON u.id=a.user_id WHERE a.profile_id=access_profiles.id
+               AND (u.deleted_at IS NULL OR a.projection_state<>'absent' OR a.synced_revision<>a.desired_revision OR COALESCE(a.observed_present,0)=1)),
+            (SELECT count(*) FROM synchronization_operations o JOIN access_allocations a ON a.id=o.allocation_id
+               WHERE a.profile_id=access_profiles.id AND o.state IN ('pending','leased','retry_wait')),
+            (SELECT count(*) FROM drift_removals d WHERE d.profile_id=access_profiles.id AND d.state IN ('pending','leased','retry_wait'))
+            FROM access_profiles WHERE id=?`, p.ID.String()).Scan(&currentTag, &currentMethod, &currentBootstrap, &liveAllocations, &openOperations, &openRemovals); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return &domain.NotFoundError{Resource: "profile"}
 			}
 			return err
 		}
-		// 已有受管用户时不得改变入站标签、加密方式或保留初始用户：否则旧入站会遗留可用用户且现有密钥长度不再匹配（FR-006/FR-030）。
-		if managedUsers > 0 && (currentTag != p.InboundTag || currentMethod != p.Method || currentBootstrap != p.BootstrapStatisticsID) {
-			return &domain.ConflictError{Message: "profile has managed users; inbound tag, method and bootstrap identity cannot change"}
+		contractChanged := currentTag != p.InboundTag || currentMethod != p.Method || currentBootstrap != p.BootstrapStatisticsID
+		if contractChanged && (liveAllocations > 0 || openOperations > 0 || openRemovals > 0) {
+			return &domain.ConflictError{Message: "profile still has users, unconfirmed removals or pending synchronization on the current inbound; " +
+				"inbound tag, method and bootstrap identity cannot change until they are confirmed absent"}
 		}
 		result, err := tx.tx.ExecContext(ctx, `UPDATE access_profiles SET name=?,normalized_name=?,inbound_tag=?,public_host=?,
             public_port=?,method=?,network=?,server_key_ciphertext=?,server_key_nonce=?,key_encryption_version=?,

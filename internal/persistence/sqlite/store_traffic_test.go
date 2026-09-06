@@ -53,8 +53,8 @@ func TestCollectionTargetsAndAtomicBatch(t *testing.T) {
 		UplinkDelta: 1000, DownlinkDelta: 4000, DayStartUTC: now.Truncate(24 * time.Hour), LocalDate: "2026-09-04", Timezone: "UTC",
 		Events: []ports.ContinuityEventRecord{{ID: eventID, AllocationID: present.Allocation.ID, OccurredAt: observed,
 			Event: domain.ContinuityEvent{Type: domain.EventBaseline, Direction: "uplink", NewCounter: &up, Summary: "baseline"}}}}}}
-	if blocked, err := store.CommitTrafficBatch(ctx, batch); err != nil || blocked != 0 {
-		t.Fatalf("batch = %d, %v", blocked, err)
+	if result, err := store.CommitTrafficBatch(ctx, batch); err != nil || result.Blocked != 0 {
+		t.Fatalf("batch = %#v, %v", result, err)
 	}
 	loaded, err := store.User(ctx, present.User.ID)
 	if err != nil || loaded.Cycle.AccountedUplinkBytes != 1000 || loaded.Cycle.GrossDownlinkBytes != 4000 {
@@ -91,8 +91,8 @@ func TestCollectionTargetsAndAtomicBatch(t *testing.T) {
 		Cursor: batch.Updates[0].Cursor, QuotaBlock: &block,
 		Audit: &domain.AuditEvent{ID: auditID, OccurredAt: observed, ActorType: domain.ActorSystem, TargetType: "user", TargetID: present.User.ID,
 			Action: domain.ActionQuotaExceeded, Result: domain.AuditAccepted, SafeSummary: "quota exceeded"}}}}
-	if blocked, err := store.CommitTrafficBatch(ctx, exceeded); err != nil || blocked != 1 {
-		t.Fatalf("blocked = %d, %v", blocked, err)
+	if result, err := store.CommitTrafficBatch(ctx, exceeded); err != nil || result.Blocked != 1 {
+		t.Fatalf("blocked = %#v, %v", result, err)
 	}
 	loaded, _ = store.User(ctx, present.User.ID)
 	if loaded.Allocation.QuotaState != domain.QuotaExceeded || loaded.Allocation.DesiredRevision != 2 || loaded.Allocation.ProjectionState != domain.ProjectionPending {
@@ -161,18 +161,16 @@ func TestRolloverIsIdempotentAndResetKeepsHistory(t *testing.T) {
 		t.Fatalf("daily aggregate changed by reset: %d", daily)
 	}
 
-	newCycle := ports.QuotaCycleRecord{ID: fixtureID(t), AllocationID: record.Allocation.ID, StartsAt: record.Cycle.EndsAt,
-		EndsAt: record.Cycle.EndsAt.AddDate(0, 1, 0), Timezone: "UTC", ResetDay: 1}
-	// 再次进入超限，验证切换后由事务内事实决定恢复。
+	// 再次进入超限，验证切换后由事务内事实决定恢复；新周期边界由事务内的 reset_day 与时区计算。
 	if _, err := store.db.Write.Exec(`UPDATE access_allocations SET quota_state='exceeded' WHERE id=?`, record.Allocation.ID.String()); err != nil {
 		t.Fatal(err)
 	}
-	rollover := ports.CycleRollover{AllocationID: record.Allocation.ID, OldCycleID: record.Cycle.ID, NewCycle: newCycle,
-		OperationTemplate: domain.SynchronizationOperation{ID: fixtureID(t), CreatedAt: now}, Now: now.Add(time.Hour)}
-	if rolled, restored, err := store.RolloverCycle(ctx, rollover); err != nil || !rolled || !restored {
+	rollover := ports.CycleRollover{AllocationID: record.Allocation.ID,
+		OperationTemplate: domain.SynchronizationOperation{ID: fixtureID(t), CreatedAt: now}, Now: record.Cycle.EndsAt.Add(time.Hour)}
+	if rolled, restored, err := store.RolloverCycle(ctx, rollover); err != nil || rolled != 1 || !restored {
 		t.Fatalf("rollover = %v %v, %v", rolled, restored, err)
 	}
-	if rolled, _, err := store.RolloverCycle(ctx, rollover); err != nil || rolled {
+	if rolled, _, err := store.RolloverCycle(ctx, rollover); err != nil || rolled != 0 {
 		t.Fatalf("second rollover = %v, %v", rolled, err)
 	}
 	var open, closed, operations int
@@ -182,12 +180,17 @@ func TestRolloverIsIdempotentAndResetKeepsHistory(t *testing.T) {
 	if open != 1 || closed != 1 || operations != 2 {
 		t.Fatalf("cycles open=%d closed=%d restore ops=%d", open, closed, operations)
 	}
-	due, _ := store.DueCycles(ctx, newCycle.EndsAt)
-	if len(due) != 1 || due[0].Cycle.ID != newCycle.ID {
+	current, _ := store.User(ctx, record.User.ID)
+	_, wantEnd, _ := domain.CycleBounds(record.Cycle.EndsAt, time.UTC, 1)
+	if !current.Cycle.StartsAt.Equal(record.Cycle.EndsAt) || !current.Cycle.EndsAt.Equal(wantEnd) || current.Cycle.ResetDay != 1 {
+		t.Fatalf("new cycle bounds = %#v", current.Cycle)
+	}
+	due, _ := store.DueCycles(ctx, current.Cycle.EndsAt)
+	if len(due) != 1 || due[0].Cycle.ID != current.Cycle.ID {
 		t.Fatalf("due cycles = %#v", due)
 	}
 	next, _ := store.NextCycleEnd(ctx)
-	if next == nil || !next.Equal(newCycle.EndsAt) {
+	if next == nil || !next.Equal(current.Cycle.EndsAt) {
 		t.Fatalf("next cycle end = %v", next)
 	}
 }

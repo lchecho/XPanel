@@ -31,16 +31,8 @@ func NewQuotaService(store ports.Store, clock ports.Clock, notify func(), logger
 	return &QuotaService{store: store, clock: clock, notify: notify, logger: logger.With(logging.FieldComponent, "scheduler")}
 }
 
-// RolloverDue 结算所有结束时间不晚于 now 的 open 周期，返回切换次数。
+// RolloverDue 结算所有结束时间不晚于 now 的 open 周期，返回跨越的边界总数；新周期边界由 Store 在事务内按最新策略与时区计算。
 func (s *QuotaService) RolloverDue(ctx context.Context, now time.Time) (int, error) {
-	settings, err := s.store.Settings(ctx)
-	if err != nil {
-		return 0, err
-	}
-	location, err := time.LoadLocation(settings.QuotaTimezone)
-	if err != nil {
-		location = time.UTC
-	}
 	due, err := s.store.DueCycles(ctx, now)
 	if err != nil {
 		return 0, err
@@ -48,40 +40,34 @@ func (s *QuotaService) RolloverDue(ctx context.Context, now time.Time) (int, err
 	rollovers := 0
 	restoredAny := false
 	for _, record := range due {
-		cycle := record.Cycle
-		for !cycle.EndsAt.After(now) {
-			start := cycle.EndsAt
-			_, end, err := domain.CycleBounds(start, location, record.Policy.ResetDay)
+		ids := make([]domain.ID, 0, 2)
+		for i := 0; i < 2; i++ {
+			id, err := domain.NewID()
 			if err != nil {
 				return rollovers, err
 			}
-			ids := make([]domain.ID, 0, 3)
-			for i := 0; i < 3; i++ {
-				id, err := domain.NewID()
-				if err != nil {
-					return rollovers, err
-				}
-				ids = append(ids, id)
-			}
-			next := ports.QuotaCycleRecord{ID: ids[0], AllocationID: record.Allocation.ID, StartsAt: start, EndsAt: end,
-				Timezone: settings.QuotaTimezone, ResetDay: record.Policy.ResetDay, Status: "open", OpenedAt: now}
-			rollover := ports.CycleRollover{AllocationID: record.Allocation.ID, OldCycleID: cycle.ID, NewCycle: next, Now: now,
-				OperationTemplate: domain.SynchronizationOperation{ID: ids[1], CreatedAt: now},
-				Audit: &domain.AuditEvent{ID: ids[2], OccurredAt: now, ActorType: domain.ActorSystem, TargetType: "user", TargetID: record.User.ID,
-					Action: domain.ActionCycleRestored, Result: domain.AuditAccepted, SafeSummary: "new quota cycle opened; access restore requested"}}
-			rolled, restored, err := s.store.RolloverCycle(ctx, rollover)
+			ids = append(ids, id)
+		}
+		rollover := ports.CycleRollover{AllocationID: record.Allocation.ID, Now: now,
+			OperationTemplate: domain.SynchronizationOperation{ID: ids[0], CreatedAt: now},
+			Audit: &domain.AuditEvent{ID: ids[1], OccurredAt: now, ActorType: domain.ActorSystem, TargetType: "user", TargetID: record.User.ID,
+				Action: domain.ActionCycleRestored, Result: domain.AuditAccepted, SafeSummary: "new quota cycle opened; access restore requested"}}
+		rolled, restored, err := s.store.RolloverCycle(ctx, rollover)
+		if err != nil {
+			return rollovers, err
+		}
+		if rolled > 0 {
+			rollovers += rolled
+			current, err := s.store.User(ctx, record.User.ID)
 			if err != nil {
 				return rollovers, err
 			}
-			if rolled {
-				rollovers++
-				s.logger.Info("quota cycle rolled over", logging.FieldAllocationID, record.Allocation.ID.String(),
-					"cycle_start", start.Format(time.RFC3339), "cycle_end", end.Format(time.RFC3339), "restored", restored, logging.FieldResult, "succeeded")
-			}
-			if restored {
-				restoredAny = true
-			}
-			cycle = next
+			s.logger.Info("quota cycle rolled over", logging.FieldAllocationID, record.Allocation.ID.String(), "boundaries", rolled,
+				"cycle_start", current.Cycle.StartsAt.Format(time.RFC3339), "cycle_end", current.Cycle.EndsAt.Format(time.RFC3339),
+				"restored", restored, logging.FieldResult, "succeeded")
+		}
+		if restored {
+			restoredAny = true
 		}
 	}
 	if restoredAny && s.notify != nil {

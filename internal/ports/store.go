@@ -45,12 +45,12 @@ type Store interface {
 	MarkInstanceHealthy(context.Context, string, time.Time) error
 	MarkInstanceUnreachable(context.Context, string, string, time.Time) error
 	CollectionTargets(context.Context) ([]CollectionTarget, error)
-	CommitTrafficBatch(context.Context, TrafficBatch) (int, error)
+	CommitTrafficBatch(context.Context, TrafficBatch) (TrafficCommitResult, error)
 	UpdateUser(context.Context, UserUpdateRecord) (bool, bool, error)
 	ResetCycleTraffic(context.Context, QuotaResetRecord) (bool, bool, error)
 	DueCycles(context.Context, time.Time) ([]UserRecord, error)
 	NextCycleEnd(context.Context) (*time.Time, error)
-	RolloverCycle(context.Context, CycleRollover) (bool, bool, error)
+	RolloverCycle(context.Context, CycleRollover) (int, bool, error)
 	UpdateSettings(context.Context, string, domain.Revision, domain.DomainCommand, domain.AuditEvent) (bool, error)
 	RotateCredential(context.Context, RotationRecord) (bool, error)
 	SoftDeleteUser(context.Context, DeleteRecord) (bool, error)
@@ -276,13 +276,20 @@ type QuotaResetRecord struct {
 }
 
 // CycleRollover 描述周期切换（data-model §Atomic Transaction Boundaries 第 5 条）。
+// CycleRollover 描述一次周期结算请求：到期的 open 周期由 Store 在同一事务内按最新 reset_day、面板时区与
+// 启用/生命周期事实关闭并打开新周期（可跨多个边界），恢复操作只在事务内判定（data-model §Write Ordering）。
 type CycleRollover struct {
 	AllocationID      domain.ID
-	OldCycleID        domain.ID
-	NewCycle          QuotaCycleRecord
 	OperationTemplate domain.SynchronizationOperation
 	Audit             *domain.AuditEvent
 	Now               time.Time
+}
+
+// TrafficCommitResult 汇总一轮采集提交创建的同步操作：越界封禁、采集提交内因样本跨越周期边界而触发的结算与恢复。
+type TrafficCommitResult struct {
+	Blocked  int
+	Rolled   int
+	Restored int
 }
 
 // RotationRecord 描述凭证轮换的单事务写入（data-model §Atomic Transaction Boundaries 第 7 条）。

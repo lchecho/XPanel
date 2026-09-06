@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"xpanel/internal/domain"
@@ -172,45 +173,101 @@ func (s *Store) NextCycleEnd(ctx context.Context) (*time.Time, error) {
 	return &result, nil
 }
 
-// RolloverCycle 幂等地关闭旧周期并打开新周期；是否恢复访问由事务内最新事实决定。返回 (rolled, restored, err)。
-func (s *Store) RolloverCycle(ctx context.Context, rollover ports.CycleRollover) (bool, bool, error) {
-	rolled, restored := false, false
+// RolloverCycle 幂等地结算到期周期：在同一写事务内重读 open 周期、最新 reset_day、面板时区与分配事实，
+// 逐个边界关闭旧周期并打开新周期；是否恢复访问由事务内最新事实决定。返回 (跨越的边界数, restored, err)。
+func (s *Store) RolloverCycle(ctx context.Context, rollover ports.CycleRollover) (int, bool, error) {
+	rolled, restored := 0, false
 	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
 		tx := write.(*txStore)
-		result, err := tx.tx.ExecContext(ctx, `UPDATE quota_cycles SET status='closed',closed_at=? WHERE id=? AND status='open'`,
-			millis(rollover.Now), rollover.OldCycleID.String())
-		if err != nil {
-			return err
-		}
-		if rows, _ := result.RowsAffected(); rows != 1 {
-			return nil // 已由更早的一次切换处理。
-		}
-		rolled = true
-		c := rollover.NewCycle
-		if _, err := tx.tx.ExecContext(ctx, `INSERT INTO quota_cycles
-            (id,allocation_id,starts_at_utc,ends_at_utc,timezone_name,reset_day,status,gross_uplink_bytes,gross_downlink_bytes,
-             accounted_uplink_bytes,accounted_downlink_bytes,manual_reset_count,opened_at,closed_at)
-            VALUES (?,?,?,?,?,?,'open',0,0,0,0,0,?,NULL) ON CONFLICT(allocation_id,starts_at_utc) DO NOTHING`,
-			c.ID.String(), c.AllocationID.String(), millis(c.StartsAt), millis(c.EndsAt), c.Timezone, c.ResetDay, millis(rollover.Now)); err != nil {
-			return err
-		}
-		facts, err := readFacts(ctx, tx.tx, rollover.AllocationID.String())
-		if err != nil {
-			return err
-		}
-		decision := domain.DecideTransition(facts.AllocationFacts, facts.AdminEnabled, false)
 		template := rollover.OperationTemplate
-		restored, err = applyDecision(ctx, tx.tx, rollover.AllocationID.String(), facts, decision, facts.AdminEnabled, &template, rollover.Now)
-		if err != nil {
-			return err
-		}
-		if restored && rollover.Audit != nil {
-			audit := *rollover.Audit
-			operationID := template.ID
-			audit.OperationID = &operationID
-			return tx.AppendAudit(ctx, audit)
-		}
-		return nil
+		var err error
+		rolled, restored, err = settleCycles(ctx, tx.tx, rollover.AllocationID.String(), rollover.Now, &template, rollover.Audit)
+		return err
 	})
 	return rolled, restored, err
+}
+
+// settleCycles 在事务内结算 allocation 所有 ends_at<=now 的 open 周期（停机跨多个边界时按顺序补做），
+// 新周期边界按事务内读到的最新 reset_day 与面板时区计算；跨过边界后按最新事实决定是否创建恢复操作。
+// template/audit 为 nil 时由本函数生成（采集提交路径）。
+func settleCycles(ctx context.Context, tx *sql.Tx, allocationID string, now time.Time, template *domain.SynchronizationOperation,
+	audit *domain.AuditEvent) (int, bool, error) {
+	rolled := 0
+	for {
+		var cycleID string
+		var ends int64
+		if err := tx.QueryRowContext(ctx, `SELECT id,ends_at_utc FROM quota_cycles WHERE allocation_id=? AND status='open'`, allocationID).Scan(&cycleID, &ends); err != nil {
+			return rolled, false, fmt.Errorf("read open cycle: %w", err)
+		}
+		start := fromMillis(ends)
+		if start.After(now) {
+			break
+		}
+		var resetDay int
+		var timezone string
+		if err := tx.QueryRowContext(ctx, `SELECT qp.reset_day,s.quota_timezone FROM quota_policies qp JOIN panel_settings s ON s.id=1 WHERE qp.allocation_id=?`,
+			allocationID).Scan(&resetDay, &timezone); err != nil {
+			return rolled, false, fmt.Errorf("read quota policy: %w", err)
+		}
+		location, err := time.LoadLocation(timezone)
+		if err != nil {
+			location = time.UTC
+		}
+		_, end, err := domain.CycleBounds(start, location, resetDay)
+		if err != nil {
+			return rolled, false, err
+		}
+		if !end.After(start) {
+			return rolled, false, fmt.Errorf("computed cycle end %s is not after %s", end, start)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE quota_cycles SET status='closed',closed_at=? WHERE id=? AND status='open'`, millis(now), cycleID); err != nil {
+			return rolled, false, err
+		}
+		id, err := domain.NewID()
+		if err != nil {
+			return rolled, false, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO quota_cycles
+            (id,allocation_id,starts_at_utc,ends_at_utc,timezone_name,reset_day,status,gross_uplink_bytes,gross_downlink_bytes,
+             accounted_uplink_bytes,accounted_downlink_bytes,manual_reset_count,opened_at,closed_at)
+            VALUES (?,?,?,?,?,?,'open',0,0,0,0,0,?,NULL)`, id.String(), allocationID, millis(start), millis(end), timezone, resetDay, millis(now)); err != nil {
+			return rolled, false, fmt.Errorf("open cycle: %w", err)
+		}
+		rolled++
+	}
+	if rolled == 0 {
+		return 0, false, nil
+	}
+	facts, err := readFacts(ctx, tx, allocationID)
+	if err != nil {
+		return rolled, false, err
+	}
+	decision := domain.DecideTransition(facts.AllocationFacts, facts.AdminEnabled, false)
+	if template == nil {
+		id, err := domain.NewID()
+		if err != nil {
+			return rolled, false, err
+		}
+		template = &domain.SynchronizationOperation{ID: id, CreatedAt: now}
+	}
+	restored, err := applyDecision(ctx, tx, allocationID, facts, decision, facts.AdminEnabled, template, now)
+	if err != nil || !restored {
+		return rolled, restored, err
+	}
+	if audit == nil {
+		id, err := domain.NewID()
+		if err != nil {
+			return rolled, restored, err
+		}
+		var userID string
+		if err := tx.QueryRowContext(ctx, `SELECT user_id FROM access_allocations WHERE id=?`, allocationID).Scan(&userID); err != nil {
+			return rolled, restored, err
+		}
+		audit = &domain.AuditEvent{ID: id, OccurredAt: now, ActorType: domain.ActorSystem, TargetType: "user", TargetID: domain.ID(userID),
+			Action: domain.ActionCycleRestored, Result: domain.AuditAccepted, SafeSummary: "new quota cycle opened; access restore requested"}
+	}
+	event := *audit
+	operationID := template.ID
+	event.OperationID = &operationID
+	return rolled, restored, (&txStore{tx: tx}).AppendAudit(ctx, event)
 }

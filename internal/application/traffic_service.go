@@ -33,6 +33,8 @@ type CollectionSummary struct {
 	Targets  int
 	Applied  int
 	Blocked  int
+	Rolled   int // 采集提交内因样本跨越周期边界而结算的周期数
+	Restored int // 结算后按最新事实创建的恢复操作数
 	Skipped  int
 	Events   int
 	Duration time.Duration
@@ -101,12 +103,12 @@ func (s *TrafficService) CollectOnce(ctx context.Context) (CollectionSummary, er
 		summary.Applied++
 		batch.Updates = append(batch.Updates, update)
 	}
-	blocked, err := s.store.CommitTrafficBatch(ctx, batch)
+	result, err := s.store.CommitTrafficBatch(ctx, batch)
 	if err != nil {
 		return summary, err
 	}
-	summary.Blocked = blocked
-	if summary.Blocked > 0 && s.notify != nil {
+	summary.Blocked, summary.Rolled, summary.Restored = result.Blocked, result.Rolled, result.Restored
+	if summary.Blocked+summary.Restored > 0 && s.notify != nil {
 		s.notify()
 	}
 	if err := s.store.MarkInstanceHealthy(ctx, epochString(round.Observation), s.clock.Now()); err != nil {
@@ -114,7 +116,8 @@ func (s *TrafficService) CollectOnce(ctx context.Context) (CollectionSummary, er
 	}
 	summary.Duration = s.clock.Now().Sub(started)
 	s.logger.Info("collection round committed", "targets", summary.Targets, "applied", summary.Applied, "blocked", summary.Blocked,
-		"skipped", summary.Skipped, "events", summary.Events, logging.FieldResult, "succeeded", logging.FieldDurationMS, summary.Duration.Milliseconds())
+		"rolled", summary.Rolled, "restored", summary.Restored, "skipped", summary.Skipped, "events", summary.Events,
+		logging.FieldResult, "succeeded", logging.FieldDurationMS, summary.Duration.Milliseconds())
 	return summary, nil
 }
 

@@ -88,49 +88,58 @@ func (s *Store) CollectionTargets(ctx context.Context) ([]ports.CollectionTarget
 
 // CommitTrafficBatch 在一个短事务中写入一轮采集的全部结果：游标、累计、日聚合、周期、事件，
 // 并在事务内按最新事实（策略、启用意图、生命周期、open 周期）重新判定越界，返回本轮新建的封禁操作数。
-func (s *Store) CommitTrafficBatch(ctx context.Context, batch ports.TrafficBatch) (int, error) {
+func (s *Store) CommitTrafficBatch(ctx context.Context, batch ports.TrafficBatch) (ports.TrafficCommitResult, error) {
+	result := ports.TrafficCommitResult{}
 	if len(batch.Updates) == 0 {
-		return 0, nil
+		return result, nil
 	}
 	tx, err := s.db.Write.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return result, err
 	}
 	defer tx.Rollback()
-	blocked := 0
 	for _, update := range batch.Updates {
+		// 样本完成时间已跨过 open 周期边界时先在同一事务内结算周期，增量才进入正确的新周期（FR-016/FR-018）。
+		rolled, restored, err := settleCycles(ctx, tx, update.AllocationID.String(), batch.ObservedAt, nil, nil)
+		if err != nil {
+			return result, err
+		}
+		result.Rolled += rolled
+		if restored {
+			result.Restored++
+		}
 		c := update.Cursor
 		if _, err := tx.ExecContext(ctx, `UPDATE traffic_cursors SET boot_epoch=?,uplink_counter=?,downlink_counter=?,uplink_epoch=?,
             downlink_epoch=?,last_observed_at=?,last_success_at=?,missing_since=?,updated_at=? WHERE allocation_id=?`,
 			nullString(c.BootEpoch), nullableInt64(c.UplinkCounter), nullableInt64(c.DownlinkCounter), c.UplinkEpoch, c.DownlinkEpoch,
 			nullTime(c.LastObservedAt), nullTime(c.LastSuccessAt), nullTime(c.MissingSince), millis(batch.ObservedAt), update.AllocationID.String()); err != nil {
-			return 0, fmt.Errorf("update cursor: %w", err)
+			return result, fmt.Errorf("update cursor: %w", err)
 		}
 		if update.UplinkDelta != 0 || update.DownlinkDelta != 0 {
 			if _, err := tx.ExecContext(ctx, `UPDATE allocation_traffic_totals SET uplink_bytes=uplink_bytes+?,downlink_bytes=downlink_bytes+?,updated_at=? WHERE allocation_id=?`,
 				update.UplinkDelta, update.DownlinkDelta, millis(batch.ObservedAt), update.AllocationID.String()); err != nil {
-				return 0, fmt.Errorf("update totals: %w", err)
+				return result, fmt.Errorf("update totals: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO daily_traffic_aggregates(allocation_id,day_start_utc,local_date,timezone_name,uplink_bytes,downlink_bytes,updated_at)
                 VALUES (?,?,?,?,?,?,?) ON CONFLICT(allocation_id,day_start_utc) DO UPDATE SET uplink_bytes=uplink_bytes+excluded.uplink_bytes,
                 downlink_bytes=downlink_bytes+excluded.downlink_bytes,updated_at=excluded.updated_at`,
 				update.AllocationID.String(), millis(update.DayStartUTC), update.LocalDate, update.Timezone, update.UplinkDelta, update.DownlinkDelta, millis(batch.ObservedAt)); err != nil {
-				return 0, fmt.Errorf("update daily aggregate: %w", err)
+				return result, fmt.Errorf("update daily aggregate: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE quota_cycles SET gross_uplink_bytes=gross_uplink_bytes+?,gross_downlink_bytes=gross_downlink_bytes+?,
                 accounted_uplink_bytes=accounted_uplink_bytes+?,accounted_downlink_bytes=accounted_downlink_bytes+? WHERE allocation_id=? AND status='open'`,
 				update.UplinkDelta, update.DownlinkDelta, update.UplinkDelta, update.DownlinkDelta, update.AllocationID.String()); err != nil {
-				return 0, fmt.Errorf("update cycle: %w", err)
+				return result, fmt.Errorf("update cycle: %w", err)
 			}
 		}
 		for _, event := range update.Events {
 			if err := insertContinuityEvent(ctx, tx, event); err != nil {
-				return 0, err
+				return result, err
 			}
 		}
 		facts, err := readFacts(ctx, tx, update.AllocationID.String())
 		if err != nil {
-			return 0, err
+			return result, err
 		}
 		exceeded := domain.IsQuotaExceeded(facts.limit, facts.accountedUplink, facts.accountedDownlink)
 		if !exceeded || facts.QuotaState != domain.QuotaWithinLimit {
@@ -139,10 +148,10 @@ func (s *Store) CommitTrafficBatch(ctx context.Context, batch ports.TrafficBatch
 		decision := domain.DecideTransition(facts.AllocationFacts, facts.AdminEnabled, true)
 		created, err := applyDecision(ctx, tx, update.AllocationID.String(), facts, decision, facts.AdminEnabled, update.QuotaBlock, batch.ObservedAt)
 		if err != nil {
-			return 0, err
+			return result, err
 		}
 		if created {
-			blocked++
+			result.Blocked++
 		}
 		if update.Audit != nil {
 			audit := *update.Audit
@@ -151,11 +160,11 @@ func (s *Store) CommitTrafficBatch(ctx context.Context, batch ports.TrafficBatch
 				audit.OperationID = &operationID
 			}
 			if err := (&txStore{tx: tx}).AppendAudit(ctx, audit); err != nil {
-				return 0, err
+				return result, err
 			}
 		}
 	}
-	return blocked, tx.Commit()
+	return result, tx.Commit()
 }
 
 // allocationFacts 是事务内重读的分配事实，含当前策略与 open 周期 accounted 值。

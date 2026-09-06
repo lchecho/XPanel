@@ -68,16 +68,16 @@ func (f *faultStore) SoftDeleteUser(ctx context.Context, record ports.DeleteReco
 	return f.Store.SoftDeleteUser(ctx, record)
 }
 
-func (f *faultStore) CommitTrafficBatch(ctx context.Context, batch ports.TrafficBatch) (int, error) {
+func (f *faultStore) CommitTrafficBatch(ctx context.Context, batch ports.TrafficBatch) (ports.TrafficCommitResult, error) {
 	if f.take("CommitTrafficBatch") {
-		return 0, errInjected
+		return ports.TrafficCommitResult{}, errInjected
 	}
 	return f.Store.CommitTrafficBatch(ctx, batch)
 }
 
-func (f *faultStore) RolloverCycle(ctx context.Context, rollover ports.CycleRollover) (bool, bool, error) {
+func (f *faultStore) RolloverCycle(ctx context.Context, rollover ports.CycleRollover) (int, bool, error) {
 	if f.take("RolloverCycle") {
-		return false, false, errInjected
+		return 0, false, errInjected
 	}
 	return f.Store.RolloverCycle(ctx, rollover)
 }

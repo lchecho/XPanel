@@ -52,7 +52,19 @@ func NewTrafficService(store ports.Store, adapter ports.Adapter, clock ports.Clo
 		logger: logger.With(logging.FieldComponent, "collector")}
 }
 
-// CollectOnce 采集一轮；返回摘要与 RPC 错误。RPC 失败时只更新实例健康状态。
+// InconsistentRoundError 表示分批读取之间 Xray 重启（boot epoch 变化）或观察时间倒退：
+// 整轮不得提交任何游标/累计/配额变更，由下一轮安全重试（FR-013/FR-017/FR-023）。
+type InconsistentRoundError struct {
+	Reason     string
+	FirstEpoch string
+	LastEpoch  string
+}
+
+func (e *InconsistentRoundError) Error() string {
+	return "traffic round inconsistent across batches: " + e.Reason
+}
+
+// CollectOnce 采集一轮；返回摘要与 RPC 错误。RPC 失败时只更新实例健康状态；分批观察不一致时整轮丢弃并记录诊断。
 func (s *TrafficService) CollectOnce(ctx context.Context) (CollectionSummary, error) {
 	started := s.clock.Now()
 	summary := CollectionSummary{}
@@ -75,6 +87,12 @@ func (s *TrafficService) CollectOnce(ctx context.Context) (CollectionSummary, er
 	}
 	round, err := s.readAll(ctx, ids)
 	if err != nil {
+		var inconsistent *InconsistentRoundError
+		if errors.As(err, &inconsistent) {
+			summary.Skipped = len(targets)
+			s.recordInconsistency(ctx, inconsistent)
+			return summary, err
+		}
 		s.recordFailure(ctx, err)
 		return summary, err
 	}
@@ -125,8 +143,10 @@ func (s *TrafficService) CollectOnce(ctx context.Context) (CollectionSummary, er
 const readBatchSize = 20
 
 // readAll 分批读取全部身份的计数；任一批失败即整轮失败，避免部分数据被误判为缺失。
+// 每一批的 InstanceObservation 必须属于同一 boot epoch 且观察时间不倒退，否则整轮视为不一致（不得混合 epoch）。
 func (s *TrafficService) readAll(ctx context.Context, ids []string) (ports.TrafficRound, error) {
 	var merged ports.TrafficRound
+	var previous ports.InstanceObservation
 	for start := 0; start < len(ids); start += readBatchSize {
 		end := start + readBatchSize
 		if end > len(ids) {
@@ -138,10 +158,40 @@ func (s *TrafficService) readAll(ctx context.Context, ids []string) (ports.Traff
 		}
 		if start == 0 {
 			merged.Observation = round.Observation
+		} else if reason := observationMismatch(merged.Observation, previous, round.Observation); reason != "" {
+			return ports.TrafficRound{}, &InconsistentRoundError{Reason: reason, FirstEpoch: epochString(merged.Observation), LastEpoch: epochString(round.Observation)}
 		}
+		previous = round.Observation
 		merged.Snapshots = append(merged.Snapshots, round.Snapshots...)
 	}
+	// 以最后一批的观察时间作为整轮样本完成时间，保证边界判断按样本完成时刻进行。
+	if !previous.ObservedAt.IsZero() {
+		merged.Observation.ObservedAt = previous.ObservedAt
+	}
 	return merged, nil
+}
+
+// observationMismatch 比较后续批次与首批/前一批的观察：boot epoch 必须一致，观察时间不得倒退。
+func observationMismatch(first, previous, current ports.InstanceObservation) string {
+	if first.BootEpochKnown != current.BootEpochKnown {
+		return "boot epoch visibility changed between batches"
+	}
+	if first.BootEpochKnown && !first.BootEpoch.Equal(current.BootEpoch) {
+		return "Xray restarted between batches (boot epoch changed)"
+	}
+	if !previous.ObservedAt.IsZero() && current.ObservedAt.Before(previous.ObservedAt) {
+		return "observation time regressed between batches"
+	}
+	return ""
+}
+
+// recordInconsistency 记录连续性/健康诊断：实例可达但本轮不可信；最新 boot epoch 写入实例健康，游标不变。
+func (s *TrafficService) recordInconsistency(ctx context.Context, cause *InconsistentRoundError) {
+	s.logger.Warn("collection round discarded: inconsistent observations across batches", logging.FieldResult, "retry",
+		logging.FieldErrorKind, "inconsistent_observation", "reason", cause.Reason, "first_boot_epoch", cause.FirstEpoch, "last_boot_epoch", cause.LastEpoch)
+	if err := s.store.MarkInstanceHealthy(ctx, cause.LastEpoch, s.clock.Now()); err != nil {
+		s.logger.Warn("record instance health", logging.FieldErrorKind, "internal")
+	}
 }
 
 func (s *TrafficService) buildUpdate(target ports.CollectionTarget, samples map[ports.Direction]domain.TrafficSample,
@@ -194,7 +244,9 @@ func (s *TrafficService) buildUpdate(target ports.CollectionTarget, samples map[
 	newCursor := ports.TrafficCursorRecord{AllocationID: target.Allocation.ID, BootEpoch: cursor.BootEpoch,
 		UplinkCounter: uplink.Cursor.Counter, DownlinkCounter: downlink.Cursor.Counter, UplinkEpoch: uplink.Cursor.Epoch,
 		DownlinkEpoch: downlink.Cursor.Epoch, LastObservedAt: &observedAt, LastSuccessAt: cursor.LastSuccessAt, MissingSince: cursor.MissingSince}
-	if observation.BootEpochKnown {
+	// 只有实际观察到计数时才推进游标的 boot epoch：计数缺失期间保留旧 epoch，
+	// 计数重新出现时仍能确认重启并按新纪元记账，避免把重启后的绝对值当作增量差值而漏计/漏封禁（FR-017/FR-023）。
+	if observation.BootEpochKnown && (!uplink.Missing || !downlink.Missing) {
 		newCursor.BootEpoch = epochString(observation)
 	}
 	if uplink.Missing || downlink.Missing {

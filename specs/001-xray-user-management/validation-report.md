@@ -21,6 +21,16 @@
 
 宪章要求的六类故障 × 七类变更矩阵：`tests/integration/failure_matrix_test.go`，42/42 收敛。
 
+Phase 10（2026-09-05，第二轮 converge）补充的收敛证据：
+
+| 任务 | 证据 | 结果 |
+|---|---|---|
+| T143 租约 fencing | `internal/worker/synchronizer_fencing_test.go`：慢 RPC 超过租期 + 第二 worker 回收 + 并发新意图，旧 worker 不再调用/确认 Xray；过期租约只能从旧 owner 回收；漂移移除不重复执行 | 通过 |
+| T144 契约字段冻结 | `tests/integration/profile_guard_test.go`：删除已提交未 Drain、漂移移除已排队、pending create 时改 tag 均 409，确认 absent 后允许且旧入站无 `xpanel-` 身份 | 通过 |
+| T145 周期边界 | `tests/integration/cycle_boundary_test.go`：先切换后采集 / 先采集后切换两种顺序、reset_day 与时区变更、禁用用户、边界后重置；唯一 open 周期、恢复操作恰好一次、流量只记一次 | 通过 |
+| T146 分批一致性 | `internal/application/batch_consistency_test.go`：25 分配两批之间重启整轮丢弃（无状态变化/事件/封禁），下一轮确认重启后越界全部封禁；计数缺失期间保留 boot epoch | 通过 |
+| T147 认证语义 | `tests/integration/auth_consistency_test.go`、`internal/persistence/sqlite/sessions_test.go`：审计写入、会话提交与撤销故障注入下 HTTP 不返回成功，会话可用性与 succeeded/failed 审计一致，已撤销令牌不被迟到提交复活 | 通过 |
+
 ## 2. 发布门禁（T127）
 
 | 步骤 | 命令 | 结果 |
@@ -29,7 +39,7 @@
 | 静态检查 | `make vet` | 通过（2026-09-04；2026-09-05 复跑通过） |
 | 全量测试 | `make test` | 通过（2026-09-04；2026-09-05 复跑通过，12 个包，含 42 格故障矩阵、CLI 二进制测试与真实 Xray 契约套件） |
 | 竞态检测 | `make test-race` | 通过（2026-09-04；2026-09-05 复跑通过，契约套件在 `-race` 下同样通过） |
-| 固定 Xray 契约套件 | `XRAY_BIN=<path> XPANEL_REQUIRE_CONTRACT=1 make check` | 通过（2026-09-05，`XRAY_BIN` 指向从 `github.com/xtls/xray-core@v1.260327.0` 构建的 `Xray 26.3.27`；`tests/contract/xray` 8 个测试全部通过，`exit=0`） |
+| 固定 Xray 契约套件 | `XRAY_BIN=<path> XPANEL_REQUIRE_CONTRACT=1 make check` | 通过（2026-09-05，`XRAY_BIN` 指向从 `github.com/xtls/xray-core@v1.260327.0` 构建的 `Xray 26.3.27`；`tests/contract/xray` 8 个测试全部通过，`exit=0`；Phase 10 完成后复跑整条门禁再次 `exit=0`） |
 
 ## 3. 真实 Xray 人工验收（T126，待执行）
 

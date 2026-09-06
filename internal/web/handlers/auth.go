@@ -41,7 +41,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		source = r.RemoteAddr
 	}
-	admin, err := h.Service.Login(r.Context(), username, password, source)
+	admin, err := h.Service.Authenticate(r.Context(), username, password, source)
 	if err != nil {
 		var limited *domain.RateLimitError
 		if errors.As(err, &limited) {
@@ -62,23 +62,42 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		h.Renderer.Error(w, http.StatusInternalServerError, "登录暂时无法完成", NewRequestID())
 		return
 	}
+	// 认证结果语义：只有会话持久化成功后才记录 succeeded；任一步失败都记录 failed 并拒绝请求，不留下已登录会话（FR-025/FR-027）。
 	if err := h.Sessions.RenewToken(r.Context()); err != nil {
-		h.Renderer.Error(w, http.StatusInternalServerError, "登录暂时无法完成", NewRequestID())
+		h.loginNotEstablished(w, r, "login failed: session could not be established")
 		return
 	}
 	h.Sessions.Put(r.Context(), webmiddleware.SessionAdministratorID, admin.ID.String())
 	h.Sessions.Put(r.Context(), webmiddleware.SessionPasswordVersion, admin.PasswordVersion)
+	if _, _, err := h.Sessions.Commit(r.Context()); err != nil {
+		_ = h.Sessions.Destroy(r.Context())
+		h.loginNotEstablished(w, r, "login failed: session could not be persisted")
+		return
+	}
+	if err := h.Service.RecordLogin(r.Context(), *admin); err != nil {
+		_ = h.Sessions.Destroy(r.Context())
+		h.Renderer.Error(w, http.StatusInternalServerError, "登录暂时无法完成", NewRequestID())
+		return
+	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+func (h *AuthHandler) loginNotEstablished(w http.ResponseWriter, r *http.Request, summary string) {
+	_ = h.Service.RecordLoginFailure(r.Context(), summary)
+	h.Renderer.Error(w, http.StatusInternalServerError, "登录暂时无法完成", NewRequestID())
+}
+
+// Logout 先撤销当前会话，确认撤销后才记录 succeeded；撤销失败记录 failed 并返回 500，审计写入失败同样不返回成功。
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	id := domain.ID(h.Sessions.GetString(r.Context(), webmiddleware.SessionAdministratorID))
 	version := h.Sessions.GetInt64(r.Context(), webmiddleware.SessionPasswordVersion)
-	if err := h.Service.Logout(r.Context(), ports.AdministratorRecord{ID: id, PasswordVersion: version}); err != nil {
+	admin := ports.AdministratorRecord{ID: id, PasswordVersion: version}
+	if err := h.Sessions.Destroy(r.Context()); err != nil {
+		_ = h.Service.LogoutFailed(r.Context(), admin, "logout failed: session could not be revoked")
 		h.Renderer.Error(w, http.StatusInternalServerError, "退出暂时无法完成", NewRequestID())
 		return
 	}
-	if err := h.Sessions.Destroy(r.Context()); err != nil {
+	if err := h.Service.Logout(r.Context(), admin); err != nil {
 		h.Renderer.Error(w, http.StatusInternalServerError, "退出暂时无法完成", NewRequestID())
 		return
 	}

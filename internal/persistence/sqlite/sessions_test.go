@@ -51,3 +51,29 @@ func TestSessionExpiryRevocationAndPasswordVersion(t *testing.T) {
 		t.Fatal("old password-version session remained valid")
 	}
 }
+
+// T147：已撤销令牌的迟到提交不得恢复会话有效性。
+func TestCommitDoesNotReviveRevokedSession(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	adminID, _ := domain.NewID()
+	if err := store.WithWriteTx(context.Background(), func(tx ports.WriteTx) error {
+		return tx.CreateAdministrator(context.Background(), ports.AdministratorRecord{ID: adminID, Username: "admin", PasswordHash: "hash", PasswordVersion: 1, CreatedAt: now, UpdatedAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sessions := NewSessionStore(store.db, 30*time.Minute, 12*time.Hour)
+	sessions.now = func() time.Time { return now }
+	if err := sessions.Commit("token", []byte("data"), now.Add(12*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.Delete("token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.Commit("token", []byte("late"), now.Add(12*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := sessions.Find("token"); found {
+		t.Fatal("late commit revived a revoked session")
+	}
+}

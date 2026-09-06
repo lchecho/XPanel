@@ -73,7 +73,22 @@ func (s *AuthService) InitializeAdministrator(ctx context.Context, username stri
 	return id, nil
 }
 
+// Login 校验凭证并记录成功审计；仅供不需要单独建立会话的调用方使用。HTTP 登录应使用 Authenticate + RecordLogin，
+// 以便只有在会话持久化成功后才记录 succeeded（FR-025/FR-027）。
 func (s *AuthService) Login(ctx context.Context, username string, password []byte, source string) (*ports.AdministratorRecord, error) {
+	admin, err := s.Authenticate(ctx, username, password, source)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.RecordLogin(ctx, *admin); err != nil {
+		return nil, err
+	}
+	return admin, nil
+}
+
+// Authenticate 校验用户名与密码并执行限流；失败与限流都写入 failed 审计，审计写入失败即返回错误（不得吞掉）。
+// 不写 succeeded 审计：成功登录的审计由 RecordLogin 在会话确认建立后写入。
+func (s *AuthService) Authenticate(ctx context.Context, username string, password []byte, source string) (*ports.AdministratorRecord, error) {
 	normalized, normalizeErr := security.NormalizeUsername(username)
 	if normalizeErr != nil {
 		normalized = "invalid"
@@ -81,7 +96,9 @@ func (s *AuthService) Login(ctx context.Context, username string, password []byt
 	now := s.clock.Now()
 	key := normalized + "|" + source
 	if retry, limited := s.limited(key, now); limited {
-		s.auditFailure(ctx, "login throttled")
+		if err := s.RecordLoginFailure(ctx, "login throttled"); err != nil {
+			return nil, err
+		}
 		return nil, &domain.RateLimitError{RetryAfter: retry}
 	}
 	var admin *ports.AdministratorRecord
@@ -103,21 +120,31 @@ func (s *AuthService) Login(ctx context.Context, username string, password []byt
 		return nil, err
 	}
 	if !matchedUser || !ok {
-		s.auditFailure(ctx, "login failed: invalid credentials")
+		if err := s.RecordLoginFailure(ctx, "login failed: invalid credentials"); err != nil {
+			return nil, err
+		}
 		if retry, limited := s.recordFailure(key, now); limited {
 			return nil, &domain.RateLimitError{RetryAfter: retry}
 		}
 		return nil, ErrInvalidCredentials
 	}
 	s.clearFailures(key, now)
-	if err := s.audit(ctx, *admin, domain.ActionLogin, "administrator login succeeded"); err != nil {
-		return nil, err
-	}
 	return admin, nil
 }
 
+// RecordLogin 在会话已持久化后写入 succeeded 登录审计。
+func (s *AuthService) RecordLogin(ctx context.Context, admin ports.AdministratorRecord) error {
+	return s.audit(ctx, admin, domain.ActionLogin, domain.AuditSucceeded, "administrator login succeeded")
+}
+
+// Logout 在会话确认撤销后写入 succeeded 登出审计；撤销失败时应改用 LogoutFailed。
 func (s *AuthService) Logout(ctx context.Context, admin ports.AdministratorRecord) error {
-	return s.audit(ctx, admin, domain.ActionLogout, "administrator logout succeeded")
+	return s.audit(ctx, admin, domain.ActionLogout, domain.AuditSucceeded, "administrator logout succeeded")
+}
+
+// LogoutFailed 记录会话撤销失败的登出：审计结果为 failed，不得留下“登出成功但会话仍有效”的状态。
+func (s *AuthService) LogoutFailed(ctx context.Context, admin ports.AdministratorRecord, summary string) error {
+	return s.audit(ctx, admin, domain.ActionLogout, domain.AuditFailed, summary)
 }
 
 func (s *AuthService) SessionValid(ctx context.Context, administratorID domain.ID, passwordVersion int64) (bool, error) {
@@ -169,7 +196,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, password []byte) error 
 	})
 }
 
-func (s *AuthService) audit(ctx context.Context, admin ports.AdministratorRecord, action, summary string) error {
+func (s *AuthService) audit(ctx context.Context, admin ports.AdministratorRecord, action string, result domain.AuditResult, summary string) error {
 	id, err := domain.NewID()
 	if err != nil {
 		return err
@@ -178,17 +205,18 @@ func (s *AuthService) audit(ctx context.Context, admin ports.AdministratorRecord
 		actorID := admin.ID
 		return tx.AppendAudit(ctx, domain.AuditEvent{ID: id, OccurredAt: s.clock.Now(), ActorType: domain.ActorAdministrator,
 			ActorID: &actorID, TargetType: "administrator", TargetID: admin.ID, Action: action,
-			Result: domain.AuditSucceeded, SafeSummary: summary})
+			Result: result, SafeSummary: summary})
 	})
 }
 
-// auditFailure 记录失败或被限流的登录：不区分用户名是否存在、不含密码，目标固定为面板管理员身份（FR-025/FR-026）。
-func (s *AuthService) auditFailure(ctx context.Context, summary string) {
+// RecordLoginFailure 记录失败、被限流或会话无法建立的登录：不区分用户名是否存在、不含密码，
+// 目标固定为面板管理员身份（FR-025/FR-026）；写入失败即返回错误，由调用方拒绝请求。
+func (s *AuthService) RecordLoginFailure(ctx context.Context, summary string) error {
 	id, err := domain.NewID()
 	if err != nil {
-		return
+		return err
 	}
-	_ = s.store.WithWriteTx(ctx, func(tx ports.WriteTx) error {
+	return s.store.WithWriteTx(ctx, func(tx ports.WriteTx) error {
 		target := domain.ID("00000000-0000-4000-8000-000000000000")
 		if admin, err := tx.Administrator(ctx); err == nil && admin != nil {
 			target = admin.ID

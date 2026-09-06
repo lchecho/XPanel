@@ -48,6 +48,7 @@ func (s *SessionStore) Find(token string) ([]byte, bool, error) {
 	return data, err == nil, err
 }
 
+// Commit 持久化会话数据；已撤销的令牌不会因迟到的提交而恢复有效（登出后并发请求不得复活会话）。
 func (s *SessionStore) Commit(token string, data []byte, expiry time.Time) error {
 	now := s.now()
 	var adminID string
@@ -71,7 +72,8 @@ func (s *SessionStore) Commit(token string, data []byte, expiry time.Time) error
         (id,administrator_id,token_digest,password_version,data,created_at,last_seen_at,idle_expires_at,absolute_expires_at)
         VALUES (?,?,?,?,?,?,?,?,?)
         ON CONFLICT(token_digest) DO UPDATE SET data=excluded.data,last_seen_at=excluded.last_seen_at,
-        idle_expires_at=excluded.idle_expires_at,absolute_expires_at=excluded.absolute_expires_at,revoked_at=NULL`,
+        idle_expires_at=excluded.idle_expires_at,absolute_expires_at=excluded.absolute_expires_at
+        WHERE admin_sessions.revoked_at IS NULL`,
 		id.String(), adminID, tokenDigest(token), passwordVersion, data, millis(now), millis(now), millis(idle), millis(absolute))
 	return err
 }

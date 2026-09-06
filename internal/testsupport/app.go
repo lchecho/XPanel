@@ -72,6 +72,9 @@ const (
 type Options struct {
 	Adapter ports.Adapter
 	Target  *ports.InstanceTarget
+	// WrapAuthStore / WrapSessionStore 允许测试包装认证存储与会话存储以注入故障。
+	WrapAuthStore    func(ports.AuthStore) ports.AuthStore
+	WrapSessionStore func(scs.Store) scs.Store
 }
 
 // New 装配应用并初始化管理员；不登录。
@@ -123,7 +126,11 @@ func NewWith(t *testing.T, options Options) *App {
 	app := &App{T: t, Store: store, Keyring: keyring, Clock: clock, Adapter: fakeAdapter, Node: node, Target: target,
 		Username: DefaultUsername, Password: DefaultPassword}
 
-	app.Auth, err = application.NewAuthService(store, clock)
+	var authStore ports.AuthStore = store
+	if options.WrapAuthStore != nil {
+		authStore = options.WrapAuthStore(store)
+	}
+	app.Auth, err = application.NewAuthService(authStore, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +156,11 @@ func NewWith(t *testing.T, options Options) *App {
 	app.Audit = application.NewAuditService(store)
 
 	app.Sessions = scs.New()
-	webmiddleware.ConfigureSessions(app.Sessions, sqlite.NewSessionStore(db, 30*time.Minute, 12*time.Hour), 30*time.Minute, 12*time.Hour, false)
+	var sessionStore scs.Store = sqlite.NewSessionStore(db, 30*time.Minute, 12*time.Hour)
+	if options.WrapSessionStore != nil {
+		sessionStore = options.WrapSessionStore(sessionStore)
+	}
+	webmiddleware.ConfigureSessions(app.Sessions, sessionStore, 30*time.Minute, 12*time.Hour, false)
 	app.Handler, err = web.Routes(web.RouteDependencies{Auth: app.Auth, Profiles: app.Profiles, Users: app.Users,
 		Connections: app.Connections, Settings: app.Settings, Dashboard: app.Dashboard, Audit: app.Audit, Sessions: app.Sessions, CSRFKey: keyring.CSRFKey(), Secure: false,
 		Ready: func() bool { return true }})

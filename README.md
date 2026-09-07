@@ -1,15 +1,20 @@
 # XPanel
 
-面向少量共享用户的 Xray 管理面板：在运维预配置好的 Shadowsocks 2022 多用户入站上创建、修改、禁用、轮换和删除用户，
-按月度周期统计并限制流量，配额重置日自动恢复访问，并提供服务端渲染的安全管理界面。
+面向少量共享用户的 Xray 管理面板：为每个用户创建一条专属的 Shadowsocks 2022 入站并分配独立端口，
+支持创建、修改、禁用、轮换和删除用户，按月度周期统计并限制流量，配额重置日自动恢复访问，
+并提供服务端渲染的安全管理界面。每个用户拥有各自的端口与入站，彼此不受影响。
 
-规格与设计见 `specs/001-xray-user-management/`（spec、plan、data-model、contracts、quickstart、validation-report）。
+规格与设计见 `specs/002-per-user-inbound/`（spec、plan、research、data-model、contracts、quickstart）。
+`specs/001-xray-user-management/` 保留为历史规格，其共享入站模型已被 002 完全替换。
 
 ## 前提
 
 - Go `1.26.8`（`go.mod` 的 toolchain 指令会自动获取）。
-- Xray `v26.3.27`，API 只监听回环地址且 `api.tag` 非空，并已配置至少一个保留初始用户的 SS2022 多用户入站（见 `deploy/xray-v26.3.27.example.json`）。
+- Xray `v26.3.27`，API 只监听回环地址且 `api.tag` 非空，`stats` 开启且
+  `policy.levels."0".statsUserUplink/statsUserDownlink` 为 `true`（见 `deploy/xray-v26.3.27.example.json`）。
+  **不需要**预配置任何 SS2022 入站，面板会在运行时为每个用户创建专属入站。
   没有官方二进制时可从固定模块构建：`GOBIN=$PWD/bin go install github.com/xtls/xray-core/main@v1.260327.0 && mv bin/main bin/xray`。
+- 一段可供面板分配的端口区间（端口池），需在防火墙上整段放行，且避开 Xray 管理端口与主机上的其他服务。
 - 本地持久磁盘目录（`0700`）存放 SQLite；独立保存的 32 字节主密钥文件（`0600`）。
 
 ## 构建与门禁

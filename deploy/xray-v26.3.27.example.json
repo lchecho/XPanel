@@ -1,11 +1,17 @@
 {
+  "_comment": "XPanel 基础配置样例。面板在运行时通过管理接口为每个用户创建专属 SS2022 入站，因此这里不需要预配置任何入站。",
+  "log": {
+    "loglevel": "warning"
+  },
   "api": {
+    "_comment": "tag 必须非空，否则 Xray 拒绝启动（API tag can't be empty）",
     "tag": "api",
     "listen": "127.0.0.1:10085",
     "services": ["HandlerService", "StatsService"]
   },
   "stats": {},
   "policy": {
+    "_comment": "面板依赖用户级计数器计费；缺少这两项时配额永远不会触发，面板会把入站模板判为不兼容",
     "levels": {
       "0": {
         "statsUserUplink": true,
@@ -13,25 +19,7 @@
       }
     }
   },
-  "inbounds": [
-    {
-      "tag": "ss2022-managed",
-      "listen": "0.0.0.0",
-      "port": 8388,
-      "protocol": "shadowsocks",
-      "settings": {
-        "method": "2022-blake3-aes-256-gcm",
-        "password": "REPLACE_WITH_32_BYTE_BASE64_SERVER_KEY",
-        "network": "tcp,udp",
-        "clients": [
-          {
-            "email": "xpanel-bootstrap-reserved",
-            "password": "REPLACE_WITH_32_BYTE_BASE64_BOOTSTRAP_KEY"
-          }
-        ]
-      }
-    }
-  ],
+  "inbounds": [],
   "outbounds": [
     {"protocol": "freedom", "tag": "direct"}
   ]

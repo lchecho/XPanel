@@ -45,13 +45,13 @@ v1.2.0 追加「面板管理入站时 MUST 追加覆盖端口冲突与端口被�
 
 **Purpose**: 让规格产物与已落地的宪章 v1.2.0 一致，并给出不含预配置入站的部署样例
 
-- [ ] T001 更新 `specs/002-per-user-inbound/plan.md` 的 Constitution Check：宪章已修订至 v1.2.0，
+- [X] T001 更新 `specs/002-per-user-inbound/plan.md` 的 Constitution Check：宪章已修订至 v1.2.0，
   将原则 II 由 CONDITIONAL 改判为 PASS，并在 Complexity Tracking 中把「需 MINOR 修订」标记为已完成
   （引用宪章 commit）
-- [ ] T002 [P] 按 contracts/config.md 重写 `deploy/xray-v26.3.27.example.json`：保留 `api.tag`、
+- [X] T002 [P] 按 contracts/config.md 重写 `deploy/xray-v26.3.27.example.json`：保留 `api.tag`、
   `stats`、`policy.levels."0".statsUserUplink/statsUserDownlink` 与 freedom outbound，移除预配置的
   SS2022 入站与 bootstrap 客户端，并加注释说明入站由面板在运行时创建
-- [ ] T003 [P] 在 `README.md` 与 `docs/operations.md` 增补端口池规划、防火墙放行整个端口区间、
+- [X] T003 [P] 在 `README.md` 与 `docs/operations.md` 增补端口池规划、防火墙放行整个端口区间、
   Xray 重启期间全部用户端口不可用的说明
 
 ---

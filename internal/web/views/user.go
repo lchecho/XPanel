@@ -18,7 +18,10 @@ type UserView struct {
 	InboundTag         string
 	Listening          bool
 	// Rebuilding 表示该用户「应当监听但当前没在监听」，例如节点重启后正在按原端口重建（FR-028）。
-	Rebuilding         bool
+	Rebuilding bool
+	// PortPoolStart / PortPoolEnd 供更换端口表单展示可选范围。
+	PortPoolStart      int
+	PortPoolEnd        int
 	TemplateStateLabel string
 	State              string
 	StateLabel         string
@@ -63,6 +66,7 @@ func NewUserView(record ports.UserRecord, location *time.Location) UserView {
 		Listening: record.Inbound.Inbound.ObservedPresent != nil && *record.Inbound.Inbound.ObservedPresent,
 		Rebuilding: record.User.Lifecycle != domain.LifecycleDeleted && record.Allocation.DesiredPresent(record.User) &&
 			!(record.Inbound.Inbound.ObservedPresent != nil && *record.Inbound.Inbound.ObservedPresent),
+		PortPoolStart: record.Template.Template.Pool.Start, PortPoolEnd: record.Template.Template.Pool.End,
 		State: string(state), StateLabel: StateLabel(state),
 		PendingSync:   record.User.Lifecycle != domain.LifecycleDeleted && record.Allocation.PendingSync(),
 		SyncErrorKind: record.Allocation.LastSyncErrorCode, SyncError: ErrorSentence(record.Allocation.LastSyncErrorCode),

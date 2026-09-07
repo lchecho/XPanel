@@ -101,6 +101,8 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 		protected.HandleFunc("POST /users/{user_id}/disable", users.Disable)
 		protected.HandleFunc("GET /users/{user_id}/rotate", users.RotateForm)
 		protected.HandleFunc("POST /users/{user_id}/rotate", users.Rotate)
+		protected.HandleFunc("GET /users/{user_id}/port", users.PortForm)
+		protected.HandleFunc("POST /users/{user_id}/port", users.ChangePort)
 		protected.HandleFunc("GET /users/{user_id}/delete", users.DeleteForm)
 		protected.HandleFunc("POST /users/{user_id}/delete", users.Delete)
 	}

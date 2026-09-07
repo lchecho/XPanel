@@ -426,7 +426,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   用户级上下行统计可用；不得忽略探针清理失败，缺少 HandlerService 移除能力或
   `statsUserUplink`/`statsUserDownlink` 时必须以安全中文原因标记模板不兼容，并增加固定 Xray 契约与
   缺失 policy 的回归测试 per FR-005 / T021 / plan: Xray capability gate (partial)
-- [ ] T080 在 `internal/application/user_service.go`、`internal/ports/store.go`、
+- [X] T080 在 `internal/application/user_service.go`、`internal/ports/store.go`、
   `internal/persistence/sqlite/` 和 `internal/web/` 增加外部端口占用后的管理员更换端口流程：在单个
   SQLite 事务中校验池范围与唯一性、更新专属入站端口及同步意图、记录旧/新端口审计，并以 revision
   和请求幂等键防止并发或重复提交产生部分状态；补充 Handler、集成及故障矩阵测试 per US1/AC4 /

@@ -28,6 +28,8 @@ type matrixApp struct {
 	limit     int64
 	record    ports.UserRecord
 	requestID domain.ID
+	// targetPort 由 port_change 变更在 setup 中定下，保证重复提交是同一份输入。
+	targetPort int
 }
 
 func newMatrixApp(t *testing.T) *matrixApp {
@@ -132,6 +134,16 @@ var changes = []change{
 		apply: func(m *matrixApp) error {
 			_, err := m.users.RotateCredential(context.Background(), application.LifecycleInput{ID: m.record.User.ID,
 				ExpectedRevision: m.record.User.Revision, RequestID: m.requestID, ActorID: m.AdminID})
+			return err
+		}},
+	{name: "port_change", storeWrite: "ChangeInboundPort", rpc: "create_inbound", reason: "port_change", audit: domain.ActionPortChanged,
+		present: true, uplink: zeroUplink,
+		// 目标端口在 setup 里定下来：重复提交必须是同一份输入，否则请求指纹不匹配。
+		setup: func(m *matrixApp) { m.targetPort = m.refresh().Inbound.Inbound.Port + 11 },
+		apply: func(m *matrixApp) error {
+			_, err := m.users.ChangePort(context.Background(), application.ChangePortInput{ID: m.record.User.ID,
+				Port: m.targetPort, ExpectedRevision: m.record.User.Revision,
+				RequestID: m.requestID, ActorID: m.AdminID})
 			return err
 		}},
 	{name: "delete", storeWrite: "SoftDeleteUser", rpc: "remove_user", reason: "delete", audit: domain.ActionUserDeleted, present: false, uplink: zeroUplink,

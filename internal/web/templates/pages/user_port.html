@@ -1,0 +1,21 @@
+{{define "user_port.html"}}{{template "head" .}}
+<body>{{template "nav" .}}<main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}
+<p>当前端口为 <strong>{{.Data.Port}}</strong>{{if not .Data.Listening}}（当前未监听）{{end}}。更换端口适用于该端口被面板之外的进程占用、无法建立入站的情况。请确认你了解以下后果：</p>
+<ul>
+  <li>面板会先移除旧入站再按新端口重建，期间该用户短暂不可用；这与凭证轮换不同，端口变更必然中断监听。</li>
+  <li>新端口必须位于该用户所属入站模板的端口池内，且未被其他用户占用；新端口同样需要在防火墙上放行。</li>
+  <li>连接信息中的端口会随之改变，必须把新的连接信息重新交付给使用者，旧链接将失效。</li>
+  <li>密钥、统计身份、流量历史与配额周期都不变，仍归属于同一个用户。</li>
+</ul>
+<form method="post" action="/users/{{.Data.ID}}/port">
+  {{.CSRFField}}
+  <input type="hidden" name="_request_id" value="{{.RequestID}}">
+  <input type="hidden" name="_version" value="{{.Version}}">
+  <label for="port">新端口</label>
+  <input id="port" name="port" type="number" min="1024" max="65535" value="{{index .Values "port"}}" required aria-describedby="port-hint port-error">
+  <span id="port-hint" class="hint">端口池范围 {{.Data.PortPoolStart}}–{{.Data.PortPoolEnd}}。</span>
+  <span id="port-error" class="field-error">{{index .FieldErrors "port"}}</span>
+  <button type="submit">确认更换端口</button>
+</form>
+<p><a href="/users/{{.Data.ID}}">取消并返回</a></p>
+{{template "footer" .}}</main></body></html>{{end}}

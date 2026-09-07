@@ -58,6 +58,7 @@ type Store interface {
 	RolloverCycle(context.Context, CycleRollover) (int, bool, error)
 	UpdateSettings(context.Context, string, domain.Revision, domain.DomainCommand, domain.AuditEvent) (bool, error)
 	RotateCredential(context.Context, RotationRecord) (bool, error)
+	ChangeInboundPort(context.Context, PortChangeRecord) (bool, error)
 	SoftDeleteUser(context.Context, DeleteRecord) (bool, error)
 	FailedOperations(context.Context, int) ([]FailedOperationRecord, error)
 	LastCollectionAt(context.Context) (*time.Time, error)
@@ -350,6 +351,20 @@ type RotationRecord struct {
 	AllocationID     domain.ID
 	ExpectedRevision domain.Revision
 	Credential       domain.AccessCredential
+	Operation        domain.SynchronizationOperation
+	Command          domain.DomainCommand
+	Audit            domain.AuditEvent
+	Now              time.Time
+}
+
+// PortChangeRecord 描述「更换专属端口」的单事务写入：校验池范围与唯一性、改端口、写同步意图与审计，
+// 全部在一个事务内完成；revision 与请求指纹保证并发或重复提交不产生部分状态（FR-010）。
+type PortChangeRecord struct {
+	UserID           domain.ID
+	AllocationID     domain.ID
+	ExpectedRevision domain.Revision
+	OldPort          int
+	NewPort          int
 	Operation        domain.SynchronizationOperation
 	Command          domain.DomainCommand
 	Audit            domain.AuditEvent

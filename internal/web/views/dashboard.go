@@ -59,6 +59,8 @@ func ReasonLabel(reason domain.SyncReason) string {
 		return "凭证轮换"
 	case domain.SyncDelete:
 		return "删除"
+	case domain.SyncPortChange:
+		return "更换端口"
 	case domain.SyncReconcile:
 		return "协调修复"
 	default:

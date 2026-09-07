@@ -16,6 +16,8 @@ const (
 	SyncRotate       SyncReason = "rotate"
 	SyncDelete       SyncReason = "delete"
 	SyncReconcile    SyncReason = "reconcile"
+	// SyncPortChange 是管理员更换专属端口的意图：先移除旧入站，再按新端口重建（FR-010）。
+	SyncPortChange SyncReason = "port_change"
 )
 
 type SyncPhase string

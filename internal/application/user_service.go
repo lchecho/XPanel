@@ -399,6 +399,89 @@ type LifecycleInput struct {
 	Fingerprint      []byte
 }
 
+// ChangePortInput 描述一次更换专属端口的请求。
+type ChangePortInput struct {
+	ID               domain.ID
+	Port             int
+	ExpectedRevision domain.Revision
+	RequestID        domain.ID
+	ActorID          domain.ID
+	Fingerprint      []byte
+}
+
+// ChangePort 把该用户的专属端口换成池内的另一个空闲端口。
+//
+// 场景：端口被面板外的进程占用时，管理员不必等占用解除，可以直接换端口（FR-010）。
+// 同步意图为 port_change：先移除旧入站再按新端口重建，期间该用户短暂不可用——这与轮换不同，
+// 是端口变更固有的代价，界面据此提示。
+func (s *UserService) ChangePort(ctx context.Context, input ChangePortInput) (bool, error) {
+	if !input.RequestID.Valid() {
+		return false, &domain.ValidationError{Field: "_request_id", Message: "invalid request identifier"}
+	}
+	fingerprint := input.Fingerprint
+	if len(fingerprint) == 0 {
+		fingerprint = domain.Fingerprint(domain.ActionPortChanged, input.ID.String(), strconv.Itoa(input.Port),
+			strconv.FormatInt(int64(input.ExpectedRevision), 10))
+	}
+	if replayed, err := s.commandReplayed(ctx, input.RequestID, fingerprint); err != nil || replayed {
+		return replayed, err
+	}
+	record, err := s.store.User(ctx, input.ID)
+	if err != nil {
+		return false, err
+	}
+	if record.User.Lifecycle == domain.LifecycleDeleted {
+		return false, &domain.InvalidStateError{Message: "user is deleted"}
+	}
+	if record.User.Revision != input.ExpectedRevision {
+		return false, &domain.ConflictError{Message: "user changed since the page was loaded"}
+	}
+	if input.Port == record.Inbound.Inbound.Port {
+		return false, &domain.ValidationError{Field: "port", Message: "port is already assigned to this user"}
+	}
+	assigned, err := s.store.AssignedPorts(ctx, record.Template.Template.ID)
+	if err != nil {
+		return false, err
+	}
+	// 先按领域规则给出可理解的错误；真正的唯一性仍由数据库约束在事务内保证。
+	if err := domain.ValidateRequestedPort(record.Template.Template.Pool, input.Port, assigned); err != nil {
+		return false, err
+	}
+	now := s.clock.Now().UTC()
+	opID, err := domain.NewID()
+	if err != nil {
+		return false, err
+	}
+	auditID, err := domain.NewID()
+	if err != nil {
+		return false, err
+	}
+	actor := input.ActorID
+	completed := now
+	present := record.Allocation.DesiredPresent(record.User)
+	version := record.Allocation.DesiredCredentialVersion
+	change := ports.PortChangeRecord{UserID: record.User.ID, AllocationID: record.Allocation.ID,
+		ExpectedRevision: input.ExpectedRevision, OldPort: record.Inbound.Inbound.Port, NewPort: input.Port, Now: now,
+		Operation: domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1,
+			present, &version, domain.SyncPortChange, domain.InboundPhaseFor(present), now),
+		Command: domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor,
+			CommandType: domain.ActionPortChanged, TargetType: "user", TargetID: record.User.ID, RequestFingerprint: fingerprint,
+			State: domain.CommandCompleted, ResultReference: "/users/" + record.User.ID.String(), CreatedAt: now, CompletedAt: &completed},
+		Audit: domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor,
+			TargetType: "user", TargetID: record.User.ID, Action: domain.ActionPortChanged, Result: domain.AuditAccepted,
+			CommandID: &input.RequestID, OperationID: &opID,
+			SafeSummary: fmt.Sprintf("port changed from %d to %d on %s", record.Inbound.Inbound.Port, input.Port,
+				record.Template.Template.ListenAddress)}}
+	replay, err := s.store.ChangeInboundPort(ctx, change)
+	if err != nil {
+		return false, err
+	}
+	if !replay && s.notify != nil {
+		s.notify()
+	}
+	return replay, nil
+}
+
 // RotateCredential 生成下一版本密钥并启动 remove_old → add_desired → confirm 三阶段轮换（spec FR-011）。
 // 轮换进行中再次轮换返回冲突；旧凭证在确认事务中销毁。
 func (s *UserService) RotateCredential(ctx context.Context, input LifecycleInput) (bool, error) {

@@ -119,3 +119,57 @@ func TestUserLifecycleActionsIdempotencyAndConflicts(t *testing.T) {
 		t.Fatal("user not deleted")
 	}
 }
+
+// FR-010：端口被面板外进程占用时，管理员可以在界面上直接换端口。
+func TestChangePortFormAndConflicts(t *testing.T) {
+	app := testsupport.New(t)
+	app.Login()
+	templateID := app.RegisterTemplateWithPool("Primary", 39000, 39003)
+	record := app.CreateUser("Alice", templateID, nil)
+	other := app.CreateUser("Bob", templateID, nil)
+	app.Drain()
+	path := "/users/" + record.User.ID.String()
+
+	_, body := app.Get(path)
+	if !strings.Contains(body, `href="`+path+`/port"`) {
+		t.Fatalf("detail page has no change-port entry: %s", body)
+	}
+	response, body := app.Get(path + "/port")
+	if response.StatusCode != http.StatusOK || !strings.Contains(body, "端口池范围 39000–39003") ||
+		!strings.Contains(body, "端口变更必然中断监听") {
+		t.Fatalf("change-port form status=%d body=%s", response.StatusCode, body)
+	}
+
+	// 池外端口是 422，页面保留输入并给出允许范围。
+	response, body = app.PostForm(path+"/port", path+"/port", url.Values{"port": {"40000"}, "_version": {"0"}})
+	if response.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(body, "端口必须位于端口池内") ||
+		!strings.Contains(body, `value="40000"`) {
+		t.Fatalf("out-of-pool port status=%d body=%s", response.StatusCode, body)
+	}
+	// 非数字同样是字段级错误。
+	if response, _ = app.PostForm(path+"/port", path+"/port", url.Values{"port": {"abc"}, "_version": {"0"}}); response.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("non-numeric port status=%d", response.StatusCode)
+	}
+	// 已被其他用户占用的端口是 409。
+	taken := strconv.Itoa(app.User(other.User.ID).Inbound.Inbound.Port)
+	response, body = app.PostForm(path+"/port", path+"/port", url.Values{"port": {taken}, "_version": {"0"}})
+	if response.StatusCode != http.StatusConflict || !strings.Contains(body, "该端口已分配给其他用户") {
+		t.Fatalf("occupied port status=%d body=%s", response.StatusCode, body)
+	}
+
+	// 成功：详情页展示新端口，且状态回到监听中。
+	response, _ = app.PostForm(path+"/port", path+"/port", url.Values{"port": {"39002"}, "_version": {"0"}})
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("change status=%d", response.StatusCode)
+	}
+	app.Drain()
+	_, body = app.Get(path)
+	if !strings.Contains(body, "<dt>专属端口</dt><dd>39002</dd>") || !strings.Contains(body, "<dt>监听状态</dt><dd>监听中</dd>") {
+		t.Fatalf("detail after the port change: %s", body)
+	}
+	// 陈旧版本再次提交是冲突。
+	response, _ = app.PostForm(path+"/port", path+"/port", url.Values{"port": {"39003"}, "_version": {"0"}})
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("stale version status=%d", response.StatusCode)
+	}
+}

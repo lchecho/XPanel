@@ -114,6 +114,7 @@ const (
 	ActionInboundRemoved                = "inbound_removed"
 	ActionPortAssigned                  = "port_assigned"
 	ActionPortReleased                  = "port_released"
+	ActionPortChanged                   = "port_changed"
 	ActionSettingsUpdated               = "settings_updated"
 	ActionReconcileRemovedUnknown       = "reconcile_removed_unknown"
 )

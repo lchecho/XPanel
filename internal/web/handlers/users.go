@@ -509,6 +509,66 @@ func (h *UserHandler) RotateForm(w http.ResponseWriter, r *http.Request) {
 	h.confirmationPage(w, r, "user_rotate.html", "轮换凭证：")
 }
 
+// PortForm 展示更换端口的确认表单（FR-010）。
+func (h *UserHandler) PortForm(w http.ResponseWriter, r *http.Request) {
+	h.confirmationPage(w, r, "user_port.html", "更换端口：")
+}
+
+// ChangePort 更换该用户的专属端口：池内、未占用，且以 revision 与请求指纹防止重复或并发提交。
+func (h *UserHandler) ChangePort(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "user_id")
+	if !ok {
+		h.Renderer.Error(w, http.StatusNotFound, "请求的资源不存在", "")
+		return
+	}
+	form, err := ParseCommandForm(r, h.SessionToken(r), "user_port", id.String())
+	if err != nil || form.Version == nil {
+		h.Renderer.Error(w, http.StatusBadRequest, "表单格式无效或缺少资源版本", "")
+		return
+	}
+	port, convErr := strconv.Atoi(strings.TrimSpace(form.Values["port"]))
+	if convErr != nil {
+		h.renderPortForm(w, r, id, form.Values, &domain.ValidationError{Field: "port", Message: "port must be a number"})
+		return
+	}
+	if _, err := h.Service.ChangePort(r.Context(), application.ChangePortInput{ID: id, Port: port,
+		ExpectedRevision: domain.Revision(*form.Version), RequestID: form.RequestID, ActorID: h.Actor(r),
+		Fingerprint: form.Fingerprint}); err != nil {
+		var invalid *domain.ValidationError
+		if errors.As(err, &invalid) {
+			h.renderPortForm(w, r, id, form.Values, err)
+			return
+		}
+		h.conflictOrFail(w, r, id, err)
+		return
+	}
+	h.Flash(r, "success", "端口更换已开始；节点确认后请把新的连接信息重新交付给使用者")
+	http.Redirect(w, r, "/users/"+id.String(), http.StatusSeeOther)
+}
+
+// renderPortForm 以字段级错误重渲染更换端口表单，保留已填内容。
+func (h *UserHandler) renderPortForm(w http.ResponseWriter, r *http.Request, id domain.ID, values map[string]string, cause error) {
+	record, err := h.Service.User(r.Context(), id)
+	if err != nil {
+		h.Fail(w, r, err)
+		return
+	}
+	failure := Classify(cause)
+	if failure.Status == http.StatusNotFound || failure.Status == http.StatusInternalServerError {
+		h.Fail(w, r, cause)
+		return
+	}
+	page := h.NewPage(r, "更换端口："+record.User.DisplayName)
+	page.Version = int64(record.User.Revision)
+	page.Data = views.NewUserView(record, h.Location(r))
+	page.Values = values
+	page.ErrorSummary = failure.Message
+	if failure.Field != "" {
+		page.FieldErrors[failure.Field] = failure.Message
+	}
+	h.Renderer.Page(w, failure.Status, "user_port.html", page)
+}
+
 func (h *UserHandler) DeleteForm(w http.ResponseWriter, r *http.Request) {
 	h.confirmationPage(w, r, "user_delete.html", "删除用户：")
 }

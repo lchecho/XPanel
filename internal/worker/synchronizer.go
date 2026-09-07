@@ -305,12 +305,25 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 		return s.confirm(ctx, work, false, 0, logger, started)
 	}
 
-	// 2) 凭证轮换：入站已在，先加新客户端再删旧的，端口不中断。
+	// 2) 凭证轮换：在既有入站内换密钥，端口与标签不变。
 	if op.Reason == domain.SyncRotate {
 		return s.rotateWithinInbound(ctx, work, inbound, statisticsID, logger, started)
 	}
 
-	// 3) 期望监听：创建整条入站（含唯一客户端）。
+	// 3) 更换端口：入站标签不变但端口变了，必须先移除旧入站再按新端口重建。
+	// 与轮换不同，这里允许监听中断——换端口本身就意味着旧端口不再服务（FR-010）。
+	if op.Reason == domain.SyncPortChange {
+		if held, err := s.fence(ctx, work, logger); err != nil || !held {
+			return err
+		}
+		if _, err := s.adapter.RemoveInbound(ctx, ports.RemoveInboundCommand{OperationID: op.ID, InboundTag: inbound.InboundTag}); err != nil {
+			if kind, _ := describe(err); kind != ports.ErrorInboundNotFound {
+				return s.retry(ctx, work, err, logger, started)
+			}
+		}
+	}
+
+	// 4) 期望监听：创建整条入站（含唯一客户端）。
 	return s.createDedicatedInbound(ctx, work, inbound, statisticsID, logger, started)
 }
 

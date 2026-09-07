@@ -61,6 +61,13 @@ func (f *faultStore) RotateCredential(ctx context.Context, record ports.Rotation
 	return f.Store.RotateCredential(ctx, record)
 }
 
+func (f *faultStore) ChangeInboundPort(ctx context.Context, record ports.PortChangeRecord) (bool, error) {
+	if f.take("ChangeInboundPort") {
+		return false, errInjected
+	}
+	return f.Store.ChangeInboundPort(ctx, record)
+}
+
 func (f *faultStore) SoftDeleteUser(ctx context.Context, record ports.DeleteRecord) (bool, error) {
 	if f.take("SoftDeleteUser") {
 		return false, errInjected

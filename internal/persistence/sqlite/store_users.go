@@ -297,6 +297,64 @@ func matchesStatus(record ports.UserRecord, status string) bool {
 	}
 }
 
+// ChangeInboundPort 在单个事务内把该用户的专属端口换成新端口。
+//
+// 约束：新端口 MUST 位于该用户所属模板的端口池内，且 MUST 未被占用——唯一性由部分唯一索引
+// `dedicated_inbounds(listen_address, port) WHERE released_at IS NULL` 拒绝，不靠应用层先查后写。
+// revision 条件更新与请求指纹保证并发或重复提交不会留下部分状态（FR-010/FR-038）。
+func (s *Store) ChangeInboundPort(ctx context.Context, record ports.PortChangeRecord) (bool, error) {
+	replay := false
+	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
+		tx := write.(*txStore)
+		var err error
+		replay, err = commandReplay(ctx, tx, record.Command)
+		if err != nil || replay {
+			return err
+		}
+		result, err := tx.tx.ExecContext(ctx, `UPDATE managed_users SET revision=revision+1,updated_at=? WHERE id=? AND revision=? AND deleted_at IS NULL`,
+			millis(record.Now), record.UserID.String(), record.ExpectedRevision)
+		if err != nil {
+			return err
+		}
+		if rows, _ := result.RowsAffected(); rows != 1 {
+			return &domain.ConflictError{Message: "user changed since the page was loaded"}
+		}
+		var start, end int
+		if err := tx.tx.QueryRowContext(ctx, `SELECT t.port_pool_start,t.port_pool_end FROM inbound_templates t
+            JOIN access_allocations a ON a.template_id=t.id WHERE a.id=?`, record.AllocationID.String()).Scan(&start, &end); err != nil {
+			return err
+		}
+		if pool := (domain.PortPool{Start: start, End: end}); !pool.Contains(record.NewPort) {
+			return &domain.ValidationError{Field: "port", Message: "port is outside the template port pool"}
+		}
+		changed, err := tx.tx.ExecContext(ctx, `UPDATE dedicated_inbounds SET port=?,observed_present=0,updated_at=?
+            WHERE allocation_id=? AND released_at IS NULL AND port=?`,
+			record.NewPort, millis(record.Now), record.AllocationID.String(), record.OldPort)
+		if err != nil {
+			return translateConstraint(err, "port is already assigned to another user")
+		}
+		if rows, _ := changed.RowsAffected(); rows != 1 {
+			return &domain.ConflictError{Message: "port assignment changed since the page was loaded"}
+		}
+		op := record.Operation
+		if err := supersedeOlder(ctx, tx.tx, op.AllocationID, op.DesiredRevision, record.Now); err != nil {
+			return err
+		}
+		if err := insertOperation(ctx, tx.tx, op); err != nil {
+			return err
+		}
+		if _, err := tx.tx.ExecContext(ctx, `UPDATE access_allocations SET desired_revision=?,projection_state='pending',
+            observed_present=0,updated_at=? WHERE id=?`, op.DesiredRevision, millis(record.Now), record.AllocationID.String()); err != nil {
+			return err
+		}
+		if err := tx.SaveCommand(ctx, record.Command); err != nil {
+			return err
+		}
+		return tx.AppendAudit(ctx, record.Audit)
+	})
+	return replay, err
+}
+
 // RotateCredential 保存下一版本 pending 凭证并写入 remove_old 阶段的轮换操作；同一时间只允许一次轮换进行。
 func (s *Store) RotateCredential(ctx context.Context, record ports.RotationRecord) (bool, error) {
 	replay := false

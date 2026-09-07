@@ -172,13 +172,10 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 			}
 			// 专属入站里只应有该分配的期望身份。除它之外的任何客户端都是漂移——
 			// 包括没有 xpanel- 前缀的外部身份：它们同样能用未知密钥经这个端口出网（宪章 I/II、FR-019）。
-			// 唯一豁免是轮换过渡身份，且仅当该分配确实有一条未完成的轮换意图时；意图收敛后它必须被清理。
-			rotating := false
-			if err := func() error {
-				open, err := s.store.HasOpenOperation(ctx, record.Allocation.ID)
-				rotating = open
-				return err
-			}(); err != nil {
+			// 唯一豁免是轮换过渡身份，且仅当该分配确实有一条未完成的**轮换**意图时。
+			// 普通的 create/disable/reconcile 意图不能庇护遗留的过渡身份（T092）。
+			rotating, err := s.store.HasOpenRotation(ctx, record.Allocation.ID)
+			if err != nil {
 				return summary, err
 			}
 			expected := false

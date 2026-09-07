@@ -56,7 +56,8 @@ func (s *handlerStub) GetInboundUsers(context.Context, *handlercommand.GetInboun
 	if s.users != nil {
 		return &handlercommand.GetInboundUserResponse{Users: s.users}, nil
 	}
-	return &handlercommand.GetInboundUserResponse{Users: []*protocol.User{{Email: "bootstrap"}, {Email: "xpanel-managed"}, {Email: "foreign"}}}, nil
+	return &handlercommand.GetInboundUserResponse{Users: []*protocol.User{{Email: "bootstrap"},
+		{Email: "xpanel-managed-inbound"}, {Email: "foreign"}}}, nil
 }
 
 func (s *handlerStub) AlterInbound(ctx context.Context, request *handlercommand.AlterInboundRequest) (*handlercommand.AlterInboundResponse, error) {
@@ -156,27 +157,32 @@ func TestHandlerContractEncodingAndCapabilities(t *testing.T) {
 	if !ok || account.GetKey() != key {
 		t.Fatalf("account type/value = %T", accountMessage)
 	}
-	// 入站里另有一个受管客户端（轮换过渡身份）时，移除期望身份是允许的。
-	handler.users = []*protocol.User{{Email: "bootstrap"}, {Email: "xpanel-managed"}, {Email: "xpanel-managed-rotate"}, {Email: "foreign"}}
-	if _, err := client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "xpanel-managed-inbound", StatisticsID: "xpanel-managed"}); err != nil {
+	// 入站标签与期望统计标识由同一个分配标识派生，因此恒等；轮换过渡身份在其后加 -rotate。
+	// 过渡身份在场时，移除期望身份是允许的（轮换第 2 步）。
+	handler.users = []*protocol.User{{Email: "bootstrap"}, {Email: "xpanel-managed-inbound"},
+		{Email: "xpanel-managed-inbound-rotate"}, {Email: "foreign"}}
+	if _, err := client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "xpanel-managed-inbound",
+		StatisticsID: "xpanel-managed-inbound"}); err != nil {
 		t.Fatal(err)
 	}
 	instance, err = handler.last.GetOperation().GetInstance()
 	remove, ok := instance.(*handlercommand.RemoveUserOperation)
-	if err != nil || !ok || remove.GetEmail() != "xpanel-managed" {
+	if err != nil || !ok || remove.GetEmail() != "xpanel-managed-inbound" {
 		t.Fatalf("remove operation = %#v, %v", instance, err)
 	}
 
-	// 外部身份不算「还有人」：入站里只剩未知身份时，移除唯一的受管客户端必须被拒绝，
-	// 否则这条入站会只剩未知凭证还在对外服务（T086 / FR-019）。
-	handler.users = []*protocol.User{{Email: "bootstrap"}, {Email: "xpanel-managed"}, {Email: "foreign"}}
-	_, lastErr := client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "xpanel-managed-inbound",
-		StatisticsID: "xpanel-managed"})
-	var lastAdapterErr *ports.AdapterError
-	if !errors.As(lastErr, &lastAdapterErr) || lastAdapterErr.Kind != ports.ErrorLastManagedClient {
-		t.Fatalf("removing the only managed client alongside foreign identities = %v", lastErr)
+	// 有效后继只认「期望身份 + 它的轮换过渡身份」这对精确配对。以下三种残留都不算「还有人」：
+	for _, leftover := range []string{"foreign", "xpanel-someone-else", "xpanel-managed-inbound-rotate-extra"} {
+		handler.users = []*protocol.User{{Email: "xpanel-managed-inbound"}, {Email: leftover}}
+		_, lastErr := client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "xpanel-managed-inbound",
+			StatisticsID: "xpanel-managed-inbound"})
+		var lastAdapterErr *ports.AdapterError
+		if !errors.As(lastErr, &lastAdapterErr) || lastAdapterErr.Kind != ports.ErrorLastManagedClient {
+			t.Fatalf("removing the managed client while only %q remains = %v", leftover, lastErr)
+		}
 	}
 	// 反过来，清理未知身份是允许的——期望身份还在。
+	handler.users = []*protocol.User{{Email: "xpanel-managed-inbound"}, {Email: "foreign"}}
 	if _, err := client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "xpanel-managed-inbound",
 		StatisticsID: "foreign"}); err != nil {
 		t.Fatalf("removing an unknown identity while the managed client is present: %v", err)
@@ -206,7 +212,7 @@ func TestHandlerContractEncodingAndCapabilities(t *testing.T) {
 	for _, user := range users {
 		kinds[user.StatisticsID] = user.Kind
 	}
-	if kinds["xpanel-managed"] != "managed" || kinds["bootstrap"] != "external" || kinds["foreign"] != "external" {
+	if kinds["xpanel-managed-inbound"] != "managed" || kinds["bootstrap"] != "external" || kinds["foreign"] != "external" {
 		t.Fatalf("identity kinds = %#v", kinds)
 	}
 }

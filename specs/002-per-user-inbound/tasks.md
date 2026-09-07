@@ -515,7 +515,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
 
 ## Phase 12: Convergence
 
-- [ ] T092 **CRITICAL** 完成 T086 的“有效受管客户端”和轮换意图边界：把
+- [X] T092 **CRITICAL** 完成 T086 的“有效受管客户端”和轮换意图边界：把
   `internal/application/reconciliation_service.go` 的过渡身份豁免从 `HasOpenOperation` 改为只匹配该
   分配当前未完成且 `reason='rotate'` 的操作，普通 create/disable/reconcile 等未完成意图不得保护遗留
   safety identity；重构 `ports.RemoveUserCommand`、`internal/adapter/xray/handler.go` 与 fake 的最后客户端

@@ -74,6 +74,14 @@ const RotationSuffix = "-rotate"
 // RotationSafetyID 由该用户的统计标识派生出轮换期间的过渡身份，稳定且可识别。
 func RotationSafetyID(statisticsID string) string { return statisticsID + RotationSuffix }
 
+// ExpectedIdentityForInbound 由入站标签给出该入站唯一合法的受管身份。
+//
+// 入站标签与统计标识都由同一个分配标识派生（`xpanel-<allocation>`），因此二者恒等；
+// 这条恒等式由 tests/integration 的不变量测试锁定。适配器据此在不依赖数据库的情况下
+// 判断「移除之后是否还留有**这条入站真正的**受管客户端」——只认期望身份与它的轮换过渡身份，
+// 不能把任意带前缀的身份当成有效后继（T092）。
+func ExpectedIdentityForInbound(tag string) string { return tag }
+
 // IsRotationSafetyID 判定某统计标识是否为轮换过渡身份。
 func IsRotationSafetyID(value string) bool {
 	return IsPanelNamespace(value) && strings.HasSuffix(value, RotationSuffix)

@@ -295,6 +295,18 @@ func (s *Store) finishLeased(ctx context.Context, id domain.ID, owner string, ap
 	return tx.Commit()
 }
 
+// HasOpenRotation 判断某分配是否仍有未完成的**轮换**意图。
+//
+// 轮换过渡身份只在这种意图存在时才豁免漂移清理：普通的 create/disable/reconcile 意图未完成
+// 不能保护一个遗留的过渡身份，否则它会被无关的排队操作长期庇护（T092）。
+func (s *Store) HasOpenRotation(ctx context.Context, allocationID domain.ID) (bool, error) {
+	var count int
+	err := s.db.Read.QueryRowContext(ctx, `SELECT count(*) FROM synchronization_operations
+        WHERE allocation_id=? AND reason='rotate' AND state IN ('pending','leased','retry_wait')`,
+		allocationID.String()).Scan(&count)
+	return count > 0, err
+}
+
 // HasOpenOperation 判断某分配是否仍有未完成的同步操作（pending/leased/retry_wait）。
 func (s *Store) HasOpenOperation(ctx context.Context, allocationID domain.ID) (bool, error) {
 	var count int

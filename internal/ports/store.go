@@ -68,6 +68,7 @@ type Store interface {
 	ContinuityEvents(context.Context, domain.ID, int) ([]ContinuityEventListRecord, error)
 	SyncOperations(context.Context, domain.ID, int) ([]domain.SynchronizationOperation, error)
 	HasOpenOperation(context.Context, domain.ID) (bool, error)
+	HasOpenRotation(context.Context, domain.ID) (bool, error)
 	EnqueueReconcile(context.Context, domain.ID, domain.Revision, domain.SynchronizationOperation, time.Time) (bool, error)
 	RecordObservation(context.Context, domain.ID, bool, time.Time) error
 	AuditEvents(context.Context, AuditFilter) ([]domain.AuditEvent, *AuditCursor, error)

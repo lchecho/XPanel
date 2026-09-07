@@ -281,11 +281,23 @@ func (a *Adapter) RemoveUser(ctx context.Context, command ports.RemoveUserComman
 		return ports.MutationReceipt{}, err
 	}
 	failure, fails := a.failure("remove_user")
-	// 复刻真实适配器的最终防线：移除不得让入站失去最后一个受管客户端（FR-019）。
-	if _, exists := a.Inbounds[command.InboundTag]; exists && len(a.Users[command.InboundTag]) <= 1 && !fails {
+	// 复刻真实适配器的最终防线：移除不得让入站失去它**真正的**受管客户端（FR-019）。
+	// 有效后继只有该入站的期望身份与它的轮换过渡身份——其它 xpanel- 身份和外部身份都不算，
+	// 否则一条被顶替的入站会被误判为「还有人」（T086/T092）。
+	if _, exists := a.Inbounds[command.InboundTag]; exists && !fails {
 		if _, target := a.Users[command.InboundTag][command.StatisticsID]; target {
-			return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorLastManagedClient, Operation: "remove_user",
-				Retryable: false, SafeSummary: "refusing to remove the last managed client of an inbound"}
+			expected := domain.ExpectedIdentityForInbound(command.InboundTag)
+			safety := domain.RotationSafetyID(expected)
+			survivors := 0
+			for id, user := range a.Users[command.InboundTag] {
+				if id != command.StatisticsID && user.Present && (id == expected || id == safety) {
+					survivors++
+				}
+			}
+			if survivors == 0 {
+				return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorLastManagedClient, Operation: "remove_user",
+					Retryable: false, SafeSummary: "refusing to remove the last managed client of an inbound"}
+			}
 		}
 	}
 	if _, exists := a.Inbounds[command.InboundTag]; !exists && !fails {

@@ -107,17 +107,22 @@ func (c *Client) RemoveUser(ctx context.Context, command ports.RemoveUserCommand
 	if listErr != nil {
 		return ports.MutationReceipt{}, mapError("remove_user", listErr)
 	}
-	present, managedAfter := false, 0
+	// 有效后继只有两个：这条入站的期望身份，以及它的轮换过渡身份。任意带 xpanel- 前缀的身份
+	// 都不算——那可能是别的分配的身份或残留的未知身份，把它当成「还有人」等于放任入站被顶替（T092）。
+	expected := domain.ExpectedIdentityForInbound(command.InboundTag)
+	safety := domain.RotationSafetyID(expected)
+	present, survivor := false, false
 	for _, user := range list.GetUsers() {
-		if user.GetEmail() == command.StatisticsID {
+		email := user.GetEmail()
+		if email == command.StatisticsID {
 			present = true
 			continue
 		}
-		if domain.IsPanelNamespace(user.GetEmail()) {
-			managedAfter++
+		if email == expected || email == safety {
+			survivor = true
 		}
 	}
-	if present && managedAfter == 0 {
+	if present && !survivor {
 		return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorLastManagedClient, Operation: "remove_user",
 			Retryable: false, SafeSummary: "refusing to remove the last managed client of an inbound"}
 	}

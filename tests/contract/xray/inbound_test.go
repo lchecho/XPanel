@@ -172,3 +172,59 @@ func TestLiveUnknownIdentityInsideAPanelInboundCanBeCleanedSafely(t *testing.T) 
 		t.Fatal("cleanup disturbed a listening port")
 	}
 }
+
+// T092 契约：有效后继只认「这条入站的期望身份 + 它的轮换过渡身份」。
+// 入站里剩下的是别的 xpanel- 身份时，移除期望身份同样必须被拒绝——那不是这条入站的受管客户端。
+func TestLiveGuardOnlyAcceptsTheExactExpectedOrTransitionIdentity(t *testing.T) {
+	runtime := startRuntime(t)
+	tag, port := panelTag("pairing"), freePort(t)
+	createInbound(t, runtime, tag, port, testKey('u'))
+	expected := panelTag("pairing-client")
+	// createInbound 用 <tag 去前缀>-client 作为身份，这里改用与标签恒等的期望身份重新构造，
+	// 以便按面板真实的派生规则（标签 == 期望统计标识）验证守卫。
+	if _, err := runtime.client.RemoveInbound(context.Background(), ports.RemoveInboundCommand{InboundTag: tag}); err != nil {
+		t.Fatal(err)
+	}
+	command := ports.CreateInboundCommand{InboundTag: tag, ListenAddress: listenAddress, Port: port,
+		Method: security.MethodAES256, Network: domain.NetworkTCPUDP, ServerKey: security.NewRedactedString(testKey('s')),
+		Client: ports.InboundClient{StatisticsID: domain.ExpectedIdentityForInbound(tag), CredentialVersion: 1,
+			UserKey: security.NewRedactedString(testKey('u'))}}
+	if _, err := runtime.client.CreateInbound(context.Background(), command); err != nil {
+		t.Fatalf("recreating with the derived identity: %v\n%s", err, runtime.diagnostics())
+	}
+	expected = domain.ExpectedIdentityForInbound(tag)
+
+	var adapterErr *ports.AdapterError
+	for _, leftover := range []string{"intruder-without-prefix", domain.NamespacePrefix + "someone-else"} {
+		if _, err := runtime.client.AddUser(context.Background(), ports.AddUserCommand{InboundTag: tag,
+			StatisticsID: leftover, CredentialVersion: 1, UserKey: security.NewRedactedString(testKey('x'))}); err != nil {
+			t.Fatalf("injecting %q: %v", leftover, err)
+		}
+		_, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag, StatisticsID: expected})
+		if !errors.As(err, &adapterErr) || adapterErr.Kind != ports.ErrorLastManagedClient {
+			t.Fatalf("removing the expected identity while %q remains = %v", leftover, err)
+		}
+		if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+			StatisticsID: leftover}); err != nil {
+			t.Fatalf("cleaning %q: %v", leftover, err)
+		}
+	}
+
+	// 轮换过渡身份是唯一被认可的后继。
+	safety := domain.RotationSafetyID(expected)
+	if _, err := runtime.client.AddUser(context.Background(), ports.AddUserCommand{InboundTag: tag,
+		StatisticsID: safety, CredentialVersion: 2, UserKey: security.NewRedactedString(testKey('r'))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+		StatisticsID: expected}); err != nil {
+		t.Fatalf("removing the expected identity while its transition identity remains: %v", err)
+	}
+	users, err := runtime.client.ListUsers(context.Background(), ports.RuntimeInbound{InboundTag: tag, Method: security.MethodAES256})
+	if err != nil || len(users) != 1 || users[0].StatisticsID != safety {
+		t.Fatalf("clients after the rotation step = %#v, %v", users, err)
+	}
+	if !listening(port) {
+		t.Fatalf("port %d stopped listening", port)
+	}
+}

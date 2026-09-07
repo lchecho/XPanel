@@ -3,11 +3,13 @@ package integration
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
 	"xpanel/internal/application"
 	"xpanel/internal/domain"
+	"xpanel/internal/ports"
 	"xpanel/internal/testsupport"
 )
 
@@ -135,5 +137,83 @@ func TestRotationTransitionIdentityIsExemptOnlyWhileTheIntentIsOpen(t *testing.T
 	}
 	if len(app.Adapter.Users[tag]) != 1 {
 		t.Fatalf("panel inbound holds %#v", app.Adapter.Users[tag])
+	}
+}
+
+// T092：入站标签与该入站的期望统计标识由同一个分配标识派生，因此恒等。
+// 适配器的最后客户端守卫依赖这条恒等式在不查库的情况下认出「这条入站真正的受管身份」。
+func TestInboundTagAndExpectedIdentityAreDerivedFromTheSameAllocation(t *testing.T) {
+	app := testsupport.New(t)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	record := app.CreateUser("Alice", templateID, nil)
+	tag := record.Inbound.Inbound.InboundTag
+	if got := domain.ExpectedIdentityForInbound(tag); got != record.Identity.StatisticsID {
+		t.Fatalf("expected identity for %s = %q, but the allocation uses %q", tag, got, record.Identity.StatisticsID)
+	}
+	if tag != domain.InboundTag(record.Allocation.ID) {
+		t.Fatalf("inbound tag %q is not derived from allocation %s", tag, record.Allocation.ID)
+	}
+}
+
+// T092：只有未完成的**轮换**意图才豁免过渡身份。普通的未完成意图（例如待同步的创建）
+// 不得庇护遗留的过渡身份。
+func TestOnlyAnOpenRotationExemptsTheTransitionIdentity(t *testing.T) {
+	app := testsupport.New(t)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	record := app.CreateUser("Alice", templateID, nil)
+	// 创建意图尚未同步：这是一条未完成的非轮换意图。
+	tag := record.Inbound.Inbound.InboundTag
+	safety := domain.RotationSafetyID(record.Identity.StatisticsID)
+	app.Drain()
+	app.Adapter.InjectClient(tag, safety)
+
+	// 制造一条未完成的禁用意图（不推进 worker），它不得庇护遗留的过渡身份。
+	if _, err := app.Users.SetAdminEnabled(context.Background(), application.SetEnabledInput{ID: record.User.ID,
+		Enabled: false, ExpectedRevision: app.User(record.User.ID).User.Revision,
+		RequestID: testsupport.NewID(t), ActorID: app.AdminID}); err != nil {
+		t.Fatal(err)
+	}
+	var open int
+	_ = app.Store.DB().Read.QueryRow(`SELECT count(*) FROM synchronization_operations WHERE allocation_id=?
+        AND state IN ('pending','leased','retry_wait')`, record.Allocation.ID.String()).Scan(&open)
+	if open == 0 {
+		t.Fatal("the fixture did not leave an open non-rotation operation")
+	}
+	if summary := app.ReconcileOnce(); summary.RemovedUnknown != 1 {
+		t.Fatalf("a leftover transition identity was protected by an unrelated open operation: %#v", summary)
+	}
+}
+
+// T092：有效后继只认「期望身份 + 它的轮换过渡身份」。入站里剩下别的身份——无论有没有 xpanel- 前缀——
+// 都不算「还有人」，移除期望身份必须被拒绝。
+func TestOnlyTheExactExpectedOrTransitionIdentityCountsAsASurvivor(t *testing.T) {
+	app := testsupport.New(t)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	record := app.CreateUser("Alice", templateID, nil)
+	app.Drain()
+	tag := record.Inbound.Inbound.InboundTag
+	expected := record.Identity.StatisticsID
+
+	for _, leftover := range []string{"intruder-without-prefix", domain.NamespacePrefix + "someone-else"} {
+		app.Adapter.InjectClient(tag, leftover)
+		_, err := app.Adapter.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag, StatisticsID: expected})
+		var adapterErr *ports.AdapterError
+		if !errors.As(err, &adapterErr) || adapterErr.Kind != ports.ErrorLastManagedClient {
+			t.Fatalf("removing the expected identity while %q remains = %v", leftover, err)
+		}
+		// 清理未知身份是允许的：期望身份还在。
+		if _, err := app.Adapter.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+			StatisticsID: leftover}); err != nil {
+			t.Fatalf("cleaning %q while the expected identity is present: %v", leftover, err)
+		}
+	}
+	// 轮换过渡身份是唯一被认可的后继。
+	app.Adapter.InjectClient(tag, domain.RotationSafetyID(expected))
+	if _, err := app.Adapter.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+		StatisticsID: expected}); err != nil {
+		t.Fatalf("removing the expected identity while its transition identity remains: %v", err)
+	}
+	if len(app.Adapter.Users[tag]) != 1 {
+		t.Fatalf("inbound holds %#v", app.Adapter.Users[tag])
 	}
 }

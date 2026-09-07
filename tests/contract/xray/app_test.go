@@ -3,6 +3,7 @@ package xray_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -284,4 +285,93 @@ func TestLiveAppMultipleProfilesKeepStatisticsIDsUniqueAndExcludeBootstrap(t *te
 	if samples != 2 {
 		t.Fatalf("bootstrap identities after conflict = %d, want 2", samples)
 	}
+}
+
+// readHookAdapter 在指定次序的 ReadTraffic 调用前执行钩子（用于在两批之间重启真实 Xray）。
+type readHookAdapter struct {
+	ports.Adapter
+	mu     sync.Mutex
+	reads  int
+	hookAt int
+	hook   func()
+}
+
+func (a *readHookAdapter) ReadTraffic(ctx context.Context, query ports.TrafficQuery) (ports.TrafficRound, error) {
+	a.mu.Lock()
+	a.reads++
+	fire := a.hook != nil && a.reads == a.hookAt
+	hook := a.hook
+	a.mu.Unlock()
+	if fire {
+		hook()
+	}
+	return a.Adapter.ReadTraffic(ctx, query)
+}
+
+// 契约门禁（T150）：固定 Xray 下 21+ 分配分两批读取，相邻批次的 boot epoch 量化抖动不得导致整轮丢弃；
+// 两批之间真实重启仍必须整轮丢弃且不改任何游标。
+func TestLiveAppBatchedCollectionToleratesQuantizationButDetectsRestart(t *testing.T) {
+	runtime := startRuntime(t)
+	bin := contractBinary(t)
+	target := ports.InstanceTarget{APIEndpoint: runtime.api, ExpectedVersion: wantRuntime, RPCTimeout: 500 * time.Millisecond}
+	hooked := &readHookAdapter{Adapter: runtime.client}
+	app := testsupport.NewWith(t, testsupport.Options{Adapter: hooked, Target: &target})
+	app.Clock.Set(time.Now().UTC())
+	profileID := registerLiveProfile(t, app, "Primary", "managed", runtime.inbound, runtime.serverKey, "bootstrap")
+	var records []ports.UserRecord
+	for i := 0; i < 21; i++ {
+		records = append(records, app.CreateUser(fmt.Sprintf("Batch %02d", i), profileID, nil))
+	}
+	app.Drain()
+	for round := 0; round < 3; round++ {
+		time.Sleep(400 * time.Millisecond) // 让相邻批次跨越 uptime 的整秒进位
+		app.Clock.Advance(5 * time.Second)
+		summary, err := app.Traffic.CollectOnce(context.Background())
+		if err != nil || summary.Targets != 21 || summary.Applied != 21 {
+			t.Fatalf("round %d: summary=%#v err=%v", round, summary, err)
+		}
+	}
+	if hooked.reads != 6 {
+		t.Fatalf("read_traffic calls = %d, want 6 (two batches per round)", hooked.reads)
+	}
+	var before int
+	_ = app.Store.DB().Read.QueryRow(`SELECT count(*) FROM traffic_continuity_events WHERE type='node_restart'`).Scan(&before)
+	if before != 0 {
+		t.Fatalf("quantization jitter produced %d node_restart events", before)
+	}
+	cursorsBefore := map[string]string{}
+	rows, _ := app.Store.DB().Read.Query(`SELECT allocation_id,COALESCE(boot_epoch,'')||'|'||COALESCE(last_observed_at,0) FROM traffic_cursors`)
+	for rows.Next() {
+		var id, state string
+		_ = rows.Scan(&id, &state)
+		cursorsBefore[id] = state
+	}
+	rows.Close()
+
+	// 第二批之前真实重启：整轮必须丢弃。
+	hooked.hookAt, hooked.hook = hooked.reads+2, func() { runtime.restart(t, bin) }
+	app.Clock.Advance(5 * time.Second)
+	summary, err := app.Traffic.CollectOnce(context.Background())
+	var inconsistent *application.InconsistentRoundError
+	if !errors.As(err, &inconsistent) || summary.Applied != 0 {
+		t.Fatalf("restart between batches: summary=%#v err=%v", summary, err)
+	}
+	rows, _ = app.Store.DB().Read.Query(`SELECT allocation_id,COALESCE(boot_epoch,'')||'|'||COALESCE(last_observed_at,0) FROM traffic_cursors`)
+	for rows.Next() {
+		var id, state string
+		_ = rows.Scan(&id, &state)
+		if cursorsBefore[id] != state {
+			rows.Close()
+			t.Fatalf("cursor %s changed by a discarded round: %s → %s", id, cursorsBefore[id], state)
+		}
+	}
+	rows.Close()
+	// 协调 + 同步后用户恢复，下一轮一致并确认重启。
+	app.ReconcileOnce()
+	app.Drain()
+	app.Clock.Advance(5 * time.Second)
+	if summary, err := app.Traffic.CollectOnce(context.Background()); err != nil || summary.Applied != 21 {
+		t.Fatalf("post-restart round: summary=%#v err=%v", summary, err)
+	}
+	_ = records
 }

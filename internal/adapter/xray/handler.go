@@ -27,8 +27,10 @@ func (c *Client) Probe(ctx context.Context, _ ports.InstanceTarget) (ports.Insta
 		return ports.InstanceObservation{}, mapError("probe", err)
 	}
 	now := c.now().UTC()
+	// uptime 是 uint32 整秒，推算出的 boot epoch 在相邻观察之间最多抖动一秒；观察者按 UptimeSeconds 的单调性
+	// 与一秒容差区分量化抖动与真实重启（application.observationMismatch / domain.RestartConfirmed）。
 	return ports.InstanceObservation{ObservedAt: now, UptimeSeconds: response.GetUptime(),
-		BootEpoch: now.Add(-timeDurationSeconds(response.GetUptime())).Truncate(time.Second), BootEpochKnown: true}, nil
+		BootEpoch: now.Truncate(time.Second).Add(-timeDurationSeconds(response.GetUptime())), BootEpochKnown: true}, nil
 }
 
 func timeDurationSeconds(seconds uint32) time.Duration { return time.Duration(seconds) * time.Second }

@@ -138,9 +138,33 @@ func TestObservationOrderRegressionIsInconsistent(t *testing.T) {
 		t.Fatal("regressed observation time not flagged")
 	}
 	restarted := later
-	restarted.BootEpoch = time.Unix(2, 0)
+	restarted.BootEpoch = time.Unix(3, 0) // 超过一秒量化容差
 	if reason := observationMismatch(first, first, restarted); reason == "" {
 		t.Fatal("boot epoch change not flagged")
+	}
+}
+
+// T150：uint32 uptime 推算 boot epoch 的一秒量化抖动（uptime 单调）不得判为重启；真实重启（epoch 差 >1s 或 uptime 下降）仍判为不一致。
+func TestBootEpochQuantizationJitterIsNotARestart(t *testing.T) {
+	boot := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	first := ports.InstanceObservation{ObservedAt: boot.Add(100*time.Second + 400*time.Millisecond), UptimeSeconds: 100, BootEpoch: boot, BootEpochKnown: true}
+	// 第二批 0.7s 后：uptime 进位到 101，但推算 epoch 因量化相差一秒。
+	jitter := ports.InstanceObservation{ObservedAt: first.ObservedAt.Add(700 * time.Millisecond), UptimeSeconds: 101, BootEpoch: boot.Add(-time.Second), BootEpochKnown: true}
+	if reason := observationMismatch(first, first, jitter); reason != "" {
+		t.Fatalf("quantization jitter flagged as restart: %s", reason)
+	}
+	forward := jitter
+	forward.BootEpoch = boot.Add(time.Second)
+	if reason := observationMismatch(first, first, forward); reason != "" {
+		t.Fatalf("one-second forward jitter flagged: %s", reason)
+	}
+	restarted := ports.InstanceObservation{ObservedAt: jitter.ObservedAt.Add(time.Second), UptimeSeconds: 1, BootEpoch: jitter.ObservedAt, BootEpochKnown: true}
+	if reason := observationMismatch(first, jitter, restarted); reason == "" {
+		t.Fatal("real restart (epoch moved by more than a second) not flagged")
+	}
+	sameEpochUptimeDrop := ports.InstanceObservation{ObservedAt: jitter.ObservedAt.Add(time.Second), UptimeSeconds: 50, BootEpoch: boot, BootEpochKnown: true}
+	if reason := observationMismatch(first, jitter, sameEpochUptimeDrop); reason == "" {
+		t.Fatal("uptime decrease not flagged")
 	}
 }
 

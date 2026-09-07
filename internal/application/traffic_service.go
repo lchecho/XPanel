@@ -171,13 +171,27 @@ func (s *TrafficService) readAll(ctx context.Context, ids []string) (ports.Traff
 	return merged, nil
 }
 
-// observationMismatch 比较后续批次与首批/前一批的观察：boot epoch 必须一致，观察时间不得倒退。
+// bootEpochQuantization 是 Xray 以 uint32 秒级 uptime 推算 boot epoch 时相邻观察之间允许的抖动：
+// 观察时刻的亚秒部分与 uptime 的整秒进位不同步，相邻批次的推算值最多相差一秒，不得误判为重启（FR-023）。
+const bootEpochQuantization = time.Second
+
+// observationMismatch 比较后续批次与首批/前一批的观察：boot epoch 只允许一秒量化抖动，
+// uptime 不得下降（真实重启会让 uptime 归零），观察时间不得倒退。
 func observationMismatch(first, previous, current ports.InstanceObservation) string {
 	if first.BootEpochKnown != current.BootEpochKnown {
 		return "boot epoch visibility changed between batches"
 	}
-	if first.BootEpochKnown && !first.BootEpoch.Equal(current.BootEpoch) {
-		return "Xray restarted between batches (boot epoch changed)"
+	if first.BootEpochKnown {
+		difference := current.BootEpoch.Sub(first.BootEpoch)
+		if difference < 0 {
+			difference = -difference
+		}
+		if difference > bootEpochQuantization {
+			return "Xray restarted between batches (boot epoch changed)"
+		}
+		if !previous.ObservedAt.IsZero() && current.UptimeSeconds < previous.UptimeSeconds {
+			return "Xray restarted between batches (uptime decreased)"
+		}
 	}
 	if !previous.ObservedAt.IsZero() && current.ObservedAt.Before(previous.ObservedAt) {
 		return "observation time regressed between batches"

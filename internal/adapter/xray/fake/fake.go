@@ -188,7 +188,8 @@ func (a *Adapter) ReadTraffic(_ context.Context, query ports.TrafficQuery) (port
 		return ports.TrafficRound{}, err
 	}
 	now := a.Now()
-	result := ports.TrafficRound{Observation: ports.InstanceObservation{ObservedAt: now, BootEpoch: a.BootEpoch, BootEpochKnown: true}}
+	result := ports.TrafficRound{Observation: ports.InstanceObservation{ObservedAt: now, BootEpoch: a.BootEpoch, BootEpochKnown: true,
+		UptimeSeconds: uptimeSeconds(now, a.BootEpoch)}}
 	for _, id := range query.StatisticsIDs {
 		for _, direction := range []ports.Direction{ports.Uplink, ports.Downlink} {
 			value, found := a.Counters[id][direction]
@@ -197,6 +198,13 @@ func (a *Adapter) ReadTraffic(_ context.Context, query ports.TrafficQuery) (port
 		}
 	}
 	return result, nil
+}
+
+func uptimeSeconds(now, boot time.Time) uint32 {
+	if !now.After(boot) {
+		return 0
+	}
+	return uint32(now.Sub(boot).Seconds())
 }
 
 func (a *Adapter) Restart() {

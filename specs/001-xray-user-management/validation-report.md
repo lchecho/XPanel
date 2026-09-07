@@ -40,6 +40,14 @@ Phase 11（2026-09-05，第三轮 converge）补充的收敛证据：
 | T150 uptime 量化抖动 | `internal/application/batch_consistency_test.go`（一秒抖动不判重启、>1s 或 uptime 下降判重启）、`tests/contract/xray/app_test.go`：固定 Xray 下 21 分配分两批三轮可提交，两批之间真实重启整轮丢弃且游标不变 | 通过（真实 Xray） |
 | T151 漂移移除外部去重 | `internal/worker/synchronizer_fencing_test.go`：RPC 成功后崩溃、租约到期回收重放，外部移除/完成/审计各恰好一次；所有构造路径租约 ≥ 3×RPC 超时 | 通过 |
 
+Phase 12（2026-09-06，第四轮 converge）补充的收敛证据：
+
+| 任务 | 证据 | 结果 |
+|---|---|---|
+| T152 会话/审计原子事务 | `internal/persistence/sqlite/sessions.go`（scs CtxStore，ctx 携带写事务时同一事务写入）、`internal/application/auth_service.go`（EstablishSession/RevokeSession）、`tests/integration/auth_consistency_test.go`：InsertSession/RevokeSession/AppendAudit 语句分别失败，登录失败无 live session 与 succeeded 审计，登出失败原会话可用且只有 failed 审计，重试后恰好一个 succeeded | 通过 |
+| T153 辅助会话刷新语义 | `internal/web/middleware/session.go`：既有会话的 idle/flash 刷新失败保留原会话与真实业务响应；`TestMiddlewareSessionCommitFailureLeavesNoPartialState`：设置只提交一次、303、无新 cookie、同 request ID 重放幂等 | 通过 |
+| T154 永久失败意图收敛 | `Store.StaleDriftRemovals` + 协调器重新排队 + synchronizer 确认 absent 审计；`tests/integration/profile_guard_test.go`：移除永久失败 → Xray 重启 → reconcile/drain → 改 inbound tag 成功，旧入站无身份、失败意图已被成功确认 | 通过 |
+
 ## 2. 发布门禁（T127）
 
 | 步骤 | 命令 | 结果 |
@@ -48,7 +56,7 @@ Phase 11（2026-09-05，第三轮 converge）补充的收敛证据：
 | 静态检查 | `make vet` | 通过（2026-09-04；2026-09-05 复跑通过） |
 | 全量测试 | `make test` | 通过（2026-09-04；2026-09-05 复跑通过，12 个包，含 42 格故障矩阵、CLI 二进制测试与真实 Xray 契约套件） |
 | 竞态检测 | `make test-race` | 通过（2026-09-04；2026-09-05 复跑通过，契约套件在 `-race` 下同样通过） |
-| 固定 Xray 契约套件 | `XRAY_BIN=<path> XPANEL_REQUIRE_CONTRACT=1 make check` | 通过（2026-09-05，`XRAY_BIN` 指向从 `github.com/xtls/xray-core@v1.260327.0` 构建的 `Xray 26.3.27`；`tests/contract/xray` 9 个测试全部通过，`exit=0`；Phase 10、Phase 11 完成后各复跑整条门禁均 `exit=0`） |
+| 固定 Xray 契约套件 | `XRAY_BIN=<path> XPANEL_REQUIRE_CONTRACT=1 make check` | 通过（2026-09-05，`XRAY_BIN` 指向从 `github.com/xtls/xray-core@v1.260327.0` 构建的 `Xray 26.3.27`；`tests/contract/xray` 9 个测试全部通过，`exit=0`；Phase 10、Phase 11、Phase 12 完成后各复跑整条门禁均 `exit=0`） |
 
 ## 3. 真实 Xray 人工验收（T126，待执行）
 

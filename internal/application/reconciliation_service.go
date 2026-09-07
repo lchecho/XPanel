@@ -199,7 +199,7 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 		}
 		version := record.Allocation.DesiredCredentialVersion
 		op := domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1, desired, &version,
-			domain.SyncReconcile, phaseFor(desired), now)
+			domain.SyncReconcile, domain.InboundPhaseFor(desired), now)
 		queued, err := s.store.EnqueueReconcile(ctx, record.Allocation.ID, record.Allocation.DesiredRevision, op, now)
 		if err != nil {
 			return summary, err
@@ -242,13 +242,6 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 	s.logger.Info("reconciliation finished", "templates", summary.Profiles, "drift", summary.Drift, "removed_unknown", summary.RemovedUnknown, "confirmed_absent", summary.ConfirmedAbsent,
 		"stuck", summary.StuckSync, logging.FieldResult, "succeeded", logging.FieldDurationMS, summary.Duration.Milliseconds())
 	return summary, nil
-}
-
-func phaseFor(present bool) domain.SyncPhase {
-	if present {
-		return domain.SyncAddDesired
-	}
-	return domain.SyncRemoveOld
 }
 
 func targetState(present bool) string {

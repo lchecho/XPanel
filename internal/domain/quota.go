@@ -117,13 +117,13 @@ func DecideTransition(before AllocationFacts, adminEnabled, exceeded bool) Trans
 		WillBePresent: active && adminEnabled && quota == QuotaWithinLimit}
 	switch {
 	case decision.WasPresent && !decision.WillBePresent:
-		decision.Phase = SyncRemoveOld
+		decision.Phase = InboundPhaseFor(false)
 		decision.Reason = SyncDisable
 		if exceeded && before.QuotaState == QuotaWithinLimit && adminEnabled {
 			decision.Reason = SyncQuotaBlock
 		}
 	case !decision.WasPresent && decision.WillBePresent:
-		decision.Phase = SyncAddDesired
+		decision.Phase = InboundPhaseFor(true)
 		decision.Reason = SyncEnable
 		if before.QuotaState == QuotaExceeded && !exceeded && before.AdminEnabled && adminEnabled {
 			decision.Reason = SyncQuotaRestore

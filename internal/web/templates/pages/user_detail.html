@@ -2,7 +2,7 @@
 <body>{{template "nav" .}}<main><h1>{{.Title}}</h1>{{template "messages" .}}
 {{with .Data.User}}
 <p>状态：{{template "state" .}}{{if not .TemplateCompatible}} <span class="badge">入站模板{{.TemplateStateLabel}}</span>{{end}}</p>
-{{if .QuotaExceeded}}<p class="notice">配额超限：系统已请求节点拒绝新连接。配额控制存在检测延迟，已建立的连接可能继续并造成少量超额。</p>{{end}}
+{{if .QuotaExceeded}}<p class="notice">配额超限：该用户的专属入站已被移除，端口 {{.Port}} 已停止监听，新连接会被拒绝。配额控制存在检测延迟，已建立的连接可能继续并造成少量超额。新的配额周期开始后会以同一端口自动恢复。</p>{{end}}
 <dl>
   <dt>入站模板</dt><dd><a href="/templates/{{.TemplateID}}">{{.TemplateName}}</a></dd>
   <dt>专属端口</dt><dd>{{.Port}}</dd>

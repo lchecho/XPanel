@@ -28,7 +28,19 @@ func TestQuotaLifecycleEndToEnd(t *testing.T) {
 	record := app.User(userID)
 	statsID := record.Identity.StatisticsID
 	tag := record.Inbound.Inbound.InboundTag
+	port := record.Inbound.Inbound.Port
 	present := func() bool { _, ok := app.Adapter.Users[tag][statsID]; return ok }
+	// 封禁与恢复都必须作用在同一个端口上：SC-005 要求以原端口恢复。
+	assertPort := func(step string, listening bool) {
+		t.Helper()
+		if app.Listening(port) != listening {
+			t.Fatalf("%s: port %d listening = %v want %v", step, port, app.Listening(port), listening)
+		}
+		if current := app.User(userID).Inbound.Inbound.Port; current != port {
+			t.Fatalf("%s: port changed to %d", step, current)
+		}
+	}
+	assertPort("baseline", true)
 
 	// 越界：小额配额 → 计数增长 → exceeded → 同步移除。
 	app.SetTraffic(record, mib, mib)
@@ -39,9 +51,13 @@ func TestQuotaLifecycleEndToEnd(t *testing.T) {
 	if present() {
 		t.Fatal("quota-exceeded user still present in fake Xray")
 	}
+	assertPort("quota_block", false)
 	_, body := app.Get(path)
 	if !strings.Contains(body, "配额超限") || !strings.Contains(body, "已建立的连接可能继续并造成少量超额") || !strings.Contains(body, "2.00 MiB") {
 		t.Fatalf("detail at quota body=%s", body)
+	}
+	if !strings.Contains(body, "已停止监听") || !strings.Contains(body, "<dt>监听状态</dt><dd>未监听</dd>") {
+		t.Fatalf("detail does not explain that the port stopped listening: %s", body)
 	}
 	_, body = app.Get(path + "/connection")
 	if !strings.Contains(body, "该用户当前不活跃") || !strings.Contains(body, "ss://") {
@@ -58,6 +74,7 @@ func TestQuotaLifecycleEndToEnd(t *testing.T) {
 	if !present() {
 		t.Fatal("quota-blocked user was not restored after rollover")
 	}
+	assertPort("quota_restore", true)
 	_, body = app.Get(path)
 	if !strings.Contains(body, "已启用") || !strings.Contains(body, "<dd>0 B（上行 0 B / 下行 0 B）</dd>") {
 		t.Fatalf("detail after rollover body=%s", body)
@@ -78,6 +95,7 @@ func TestQuotaLifecycleEndToEnd(t *testing.T) {
 	if present() || app.User(userID).Allocation.DisplayState(app.User(userID).User) != domain.DisplayDisabled {
 		t.Fatal("manually disabled user was restored by rollover")
 	}
+	assertPort("manual_disable", false)
 
 	// 重新启用后：调低即时封禁，调高即时恢复。
 	response, _ = app.PostForm(path, path+"/edit", url.Values{"display_name": {"Alice"}, "quota_value": {"2"}, "quota_unit": {"MiB"}, "reset_day": {"1"}, "admin_enabled": {"on"}, "_version": {"1"}})
@@ -88,6 +106,7 @@ func TestQuotaLifecycleEndToEnd(t *testing.T) {
 	if !present() {
 		t.Fatal("re-enabled user not present")
 	}
+	assertPort("re_enable", true)
 	app.SetTraffic(record, 2*mib+mib/2, mib) // 新周期内增量 1.5 MiB
 	app.Collect()
 	if app.User(userID).Allocation.QuotaState != domain.QuotaWithinLimit {

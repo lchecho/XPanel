@@ -184,21 +184,21 @@ v1.2.0 追加「面板管理入站时 MUST 追加覆盖端口冲突与端口被�
 
 ### 实现
 
-- [ ] T035 [US2] 更新 `internal/persistence/sqlite/store_traffic.go` 的 `CommitTrafficBatch`：越界决策
+- [X] T035 [US2] 更新 `internal/persistence/sqlite/store_traffic.go` 的 `CommitTrafficBatch`：越界决策
   产出的同步操作使用 `remove_inbound` 阶段；保留 001 的事务内重读事实与周期结算顺序不变
-- [ ] T036 [US2] 更新 `internal/persistence/sqlite/store_quota.go`：周期恢复产出的同步操作使用
+- [X] T036 [US2] 更新 `internal/persistence/sqlite/store_quota.go`：周期恢复产出的同步操作使用
   `create_inbound` 阶段，且 MUST 复用该用户原有端口分配（不重新分配）
-- [ ] T037 [US2] 更新 `internal/web/templates/pages/user_detail.html`：配额超限状态下明确展示
+- [X] T037 [US2] 更新 `internal/web/templates/pages/user_detail.html`：配额超限状态下明确展示
   「端口已停止监听」与「已建立连接可能短暂继续」的既有软配额文案
 
 ### 测试
 
-- [ ] T038 [P] [US2] 新建 `tests/integration/quota_inbound_test.go`：越界后端口停止监听、原端口在新周期
+- [X] T038 [P] [US2] 新建 `tests/integration/quota_inbound_test.go`：越界后端口停止监听、原端口在新周期
   恢复、手动禁用用户不被恢复、调低配额立即进入超限处理
-- [ ] T039 [P] [US2] 新建 `tests/integration/isolation_test.go`：对一个用户执行创建、禁用、启用、轮换、
+- [X] T039 [P] [US2] 新建 `tests/integration/isolation_test.go`：对一个用户执行创建、禁用、启用、轮换、
   删除与配额封禁的全过程中，另一个用户的端口可连接性与流量计量零偏差（SC-012）
-- [ ] T040 [P] [US2] 更新 `tests/e2e/quota_test.go`：配额闭环的端到端证据，断言封禁与恢复都作用于同一端口
-- [ ] T041 [US2] 更新 `internal/application/traffic_service_test.go` 与 `quota_service_test.go`：
+- [X] T040 [P] [US2] 更新 `tests/e2e/quota_test.go`：配额闭环的端到端证据，断言封禁与恢复都作用于同一端口
+- [X] T041 [US2] 更新 `internal/application/traffic_service_test.go` 与 `quota_service_test.go`：
   在新入站模型下复核采集与结算路径未发生语义漂移
 
 **Checkpoint**: US1 与 US2 均可独立工作，配额闭环作用于端口层面

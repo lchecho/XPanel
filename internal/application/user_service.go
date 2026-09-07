@@ -115,7 +115,7 @@ func (s *UserService) CreateUser(ctx context.Context, input CreateUserInput) (do
 	if err != nil {
 		return "", false, &domain.ValidationError{Field: "reset_day", Message: "quota cycle could not be calculated"}
 	}
-	operation := domain.NewSynchronizationOperation(operationID, allocationID, 1, true, &version, domain.SyncCreate, domain.SyncCreateInbound, now)
+	operation := domain.NewSynchronizationOperation(operationID, allocationID, 1, true, &version, domain.SyncCreate, domain.InboundPhaseFor(true), now)
 	completed := now
 	actor := input.ActorID
 	limit := "unlimited"
@@ -497,7 +497,7 @@ func (s *UserService) DeleteUser(ctx context.Context, input LifecycleInput) (boo
 	actor := input.ActorID
 	completed := now
 	deletion := ports.DeleteRecord{UserID: record.User.ID, AllocationID: record.Allocation.ID, ExpectedRevision: input.ExpectedRevision, Now: now,
-		Operation: domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1, false, nil, domain.SyncDelete, domain.SyncRemoveOld, now),
+		Operation: domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1, false, nil, domain.SyncDelete, domain.InboundPhaseFor(false), now),
 		Command: domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor, CommandType: domain.ActionUserDeleted,
 			TargetType: "user", TargetID: record.User.ID,
 			RequestFingerprint: fingerprint,

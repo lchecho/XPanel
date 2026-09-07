@@ -1,10 +1,18 @@
 # Go
 bin/
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 *.test
 *.out
-vendor/
+*.coverprofile
+profile.cov
 coverage.*
+vendor/
+go.work
+go.work.sum
 
 # XPanel runtime artifacts (never commit databases or key material)
 *.db

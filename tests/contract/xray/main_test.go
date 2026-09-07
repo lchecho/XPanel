@@ -235,10 +235,11 @@ func launchRuntime(t *testing.T, apiAddress string, config map[string]any) *live
 		time.Sleep(25 * time.Millisecond)
 	}
 	runtime := &liveRuntime{client: client, cancel: cancel, command: command, output: output, api: apiAddress, config: path}
+	// 通过结构体字段停止进程：restart 会替换 cancel/command，捕获启动时的局部变量会漏掉重启后的进程。
 	t.Cleanup(func() {
 		_ = client.Close()
-		cancel()
-		_ = command.Wait()
+		runtime.cancel()
+		_ = runtime.command.Wait()
 	})
 	return runtime
 }

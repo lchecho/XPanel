@@ -256,7 +256,8 @@ func TestReconcileDoesNotConfirmAnInboundWithoutItsManagedClient(t *testing.T) {
 // T084：在轮换的每一个 RPC 边界注入进程崩溃，断言入站的受管客户端数从不为 0、端口持续监听，
 // 恢复后最终只剩原统计身份对应的新凭证，且流量历史归属不变。
 func TestRotationSurvivesACrashAtEveryRPCBoundary(t *testing.T) {
-	// 一次成功轮换的 RPC 序列：list_users(读) → add_user(过渡) → remove_user(旧) → add_user(新) → remove_user(过渡)。
+	// 一次成功轮换的 RPC 序列：list_users(读) → add_user(过渡) → remove_user(旧) → add_user(新) → remove_user(过渡) → ConfirmSync。
+	// boundary 0–3 是四次变更 RPC 之前崩溃；boundary 4 是四次 RPC 全部成功、但确认事务之前崩溃。
 	for boundary := 0; boundary < 5; boundary++ {
 		t.Run(fmt.Sprintf("crash_before_rpc_%d", boundary), func(t *testing.T) {
 			f := newSyncFixture(t)
@@ -287,13 +288,24 @@ func TestRotationSurvivesACrashAtEveryRPCBoundary(t *testing.T) {
 				f.adapter.OnAddUser, f.adapter.OnRemoveUser = crash, crash
 			}
 			f.adapter.OnAddUser, f.adapter.OnRemoveUser = crash, crash
+			if boundary == 4 {
+				// 四次 RPC 都成功之后、ConfirmSync 之前崩溃：此时 Xray 已是期望状态，
+				// 但库里还没记下来，恢复必须重放整套过渡且不破坏已经正确的状态。
+				f.sync.store = &crashOnConfirmStore{Store: f.sync.store}
+			}
 			func() {
 				defer func() { _ = recover() }()
 				_, _ = f.sync.Drain(context.Background())
 			}()
-			// boundary 0–3 对应四次变更 RPC，必须真的崩在那一步；boundary 4 之后没有更多 RPC。
+			if boundary == 4 {
+				f.sync.store = f.store
+			}
+			// boundary 0–3 对应四次变更 RPC，必须真的崩在那一步；boundary 4 崩在确认事务之前。
 			if boundary < 4 && !crashed {
 				t.Fatalf("boundary %d was never reached: only %d mutation RPCs happened", boundary, calls)
+			}
+			if boundary == 4 && calls != 4 {
+				t.Fatalf("boundary 4 expects all four mutation RPCs to run, got %d", calls)
 			}
 			f.assertNoEmptyInbound(t, "right after the crash")
 			if !f.adapter.Listening(port) {
@@ -372,4 +384,19 @@ func TestRotationTransitionClientNeverLeaksIntoUserFacingState(t *testing.T) {
 	if registered != 0 {
 		t.Fatalf("the transition identity was persisted %d times", registered)
 	}
+}
+
+// crashOnConfirmStore 在第一次 ConfirmSync 时模拟进程崩溃：Xray 已经是期望状态，库里还没记下来。
+type crashOnConfirmStore struct {
+	ports.Store
+	crashed bool
+}
+
+func (s *crashOnConfirmStore) ConfirmSync(ctx context.Context, operationID domain.ID, owner string,
+	revision domain.Revision, credentialVersion int64, present bool, now time.Time) (bool, error) {
+	if !s.crashed {
+		s.crashed = true
+		panic("crash before the confirmation transaction")
+	}
+	return s.Store.ConfirmSync(ctx, operationID, owner, revision, credentialVersion, present, now)
 }

@@ -79,13 +79,14 @@ SC-001、SC-002、SC-010 的人工验收（T076）待执行。**
 | T079 能力门禁 | `ValidateTemplate` 不再忽略探针移除结果，新增 InboundRemovable 硬门禁；不兼容原因经 `views.CompatibilityReasonSentence` 中文化。**其中「用户级统计无法在校验期证实」的判断已被 Phase 10 的 T085 推翻**（research.md C-007），统计现在也是硬门禁；InboundRemovable 与中文化部分继续有效 | 部分被 T085 取代 |
 | T080 更换端口 | 迁移 00005（新增 port_change 原因，补回 00004 丢失的 idempotency_key 唯一与 UNIQUE(allocation_id, desired_revision)）；`Store.ChangeInboundPort` 单事务完成校验、改端口、写意图与审计；`tests/integration/port_change_test.go` 覆盖成功、三类拒绝无部分状态、重复提交只产生一条意图、并发抢同一端口只有一个成功；handler 测试覆盖 422/409/成功；故障矩阵新增 port_change 列（8×8=64 格全绿） | 通过 |
 | T081 无归属漂移 | 迁移 00006（template_id 可空 + COALESCE 归组的唯一索引）；协调器优先挂模板、无模板时以「无归属」持久化；LeaseDueDriftRemoval 改 LEFT JOIN 且兼容性只约束 identity 类；新增 OrphanStaleDriftRemovals 重排队。`tests/integration/inbound_drift_test.go` 覆盖「零模板」「全归档」两种场景与永久失败后的重排队 | 通过 |
+| T087 轮换故障契约 | `internal/worker/synchronizer_rotation_test.go` 覆盖 5 个边界：四次变更 RPC 之前各一次崩溃，外加「四次 RPC 全部成功、ConfirmSync 之前崩溃」（用 store 包装器注入），每个边界都断言确实被命中。`tests/contract/xray/rotation_app_test.go` 用真实 service + synchronizer 驱动真实 Xray，在四次变更 RPC **成功之后**的每个边界崩溃、回收租约、重放：每次 RPC 后校验端口在听且入站有客户端，恢复后以真实 SS2022 握手证明新凭证可用、旧凭证被拒，最终只剩原不可变统计身份、过渡身份不进连接信息、上行计数不回退 | 通过 |
 | T083 契约稳定性 | 端口池基址改到临时端口范围之下并逐个绑定校验，采集断言前用 `convergeAll` 等待全部分配收敛；`XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 go test ./tests/contract/xray -count=1` 连续 5 次全绿，随后整条 `make check` `exit=0`，运行后连续三次 `pgrep` 均无残留 Xray 进程 | 通过 |
 
 ### Phase 10（2026-09-07）
 
 | 任务 | 证据 | 结果 |
 |---|---|---|
-| T084 轮换过渡客户端 | 轮换改为四步过渡（加过渡 → 删旧 → 加新 → 删过渡），全程客户端数为 1 或 2；适配器新增「不移除最后一个受管客户端」守卫（`last_managed_client`）作为与租约无关的最终防线。`internal/worker/synchronizer_rotation_test.go` 在四个变更 RPC 边界逐个注入崩溃（并断言每个边界确实被命中），每步断言客户端数不为 0、端口可连接、恢复后恰好一个期望身份、统计身份与流量历史不变；`tests/contract/xray/rotation_test.go` 在真实节点上逐步验证四步过渡、从「只剩过渡客户端」续跑、以及守卫拒绝清空入站 | 通过 |
+| T084 轮换过渡客户端 | 轮换改为四步过渡（加过渡 → 删旧 → 加新 → 删过渡），全程客户端数为 1 或 2；适配器新增「不移除最后一个受管客户端」守卫（`last_managed_client`）作为与租约无关的最终防线。证据在 T087 补齐后完整（见下） | 通过 |
 | T085 统计能力前置门禁 | `ValidateTemplate` 在探针入站上用进程内 SS2022 客户端产生一次认证回显流量并回读两个方向的计数器；漏配 policy 的节点在创建任何用户之前即判为不兼容，中文原因直接指向要改的配置键。实测证据见 research.md C-007（开启 policy 时两个计数器均为 23 字节，未配置时始终 NotFound） | 通过 |
 
 实测更正记录见 `research.md` C-004（移除唯一客户端不会让入站退化为服务端密钥可直连）、

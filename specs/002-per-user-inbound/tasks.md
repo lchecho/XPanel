@@ -479,7 +479,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   客户端再清理未知身份，任何顺序都不得制造空受管客户端入站。补充 fake、集成及固定 Xray 契约，覆盖
   面板入站被注入非命名空间身份、只剩未知身份、轮换过渡中对账和重复清理，断言最终恰好一个期望身份、
   未知凭证失效且其他入站不受影响 per Constitution I/II / FR-019 / FR-029 / T061 (contradicts)
-- [ ] T087 完成 T084 尚缺的真实轮换故障契约：修正
+- [X] T087 完成 T084 尚缺的真实轮换故障契约：修正
   `internal/worker/synchronizer_rotation_test.go` 的边界循环，使最后一次 `RemoveUser(过渡身份)` 成功后、
   `ConfirmSync` 之前也实际触发崩溃；在 `tests/contract/xray/` 用真实应用 service + synchronizer 而非手工
   Adapter 四步调用，分别在四次变更 RPC 成功后的每个边界中断、回收租约并重放。测试必须用轮换前后的

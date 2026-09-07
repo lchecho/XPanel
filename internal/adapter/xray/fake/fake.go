@@ -164,11 +164,16 @@ func (a *Adapter) RemoveUser(ctx context.Context, command ports.RemoveUserComman
 		return ports.MutationReceipt{}, err
 	}
 	failure, fails := a.failure("remove_user")
+	_, exists := a.Users[command.ProfileTag][command.StatisticsID]
 	if !fails || failure.Applied {
 		delete(a.Users[command.ProfileTag], command.StatisticsID)
 	}
 	if fails {
 		return ports.MutationReceipt{}, failure.Err
+	}
+	if !exists {
+		// 与真实 Xray 契约一致：移除不存在的用户返回稳定的 user_not_found（contracts/xray-adapter.md 门禁 4）。
+		return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorUserNotFound, Operation: "remove_user", Retryable: false, SafeSummary: "user not found"}
 	}
 	return ports.MutationReceipt{OperationID: command.OperationID, ObservedAt: a.Now()}, nil
 }

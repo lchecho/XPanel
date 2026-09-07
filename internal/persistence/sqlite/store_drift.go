@@ -128,3 +128,30 @@ func (s *Store) FailDriftRemoval(ctx context.Context, id domain.ID, owner, code,
 		return (&txStore{tx: tx}).AppendAudit(ctx, audit)
 	})
 }
+
+// StaleDriftRemovals 返回某 profile 下仍冻结契约字段的 permanent_failed 移除意图：
+// 同一身份既没有未终结记录，也没有之后成功的记录（与 UpdateProfile 守卫的判定一致）。
+func (s *Store) StaleDriftRemovals(ctx context.Context, profileID domain.ID) ([]ports.DriftRemoval, error) {
+	rows, err := s.db.Read.QueryContext(ctx, `SELECT d.id,d.profile_id,p.inbound_tag,d.statistics_id,d.state,d.attempt_count,d.next_attempt_at
+        FROM drift_removals d JOIN access_profiles p ON p.id=d.profile_id
+        WHERE d.profile_id=? AND d.state='permanent_failed'
+          AND NOT EXISTS (SELECT 1 FROM drift_removals s WHERE s.profile_id=d.profile_id AND s.statistics_id=d.statistics_id
+                          AND (s.state IN ('pending','leased','retry_wait') OR (s.state='succeeded' AND s.created_at>=d.created_at)))
+        ORDER BY d.created_at`, profileID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []ports.DriftRemoval
+	for rows.Next() {
+		var removal ports.DriftRemoval
+		var id, profile string
+		var next int64
+		if err := rows.Scan(&id, &profile, &removal.InboundTag, &removal.StatisticsID, &removal.State, &removal.AttemptCount, &next); err != nil {
+			return nil, err
+		}
+		removal.ID, removal.ProfileID, removal.NextAttemptAt = domain.ID(id), domain.ID(profile), fromMillis(next)
+		result = append(result, removal)
+	}
+	return result, rows.Err()
+}

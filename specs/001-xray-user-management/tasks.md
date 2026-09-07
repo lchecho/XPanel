@@ -435,3 +435,11 @@ Task: "编写 internal/domain/quota_test.go 与 traffic_test.go"
 - [X] T149 阻止 `internal/persistence/sqlite/store_profiles.go` 在任何旧入站漂移身份尚未确认移除时修改 inbound_tag/method/bootstrap：`permanent_failed` drift removal 不能被视为安全终结而放行，或必须为该意图持久化原 inbound tag 并在 profile 改动后继续针对原入站收敛；增加“未知身份移除永久失败 → 尝试改 tag → Xray 恢复”的集成测试，断言旧入站最终无遗留 `xpanel-` 身份 per FR-020 / T144 (partial)
 - [X] T150 修正 `internal/adapter/xray/handler.go` 与 `internal/application/traffic_service.go` 的分批实例连续性判定，不得把 Xray `uint32` uptime 推算 boot epoch 的一秒量化抖动误判为重启，同时仍能识别批间真实重启和观察时间倒退；增加相邻批次 boot epoch 相差一秒但 uptime 单调的确定性测试，以及固定 Xray v26.3.27 下 21+ allocation 的真实分批契约测试，断言整轮可提交且真实重启仍整轮丢弃 per FR-013 / FR-017 / FR-023 / T146 (partial)
 - [X] T151 补齐漂移移除的外部执行去重：让所有 `NewSynchronizer` 构造路径都具备明确 RPC timeout 并强制 lease 覆盖单次 RPC，在回收过期 `drift_removals` 后先读取原 inbound 的实际身份再决定是否调用 `RemoveUser`；修正 `TestReclaimedDriftRemovalIsNotExecutedTwice` 当前接受两次 `remove_user` 的断言，覆盖 RPC 成功后崩溃与回收重放并断言外部移除、完成状态和审计各至多一次 per FR-021 / T143 (partial)
+
+---
+
+## Phase 12: Convergence
+
+- [X] T152 CRITICAL 为当前管理员 session 的建立与撤销提供真正的 SQLite 原子事务边界：扩展 application/store/session 协议，使 token digest 对应的 `admin_sessions` 插入或撤销与 login/logout succeeded 审计在同一 `WithWriteTx` 中提交，事务成功后才写入或过期浏览器 cookie；任一 SQL/审计写入失败必须整体回滚，再以独立事务记录安全的 failed 审计。增加 session 写入、session 撤销及审计语句分别失败的故障注入，断言登录失败时无 live session/succeeded 审计，登出失败时原 session 仍可用且只有 failed 审计，重试后恰好一个 succeeded 审计 per Constitution V / FR-025 / FR-027 / SC-008 / T148 (contradicts)
+- [X] T153 修正 `internal/web/middleware/session.go` 对已认证普通请求的辅助 session/flash 保存失败语义：业务 service 已成功提交后，不得因响应阶段的 idle/flash session commit 失败把请求改报 500；区分登录时安全关键的 session 建立与既有 session 的辅助刷新，后者失败时保留原 session 和诚实的业务成功响应并记录脱敏诊断。加强 `TestMiddlewareSessionCommitFailureLeavesNoPartialState`，断言设置等业务事实只提交一次、HTTP 状态与事实一致、没有新 session cookie 且同 request ID 重放不重复变更 per FR-027 / T148 (contradicts)
+- [X] T154 让 `internal/application/reconciliation_service.go` 与 SQLite drift store 主动收敛未被后续成功记录覆盖的 `permanent_failed` 漂移意图：即使目标身份已因 Xray 重启或运维外部移除而不再出现在 `ListUsers`，也必须通过可租约的确认路径将其标记为 confirmed absent/succeeded 并写安全审计，从而解除 profile 契约字段冻结。增加“移除永久失败 → Xray 重启或外部移除 → reconcile/drain → 修改 inbound tag”的集成测试，断言旧入站无身份、失败意图已被成功确认且不会永久锁死 profile per FR-020 / T149 (partial)

@@ -39,9 +39,11 @@ type ReconcileSummary struct {
 	Profiles       int
 	Drift          int
 	RemovedUnknown int
-	StuckSync      int
-	Reconnected    bool
-	Duration       time.Duration
+	// ConfirmedAbsent 是本轮为“移除永久失败但身份已不在 Xray（重启/外部移除）”的意图重新排队的确认次数。
+	ConfirmedAbsent int
+	StuckSync       int
+	Reconnected     bool
+	Duration        time.Duration
 }
 
 func NewReconciliationService(store ports.Store, adapter ports.Adapter, clock ports.Clock, target ports.InstanceTarget, node *sync.Mutex,
@@ -127,6 +129,27 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 					"profile_id", profile.Profile.ID.String(), logging.FieldResult, "queued")
 			}
 		}
+		// 永久失败的移除意图仍冻结 profile 契约字段；身份已因重启或外部移除而不在 Xray 时，
+		// 通过可租约的确认路径（重新排队 → synchronizer 读后确认 absent 并审计）收敛，避免 profile 永久锁死（FR-020）。
+		stale, err := s.store.StaleDriftRemovals(ctx, profile.Profile.ID)
+		if err != nil {
+			return summary, err
+		}
+		for _, removal := range stale {
+			if present[removal.StatisticsID] {
+				continue // 仍存在：上面的未知身份分支已重新排队移除
+			}
+			created, err := s.store.EnqueueDriftRemoval(ctx, profile.Profile.ID, removal.StatisticsID, now)
+			if err != nil {
+				return summary, err
+			}
+			if created {
+				summary.ConfirmedAbsent++
+				enqueued = true
+				s.logger.Info("permanently failed drift removal re-queued for absence confirmation", "profile_id", profile.Profile.ID.String(),
+					logging.FieldResult, "queued")
+			}
+		}
 		for _, record := range users {
 			if record.Allocation.ProfileID != profile.Profile.ID {
 				continue
@@ -177,7 +200,7 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 		s.notify()
 	}
 	summary.Duration = s.clock.Now().Sub(started)
-	s.logger.Info("reconciliation finished", "profiles", summary.Profiles, "drift", summary.Drift, "removed_unknown", summary.RemovedUnknown,
+	s.logger.Info("reconciliation finished", "profiles", summary.Profiles, "drift", summary.Drift, "removed_unknown", summary.RemovedUnknown, "confirmed_absent", summary.ConfirmedAbsent,
 		"stuck", summary.StuckSync, logging.FieldResult, "succeeded", logging.FieldDurationMS, summary.Duration.Milliseconds())
 	return summary, nil
 }

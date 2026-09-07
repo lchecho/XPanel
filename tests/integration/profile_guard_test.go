@@ -164,3 +164,54 @@ func TestProfileContractFrozenAfterPermanentDriftRemovalFailureUntilRecovered(t 
 		t.Fatalf("drift removals failed=%d succeeded=%d", failed, succeeded)
 	}
 }
+
+// T154：移除永久失败后身份因 Xray 重启/外部移除消失：协调器把失败意图重新排队，synchronizer 确认 absent 并审计，
+// 契约字段冻结解除，旧入站无身份，profile 不会被永久锁死。
+func TestPermanentDriftRemovalFailureConvergesAfterExternalRemoval(t *testing.T) {
+	app := testsupport.New(t)
+	profileID := app.RegisterCompatibleProfile("Primary")
+	const unknown = "xpanel-66666666-1111-4111-8111-666666666666"
+	app.Adapter.Users[testsupport.ProfileTag] = map[string]ports.RemoteUser{
+		testsupport.BootstrapID: {StatisticsID: testsupport.BootstrapID, Present: true, Kind: "bootstrap"},
+		unknown:                 {StatisticsID: unknown, Present: true, Kind: "managed"},
+	}
+	app.ReconcileOnce()
+	app.Adapter.Failures["remove_user"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorUpstreamRejected, Operation: "remove_user",
+		Retryable: false, SafeSummary: "rejected by Xray"}}}
+	app.Drain()
+	var conflict *domain.ConflictError
+	if err := retagProfile(app, profileID, "managed-next"); !errors.As(err, &conflict) {
+		t.Fatalf("retag after permanent failure err = %v, want conflict", err)
+	}
+	// Xray 重启（或运维外部移除）：身份不再出现在 ListUsers 中。
+	app.Adapter.Restart()
+	app.Adapter.Users[testsupport.ProfileTag][testsupport.BootstrapID] = ports.RemoteUser{StatisticsID: testsupport.BootstrapID, Present: true, Kind: "bootstrap"}
+	summary := app.ReconcileOnce()
+	if summary.ConfirmedAbsent != 1 || summary.RemovedUnknown != 0 {
+		t.Fatalf("reconcile after external removal = %#v", summary)
+	}
+	app.Drain()
+	if left := managedOnInbound(app, testsupport.ProfileTag); len(left) != 0 {
+		t.Fatalf("old inbound still has identities: %v", left)
+	}
+	var failed, succeeded, open int
+	_ = app.Store.DB().Read.QueryRow(`SELECT SUM(state='permanent_failed'),SUM(state='succeeded'),SUM(state IN ('pending','leased','retry_wait')) FROM drift_removals WHERE statistics_id=?`, unknown).Scan(&failed, &succeeded, &open)
+	if failed != 1 || succeeded != 1 || open != 0 {
+		t.Fatalf("drift removals failed=%d succeeded=%d open=%d", failed, succeeded, open)
+	}
+	var confirmed int
+	_ = app.Store.DB().Read.QueryRow(`SELECT count(*) FROM audit_events WHERE action=? AND result='succeeded' AND safe_summary LIKE '%absent%'`, domain.ActionReconcileRemovedUnknown).Scan(&confirmed)
+	if confirmed != 1 {
+		t.Fatalf("absence confirmation audits = %d, want 1", confirmed)
+	}
+	if err := retagProfile(app, profileID, "managed-next"); err != nil {
+		t.Fatalf("retag after confirmed absence: %v", err)
+	}
+	stale, err := app.Store.StaleDriftRemovals(context.Background(), profileID)
+	if err != nil || len(stale) != 0 {
+		t.Fatalf("stale removals after convergence = %d, %v", len(stale), err)
+	}
+	if summary := app.ReconcileOnce(); summary.ConfirmedAbsent != 0 {
+		t.Fatalf("confirmation re-queued after convergence: %#v", summary)
+	}
+}

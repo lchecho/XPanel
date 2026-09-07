@@ -185,9 +185,13 @@ func (s *Synchronizer) handleDriftRemoval(ctx context.Context, removal *ports.Dr
 		}
 	}
 	_, err := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: removal.ID, ProfileTag: removal.InboundTag, StatisticsID: removal.StatisticsID})
+	summary := "removed unknown identity " + removal.StatisticsID + " from the managed namespace"
 	if err != nil {
 		kind, retryable := describe(err)
 		converged := kind == ports.ErrorUserNotFound
+		if converged {
+			summary = "unknown identity " + removal.StatisticsID + " confirmed absent from the managed namespace"
+		}
 		if !converged && retryable && kind != ports.ErrorInstanceUnavailable {
 			if held, err := s.fenceDrift(ctx, removal, logger); err != nil || !held {
 				return err
@@ -208,8 +212,7 @@ func (s *Synchronizer) handleDriftRemoval(ctx context.Context, removal *ports.Dr
 		}
 	}
 	logger.Info("unknown namespace identity removed", logging.FieldResult, "succeeded")
-	return s.store.CompleteDriftRemoval(ctx, removal.ID, s.owner, now,
-		s.driftAudit(removal, domain.AuditSucceeded, "removed unknown identity "+removal.StatisticsID+" from the managed namespace", now))
+	return s.store.CompleteDriftRemoval(ctx, removal.ID, s.owner, now, s.driftAudit(removal, domain.AuditSucceeded, summary, now))
 }
 
 // fenceDrift 在每次 Xray 调用前续租；租约丢失时记录并放弃（返回 false）。

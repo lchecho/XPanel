@@ -302,6 +302,16 @@ func safeContains(output []byte, value string) bool {
 // restart 停止并用相同配置重新启动 Xray 进程，模拟运行时重启（动态用户丢失、boot epoch 变化）。
 func (r *liveRuntime) restart(t *testing.T, bin string) {
 	t.Helper()
+	r.restartWith(t, bin, nil)
+}
+
+// restartWith 用新配置重启同一个管理端点上的 Xray：config 为 nil 时沿用原配置。
+// 用于「节点重启后能力真的变了」这类场景（例如 policy 被去掉）。
+func (r *liveRuntime) restartWith(t *testing.T, bin string, config map[string]any) {
+	t.Helper()
+	if config != nil {
+		r.config = writeRuntimeConfig(t, config)
+	}
 	r.cancel()
 	_ = r.command.Wait()
 	ctx, cancel := context.WithCancel(context.Background())

@@ -144,9 +144,10 @@ var conflictMessages = map[string]string{
 	"inbound template already exists":                                 "入站模板名称已存在",
 	"request identifier was reused with different input":              "该请求已提交过且内容不同，请刷新页面后重新操作",
 
-	"inbound template changed or still has managed users":     "入站模板仍有受管用户或已被修改",
-	"inbound template is not compatible":                      "所选入站模板当前不兼容，不能创建用户",
-	"connection information is unavailable for deleted users": "已删除用户不再提供连接信息",
+	"inbound template changed or still has managed users":           "入站模板仍有受管用户或已被修改",
+	"inbound template is not compatible":                            "所选入站模板当前不兼容，不能创建用户",
+	"inbound template must be revalidated against the running node": "节点已重启，入站模板需要重新验证能力后才能创建用户；面板会自动重跑验证，请稍候刷新",
+	"connection information is unavailable for deleted users":       "已删除用户不再提供连接信息",
 	"template still has users, unconfirmed removals or pending synchronization; method and listen address cannot change until they are confirmed absent": "该模板下仍有用户、未确认的移除或待同步操作，加密方式与监听地址暂时不能修改",
 }
 

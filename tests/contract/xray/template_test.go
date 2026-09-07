@@ -3,7 +3,9 @@ package xray_test
 import (
 	"context"
 	"testing"
+	"time"
 
+	"xpanel/internal/application"
 	"xpanel/internal/domain"
 	"xpanel/internal/ports"
 	"xpanel/internal/security"
@@ -189,5 +191,66 @@ func TestLiveTemplateValidationMatrixRejectsMissingPolicy(t *testing.T) {
 				t.Fatalf("%s without policy reported compatible: %#v", network, capabilities)
 			}
 		})
+	}
+}
+
+// T089 契约：兼容结论绑定当前 Xray 启动纪元。在完整 policy 下验证通过后，
+// 用同一管理端点重启到缺少 policy 的配置，旧的 compatible 缓存必须立即失效、新建用户被拒绝；
+// 恢复 policy 并重新验证后才允许创建。
+func TestLiveCapabilityEvidenceExpiresWhenTheNodeRestartsWithoutStatsPolicy(t *testing.T) {
+	apiAddress, operatorAddress := freeAddress(t), freeAddress(t)
+	full := baseConfig(apiAddress, operatorAddress)
+	runtime, err := launchRuntime(t, apiAddress, full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.operator, runtime.operatorPort = operatorAddress, portOf(t, operatorAddress)
+	target := ports.InstanceTarget{APIEndpoint: runtime.api, ExpectedVersion: wantRuntime, RPCTimeout: 500 * time.Millisecond}
+	app := testsupport.NewWith(t, testsupport.Options{Adapter: runtime.client, Target: &target})
+	app.Clock.Set(time.Now().UTC())
+
+	// 完整 policy 下：门禁通过，可以创建用户。
+	templateID := registerLiveTemplate(t, app, "Primary", 6)
+	first := app.CreateUser("First", templateID, nil)
+	convergeAll(t, app, []ports.UserRecord{first})
+
+	// 重启到缺少 policy 的配置：管理端点不变，但节点能力变了。
+	degraded := baseConfig(apiAddress, operatorAddress)
+	delete(degraded, "policy")
+	runtime.restartWith(t, contractBinary(t), degraded)
+	app.Clock.Set(app.Clock.Now().Add(time.Minute))
+
+	summary := app.ReconcileOnce()
+	if summary.Revalidated != 1 {
+		t.Fatalf("reconcile summary = %#v, want the stale evidence invalidated", summary)
+	}
+	record, err := app.Store.Template(context.Background(), templateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Template.Compatibility == domain.CompatibilityCompatible {
+		t.Fatalf("the template stayed compatible on a node that lost its stats policy: %#v", record.Template)
+	}
+	if _, _, err := app.Users.CreateUser(context.Background(), application.CreateUserInput{DisplayName: "Rejected",
+		TemplateID: templateID, ResetDay: 1, RequestID: testsupport.NewID(t), ActorID: app.AdminID}); err == nil {
+		t.Fatal("a user was created against a node that no longer reports user traffic")
+	}
+
+	// 恢复 policy 并重新验证后才允许创建。
+	runtime.restartWith(t, contractBinary(t), full)
+	app.Clock.Set(app.Clock.Now().Add(time.Minute))
+	app.ReconcileOnce()
+	if err := app.Validator.ValidateNow(context.Background(), templateID); err != nil {
+		t.Fatal(err)
+	}
+	restored, _ := app.Store.Template(context.Background(), templateID)
+	instance, _ := app.Store.ManagedInstance(context.Background())
+	if restored.Template.Compatibility != domain.CompatibilityCompatible ||
+		restored.Template.ValidatedBootEpoch != instance.BootEpoch {
+		t.Fatalf("template after restoring the policy = %#v (instance epoch %q)", restored.Template, instance.BootEpoch)
+	}
+	if _, _, err := app.Users.CreateUser(context.Background(), application.CreateUserInput{DisplayName: "Allowed",
+		TemplateID: templateID, ResetDay: 1, RequestID: testsupport.NewID(t), ActorID: app.AdminID}); err != nil {
+		t.Fatalf("creation after restoring the policy: %v", err)
 	}
 }

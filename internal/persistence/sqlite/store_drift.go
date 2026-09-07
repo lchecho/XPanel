@@ -61,7 +61,7 @@ func (s *Store) LeaseDueDriftRemoval(ctx context.Context, owner string, now time
 	err = tx.QueryRowContext(ctx, `SELECT d.id,d.template_id,d.inbound_tag,d.kind,d.statistics_id,d.state,d.attempt_count,d.next_attempt_at,d.lease_owner
         FROM drift_removals d LEFT JOIN inbound_templates t ON t.id=d.template_id
         WHERE ((d.state IN ('pending','retry_wait') AND d.next_attempt_at<=?) OR (d.state='leased' AND d.lease_expires_at<=?))
-          AND (d.kind='inbound' OR t.compatibility_state IN ('compatible','unreachable'))
+          AND (d.kind='inbound' OR t.compatibility_state <> 'incompatible')
         ORDER BY d.next_attempt_at,d.created_at LIMIT 1`, millis(now), millis(now)).Scan(
 		&id, &templateID, &removal.InboundTag, &removal.Kind, &removal.StatisticsID, &previousState, &removal.AttemptCount, &next, &previousOwner)
 	if errors.Is(err, sql.ErrNoRows) {

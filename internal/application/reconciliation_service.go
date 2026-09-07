@@ -42,8 +42,10 @@ type ReconcileSummary struct {
 	// ConfirmedAbsent 是本轮为“移除永久失败但身份已不在 Xray（重启/外部移除）”的意图重新排队的确认次数。
 	ConfirmedAbsent int
 	StuckSync       int
-	Reconnected     bool
-	Duration        time.Duration
+	// Revalidated 是本轮因启动纪元变化而被置回待验证、需要重跑能力门禁的模板数。
+	Revalidated int
+	Reconnected bool
+	Duration    time.Duration
 }
 
 func NewReconciliationService(store ports.Store, adapter ports.Adapter, clock ports.Clock, target ports.InstanceTarget, node *sync.Mutex,
@@ -76,6 +78,20 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 	now := s.clock.Now()
 	if err := s.store.MarkInstanceHealthy(ctx, epochString(observation), now); err != nil {
 		return summary, err
+	}
+	// 能力证据绑定当前启动纪元：节点重启（或纪元变化）后，旧的 compatible 结论对新进程不成立，
+	// 必须先置回待验证并重跑门禁，再进入后续对账（FR-005/FR-029）。
+	if stale, err := s.store.InvalidateStaleCapabilityEvidence(ctx, epochString(observation), now); err != nil {
+		return summary, err
+	} else if len(stale) > 0 {
+		summary.Revalidated = len(stale)
+		for _, id := range stale {
+			s.logger.Warn("capability evidence is stale for the current Xray generation; template set back to unverified",
+				"template_id", id.String(), logging.FieldResult, "queued")
+			if s.revalidate != nil {
+				_ = s.revalidate(ctx, id)
+			}
+		}
 	}
 	templates, err := s.store.Templates(ctx, false)
 	if err != nil {
@@ -132,8 +148,10 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 	for _, record := range users {
 		tag := record.Inbound.Inbound.InboundTag
 		template, ok := templateByID[record.Allocation.TemplateID]
-		if !ok || (template.Template.Compatibility != domain.CompatibilityCompatible &&
-			template.Template.Compatibility != domain.CompatibilityUnreachable) {
+		// 只有「明确判定为不兼容」的模板才不投影。unverified 也要投影：节点重启后能力证据会被
+		// 置为待验证，但既有用户的入站必须照常按原端口重建（FR-030/SC-006）——
+		// 能力门禁把关的是「能不能创建新用户」，不是「要不要恢复已有用户」。
+		if !ok || template.Template.Compatibility == domain.CompatibilityIncompatible {
 			continue
 		}
 		actual := remoteInbounds[tag]

@@ -83,6 +83,8 @@ func (s *Store) LeaseDueSync(ctx context.Context, owner string, now time.Time, l
 		return nil, err
 	}
 	defer tx.Rollback()
+	// 只有「明确判定为不兼容」的模板才不投影意图。unverified 也要投影：节点重启后能力证据被置回待验证，
+	// 但既有用户的入站必须照常按原端口重建（FR-030/SC-006）——能力门禁把关的是新建用户，不是恢复已有用户。
 	row := tx.QueryRowContext(ctx, `SELECT o.id,o.allocation_id,o.desired_revision,o.desired_presence,o.desired_credential_version,
         o.reason,o.phase,o.state,o.idempotency_key,o.attempt_count,o.next_attempt_at,o.lease_owner,o.lease_expires_at,
         COALESCE(o.last_error_code,''),COALESCE(o.last_error_summary,''),o.created_at,o.started_at,o.completed_at
@@ -90,7 +92,7 @@ func (s *Store) LeaseDueSync(ctx context.Context, owner string, now time.Time, l
         JOIN inbound_templates t ON t.id=a.template_id
         WHERE ((o.state IN ('pending','retry_wait') AND o.next_attempt_at<=?) OR
                (o.state='leased' AND o.lease_expires_at<=?))
-          AND t.compatibility_state IN ('compatible','unreachable')
+          AND t.compatibility_state <> 'incompatible'
         ORDER BY o.next_attempt_at,o.created_at LIMIT 1`, millis(now), millis(now))
 	operation, err := scanOperation(row)
 	if errors.Is(err, sql.ErrNoRows) {

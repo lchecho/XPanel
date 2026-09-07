@@ -209,7 +209,7 @@ func (s *Store) ArchiveTemplate(ctx context.Context, id domain.ID, revision doma
 
 const templateSelect = `SELECT t.id,t.instance_id,t.name,t.normalized_name,t.public_host,t.listen_address,
     t.port_pool_start,t.port_pool_end,t.method,t.network,t.compatibility_state,COALESCE(t.compatibility_reason,''),
-    t.last_validated_at,t.revision,t.archived_at,t.created_at,t.updated_at
+    t.last_validated_at,t.revision,t.archived_at,t.created_at,t.updated_at,COALESCE(t.validated_boot_epoch,'')
     FROM inbound_templates t`
 
 type scanner interface{ Scan(...any) error }
@@ -223,7 +223,7 @@ func scanTemplate(row scanner) (ports.TemplateRecord, error) {
 	err := row.Scan(&id, &instanceID, &record.Template.Name, &record.Template.NormalizedName, &record.Template.PublicHost,
 		&record.Template.ListenAddress, &poolStart, &poolEnd, &record.Template.Method, &record.Template.Network,
 		&record.Template.Compatibility, &record.Template.CompatibilityReason, &validated, &record.Template.Revision,
-		&archived, &created, &updated)
+		&archived, &created, &updated, &record.Template.ValidatedBootEpoch)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return record, &domain.NotFoundError{Resource: "inbound template"}
@@ -277,9 +277,16 @@ func (s *Store) CompleteTemplateValidation(ctx context.Context, outcome ports.Va
 	applied := false
 	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
 		tx := write.(*txStore)
-		result, err := tx.tx.ExecContext(ctx, `UPDATE inbound_templates SET compatibility_state=?,compatibility_reason=?,last_validated_at=?,updated_at=?
+		// 兼容结论与它所依据的启动纪元一起落库：不兼容/不可达时清空，避免旧世代的证据被误用。
+		validatedEpoch := ""
+		if outcome.State == domain.CompatibilityCompatible {
+			validatedEpoch = outcome.BootEpoch
+		}
+		result, err := tx.tx.ExecContext(ctx, `UPDATE inbound_templates SET compatibility_state=?,compatibility_reason=?,
+            last_validated_at=?,validated_boot_epoch=?,updated_at=?
             WHERE id=? AND revision=? AND archived_at IS NULL`, outcome.State, nullString(outcome.Reason),
-			millis(outcome.ValidatedAt), millis(outcome.ValidatedAt), outcome.TemplateID.String(), outcome.ExpectedRevision)
+			millis(outcome.ValidatedAt), nullString(validatedEpoch), millis(outcome.ValidatedAt),
+			outcome.TemplateID.String(), outcome.ExpectedRevision)
 		if err != nil {
 			return err
 		}
@@ -327,4 +334,43 @@ func (s *Store) RequestRevalidation(ctx context.Context, id domain.ID, expected 
 		return tx.AppendAudit(ctx, audit)
 	})
 	return replay, err
+}
+
+// InvalidateStaleCapabilityEvidence 把「兼容结论所依据的启动纪元与当前不符」的模板原子地置回待验证。
+//
+// 能力门禁验证的是「这个正在运行的 Xray 进程」；节点重启后配置可能已经变了（例如 policy 被去掉），
+// 旧的 compatible 结论对新进程不成立，必须重跑门禁（FR-005/FR-029）。返回被置回的模板标识。
+func (s *Store) InvalidateStaleCapabilityEvidence(ctx context.Context, currentEpoch string, now time.Time) ([]domain.ID, error) {
+	if currentEpoch == "" {
+		return nil, nil // 纪元未知时不做判断，避免把好模板误判为过期
+	}
+	var stale []domain.ID
+	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
+		tx := write.(*txStore)
+		rows, err := tx.tx.QueryContext(ctx, `SELECT id FROM inbound_templates
+            WHERE archived_at IS NULL AND compatibility_state='compatible' AND COALESCE(validated_boot_epoch,'')<>?`, currentEpoch)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			stale = append(stale, domain.ID(id))
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(stale) == 0 {
+			return nil
+		}
+		_, err = tx.tx.ExecContext(ctx, `UPDATE inbound_templates SET compatibility_state='unverified',
+            compatibility_reason=?,last_validated_at=NULL,validated_boot_epoch=NULL,revision=revision+1,updated_at=?
+            WHERE archived_at IS NULL AND compatibility_state='compatible' AND COALESCE(validated_boot_epoch,'')<>?`,
+			"node restarted; capability gate must run again on the current Xray process", millis(now), currentEpoch)
+		return err
+	})
+	return stale, err
 }

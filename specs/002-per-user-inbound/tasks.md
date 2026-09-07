@@ -493,7 +493,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   downlink 计数，避免旧探针数据让后续验证误通过。增加 AES-128/AES-256 × TCP/UDP/tcp_udp 的固定
   Xray 矩阵，以及各组合缺失 policy 和重复验证的回归测试，断言探针入站与统计残留均被清理 per
   FR-005 / FR-040 / T085 (partial)
-- [ ] T089 使模板兼容性证据绑定当前 Xray 启动纪元：在持久化层以版本化迁移记录模板最后通过门禁时的
+- [X] T089 使模板兼容性证据绑定当前 Xray 启动纪元：在持久化层以版本化迁移记录模板最后通过门禁时的
   boot epoch（或等价能力世代），在协调器探测到 Xray 重启、重连或能力世代变化时原子地把既有兼容模板
   置为待验证并排队重跑真实能力门禁；`UserService.CreateUser` 必须只接受已对当前世代验证通过的模板。
   增加应用和固定 Xray 契约：先在完整 policy 下验证成功，再以同一管理端点重启到缺失 policy 的配置，

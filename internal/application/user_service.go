@@ -52,6 +52,15 @@ func (s *UserService) CreateUser(ctx context.Context, input CreateUserInput) (do
 	if template.Template.Compatibility != domain.CompatibilityCompatible || template.Template.ArchivedAt != nil {
 		return "", false, &domain.InvalidStateError{Message: "inbound template is not compatible"}
 	}
+	// 兼容结论必须是对**当前**这个 Xray 进程做出的：节点重启后配置可能已经变了
+	// （例如 policy 被去掉），旧世代的证据不能用来放行新用户（FR-005/FR-029）。
+	instance, err := s.store.ManagedInstance(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	if instance.BootEpoch != "" && template.Template.ValidatedBootEpoch != instance.BootEpoch {
+		return "", false, &domain.InvalidStateError{Message: "inbound template must be revalidated against the running node"}
+	}
 	// 端口分配：未指定时按池内升序取最小空闲端口；指定端口必须在池内且未被占用（FR-007/FR-009）。
 	// 这里的检查是快速失败路径，最终唯一性由 dedicated_inbounds 的部分唯一索引保证（FR-008）。
 	assigned, err := s.store.AssignedPorts(ctx, template.Template.ID)

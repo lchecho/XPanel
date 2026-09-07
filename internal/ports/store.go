@@ -25,6 +25,7 @@ type Store interface {
 	ArchiveTemplate(context.Context, domain.ID, domain.Revision, time.Time) error
 	SetTemplateCompatibility(context.Context, domain.ID, domain.CompatibilityState, string, time.Time) error
 	CompleteTemplateValidation(context.Context, ValidationOutcome) (bool, error)
+	InvalidateStaleCapabilityEvidence(context.Context, string, time.Time) ([]domain.ID, error)
 	RequestRevalidation(context.Context, domain.ID, domain.Revision, domain.DomainCommand, domain.AuditEvent) (bool, error)
 	// 专属入站与端口分配（data-model.md §dedicated_inbounds）
 	AssignedPorts(context.Context, domain.ID) ([]int, error)

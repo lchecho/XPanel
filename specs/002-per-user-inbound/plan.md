@@ -81,7 +81,7 @@ MUST 在 60 秒内完成（SC-006）
 | IV. 状态变更幂等且可恢复 | PASS | PASS | 入站创建/移除纳入既有持久化同步操作与租约 fencing；AddInbound 部分失败的补偿路径已显式建模（R-003） |
 | V. 安全与可观测性默认开启 | PASS | PASS | 回环 gRPC、AEAD 密钥、审计与 slog 脱敏；新增端口与入站标签进入审计，服务端密钥改由面板生成不再经管理员输入 |
 | VI. SSR 与渐进增强优先 | PASS | PASS | 端口分配、入站状态均为服务端渲染字段；无新增脚本依赖 |
-| 技术与运行约束 | PASS | PASS | 零新增依赖；单 writer；RPC 不在写事务内；模式变更走版本化迁移 |
+| 技术与运行约束 | PASS | PASS | 依赖集合未扩大：`sing-shadowsocks`/`sing` 由间接提升为固定版本直接依赖，二者本就在 `xray-core` 依赖图内，`go.sum` 与最终单二进制的代码集合不变（见 Primary Dependencies 的依赖决策更正、Complexity Tracking）；单 writer；RPC 不在写事务内；模式变更走版本化迁移 |
 | 开发与发布质量门禁 | PASS | PASS | 入站生命周期、端口冲突、重启重建、漂移清理均规划真实 Xray 契约测试与故障矩阵覆盖 |
 
 ### Gate II 的处置结果（已完成）

@@ -82,6 +82,15 @@ SC-001、SC-002、SC-010 的人工验收（T076）待执行。**
 | T087 轮换故障契约 | `internal/worker/synchronizer_rotation_test.go` 覆盖 5 个边界：四次变更 RPC 之前各一次崩溃，外加「四次 RPC 全部成功、ConfirmSync 之前崩溃」（用 store 包装器注入），每个边界都断言确实被命中。`tests/contract/xray/rotation_app_test.go` 用真实 service + synchronizer 驱动真实 Xray，在四次变更 RPC **成功之后**的每个边界崩溃、回收租约、重放：每次 RPC 后校验端口在听且入站有客户端，恢复后以真实 SS2022 握手证明新凭证可用、旧凭证被拒，最终只剩原不可变统计身份、过渡身份不进连接信息、上行计数不回退 | 通过 |
 | T083 契约稳定性 | 端口池基址改到临时端口范围之下并逐个绑定校验，采集断言前用 `convergeAll` 等待全部分配收敛；`XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 go test ./tests/contract/xray -count=1` 连续 5 次全绿，随后整条 `make check` `exit=0`，运行后连续三次 `pgrep` 均无残留 Xray 进程 | 通过 |
 
+### Phase 12（2026-09-07）
+
+| 任务 | 证据 | 结果 |
+|---|---|---|
+| T092 精确身份配对 | 新增 `domain.ExpectedIdentityForInbound`（入站标签与期望统计标识由同一分配标识派生因而恒等，集成测试锁定该不变量）；真实适配器与 fake 的最后客户端守卫改为只认「期望身份 + 其轮换过渡身份」这对精确配对；协调器的过渡身份豁免改用 `Store.HasOpenRotation`，只认未完成的 `reason='rotate'` 意图。**同时修正了一处 fake 与真实适配器自 T084 起的静默分叉**——那段守卫从未被 T086/T092 的改动命中，集成测试一直跑在更弱的规则上 | 通过 |
+| T093 探针网络与清理 | 创建探针入站改用 `probe.Network`（此前仍硬编码 tcp_udp）；网络取值缺失在 ValidateTemplate 入口即报 invalid_argument；计数清零改用 `context.WithoutCancel` + 有界超时的独立上下文；`TemplateCapabilities.ProbeStatisticsID` 把一次性探针身份变为可观察点。契约矩阵扩为 AES-128/AES-256 × tcp/udp/tcp_udp 各六组通过路径与六组缺失 policy 路径，每组用 `assertProbeCleanedUp` 逐方向断言端口不再监听、无残留面板入站、两个方向计数为零 | 通过 |
+| T094 能力世代 | 迁移 00008 用单调递增的能力世代取代 boot epoch 字符串比较（并删除 00007 的 validated_boot_epoch）；`Store.AdvanceCapabilityGeneration` 只在 `domain.RestartConfirmed` 成立时推进世代并移动锚点，未确认时不覆盖锚点；容差固定为 `domain.CapabilityGenerationTolerance = 1s` 并说明为何不能用采集/协调间隔；`MarkInstanceHealthy` 与 `CompleteTemplateValidation` 不再覆盖锚点。测试覆盖连续 ±1 秒抖动零失效、真实重启才前进、断线重连不失效、旧库升级被置回待验证、世代未知时拒绝创建 | 通过 |
+| T096 依赖决策一致性 | Constitution Check 的「技术与运行约束」不再写「零新增依赖」，改为与 Primary Dependencies、Complexity Tracking 一致的表述：两个模块由间接提升为固定版本直接依赖，`go.sum` 与最终单二进制代码集合不变。全篇仅剩的「零变化」字样出现在「原计划写的是……」这句历史引述里（即被更正的内容本身）。已复跑 `go mod tidy -diff`（无差异）与 `CGO_ENABLED=0 go build ./cmd/xpanel`（通过） | 通过 |
+
 ### Phase 11（2026-09-07）
 
 | 任务 | 证据 | 结果 |

@@ -544,7 +544,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   登记模板、创建、编辑、禁用、删除各流程的成功次数、总次数、成功率与观察记录。完成前不得把自动化
   accessibility 测试替代人工结论，也不得宣称 Phase 已完成 per
   SC-001 / SC-002 / SC-010 / T076 / T082 / T090 (missing)
-- [ ] T096 消除 T091 后 `plan.md` 内部仍存在的依赖决策矛盾：更新 Constitution Check 的“技术与运行
+- [X] T096 消除 T091 后 `plan.md` 内部仍存在的依赖决策矛盾：更新 Constitution Check 的“技术与运行
   约束”证据，不得继续写“零新增依赖”，而应与 Primary Dependencies 和 Complexity Tracking 一致，明确
   两个模块由间接提升为固定版本直接依赖、`go.sum` 与最终单二进制代码集合不变；全篇检索并清除仍把当前
   决策描述为 `go.mod` 零变化或无新增直接依赖的陈述，再运行 `go mod tidy -diff`、

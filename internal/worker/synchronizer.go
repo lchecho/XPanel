@@ -386,6 +386,9 @@ func (s *Synchronizer) createDedicatedInbound(ctx context.Context, work *ports.S
 					logger.Warn("existing inbound does not carry the expected managed client; removing before retry",
 						logging.FieldErrorKind, kind, logging.FieldResult, "compensating")
 					_, _ = s.adapter.RemoveInbound(ctx, ports.RemoveInboundCommand{OperationID: op.ID, InboundTag: inbound.InboundTag})
+					// 补偿已经改变了世界：那条坏入站不在了，下一次尝试是一次干净的创建，
+					// 因此必须以有界退避再试，而不是就地判永久失败（宪章 IV）。
+					return s.retryLater(ctx, work, kind, summaryOf(err), logger, started)
 				}
 			}
 			if kind == ports.ErrorPortUnavailable {

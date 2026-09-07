@@ -420,3 +420,18 @@ func (a *Adapter) wait(ctx context.Context, operation string) error {
 		return &ports.AdapterError{Kind: ports.ErrorDeadlineExceeded, Operation: operation, Retryable: true, SafeSummary: "fake Xray call cancelled"}
 	}
 }
+
+// InjectClient 往某条既有入站里塞一个客户端，用于模拟「面板入站被注入未知身份」。
+// 统计标识可以在面板命名空间之外——那正是最危险的情形：它同样能用未知密钥经这个端口出网。
+func (a *Adapter) InjectClient(tag, statisticsID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.Users[tag] == nil {
+		a.Users[tag] = make(map[string]ports.RemoteUser)
+	}
+	kind := "external"
+	if domain.IsPanelNamespace(statisticsID) {
+		kind = "managed"
+	}
+	a.Users[tag][statisticsID] = ports.RemoteUser{StatisticsID: statisticsID, Present: true, Kind: kind}
+}

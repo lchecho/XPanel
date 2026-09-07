@@ -88,31 +88,36 @@ func methodFromKey(encoded string) string {
 	return security.MethodAES256
 }
 
-// RemoveUser 移除面板专属入站内的一个客户端；限定在面板命名空间内，且不得移除最后一个客户端。
+// RemoveUser 移除面板专属入站内的一个客户端；限定在面板命名空间内，且不得移除最后一个受管客户端。
 //
-// AI-LOCK：入站的受管客户端数在任何时刻都不得为 0（FR-019）。停止访问要移除整条入站，
-// 轮换要先放过渡客户端；因此「移除会清空入站」一定是竞态或调用错误，必须在发起 RPC 之前拒绝。
-// 这条守卫是该不变量的最终防线：即便租约竞态让一个过期的移除请求漏到这里，它也不会生效。
+// AI-LOCK：入站的**受管**客户端数在任何时刻都不得为 0（FR-019）。判断依据只能是「移除之后是否
+// 还留有面板命名空间内的客户端」——不能用总用户数，否则一条被注入了外部身份的入站会被误判为
+// 「还有人」而放行，结果是入站只剩那个未知身份还在对外服务。期望身份缺失时正确的顺序是
+// 先恢复期望客户端再清理未知身份，因此这里直接拒绝，由协调器重建。
+// 这条守卫与租约无关，是该不变量的最终防线：即便竞态让一个过期的移除请求漏到这里也不会生效。
 func (c *Client) RemoveUser(ctx context.Context, command ports.RemoveUserCommand) (ports.MutationReceipt, error) {
 	if err := guardPanelInbound("remove_user", command.InboundTag); err != nil {
 		return ports.MutationReceipt{}, err
 	}
-	// 精确判定：只有「目标确实在，且它是唯一的客户端」才拒绝；移除本就不存在的客户端不改变数量，
-	// 应当照常返回 user_not_found，让调用方按已收敛处理。
+	// 精确判定：只有「目标确实在，且移除后不再有任何受管客户端」才拒绝。
+	// 移除本就不存在的客户端不改变任何数量，照常返回 user_not_found 让调用方按已收敛处理。
 	listCtx, listCancel := c.deadline(ctx)
 	list, listErr := c.handler.GetInboundUsers(listCtx, &handlercommand.GetInboundUserRequest{Tag: command.InboundTag})
 	listCancel()
 	if listErr != nil {
 		return ports.MutationReceipt{}, mapError("remove_user", listErr)
 	}
-	present := false
+	present, managedAfter := false, 0
 	for _, user := range list.GetUsers() {
 		if user.GetEmail() == command.StatisticsID {
 			present = true
-			break
+			continue
+		}
+		if domain.IsPanelNamespace(user.GetEmail()) {
+			managedAfter++
 		}
 	}
-	if present && len(list.GetUsers()) <= 1 {
+	if present && managedAfter == 0 {
 		return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorLastManagedClient, Operation: "remove_user",
 			Retryable: false, SafeSummary: "refusing to remove the last managed client of an inbound"}
 	}

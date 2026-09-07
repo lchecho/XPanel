@@ -466,3 +466,47 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   并展示安全中文原因，不能仅显示事后 `StatsSuspect` 提示。为启用/缺失 policy 的固定 Xray 配置分别增加
   真实契约和应用回归测试，并更正 `research.md`、`contracts/config.md`、
   `validation-report.md` 中与最终可验证语义不一致或提前宣称通过的内容 per FR-005 / T079 (contradicts)
+
+---
+
+## Phase 11: Convergence
+
+- [X] T086 **CRITICAL** 修正面板专属入站内未知客户端的对账与最后客户端防线：
+  `internal/application/reconciliation_service.go` 必须把面板命名空间入站中除该分配期望身份之外的所有
+  客户端都视为漂移，不得因其统计标识没有 `xpanel-` 前缀而跳过；轮换过渡身份仅在对应开放轮换意图存在
+  时临时豁免，意图收敛后必须清理。`internal/adapter/xray/handler.go` 的 `RemoveUser` 守卫必须按移除后
+  是否仍有有效受管客户端判断，不能用包含外部/未知身份的总用户数放行；当期望身份缺失时，应先恢复期望
+  客户端再清理未知身份，任何顺序都不得制造空受管客户端入站。补充 fake、集成及固定 Xray 契约，覆盖
+  面板入站被注入非命名空间身份、只剩未知身份、轮换过渡中对账和重复清理，断言最终恰好一个期望身份、
+  未知凭证失效且其他入站不受影响 per Constitution I/II / FR-019 / FR-029 / T061 (contradicts)
+- [ ] T087 完成 T084 尚缺的真实轮换故障契约：修正
+  `internal/worker/synchronizer_rotation_test.go` 的边界循环，使最后一次 `RemoveUser(过渡身份)` 成功后、
+  `ConfirmSync` 之前也实际触发崩溃；在 `tests/contract/xray/` 用真实应用 service + synchronizer 而非手工
+  Adapter 四步调用，分别在四次变更 RPC 成功后的每个边界中断、回收租约并重放。测试必须用轮换前后的
+  完整 SS2022 连接信息发起新握手，证明全程端口监听、恢复后旧凭证拒绝、新凭证成功、最终只有原不可变
+  统计身份、过渡身份不进入连接信息或计量且历史流量连续，再据此更正 `validation-report.md` 的 T084 证据
+  per T084 / US3/AC3 / FR-017 / FR-019 (partial)
+- [ ] T088 修正统计能力探针的方法、网络与计数隔离：把模板的 `Method` 和 `Network` 从
+  `ports.TemplateProbe` 一直传到 `internal/adapter/xray/probe.go`，禁止
+  `exchangeThroughInbound` 硬编码 `2022-blake3-aes-256-gcm`；按模板网络发送 TCP、UDP 或两者，满足
+  T085 的 TCP/UDP 探针要求。每次验证使用不可碰撞的探针统计身份，并在结束时重置/清理其 uplink、
+  downlink 计数，避免旧探针数据让后续验证误通过。增加 AES-128/AES-256 × TCP/UDP/tcp_udp 的固定
+  Xray 矩阵，以及各组合缺失 policy 和重复验证的回归测试，断言探针入站与统计残留均被清理 per
+  FR-005 / FR-040 / T085 (partial)
+- [ ] T089 使模板兼容性证据绑定当前 Xray 启动纪元：在持久化层以版本化迁移记录模板最后通过门禁时的
+  boot epoch（或等价能力世代），在协调器探测到 Xray 重启、重连或能力世代变化时原子地把既有兼容模板
+  置为待验证并排队重跑真实能力门禁；`UserService.CreateUser` 必须只接受已对当前世代验证通过的模板。
+  增加应用和固定 Xray 契约：先在完整 policy 下验证成功，再以同一管理端点重启到缺失 policy 的配置，
+  确认旧 compatible 缓存立即失效、新建用户被拒绝，恢复 policy 并重新验证后才允许创建 per
+  FR-005 / FR-029 (partial)
+- [ ] T090 完成并关闭已有 T076/T082：严格按 `specs/002-per-user-inbound/quickstart.md` §3 执行人工
+  验收，在 `validation-report.md` 回填 SC-001 首次交付实测时间、登录/搜索/创建/编辑/状态切换各至少
+  20 次的 SC-002 P95、SC-010 纯键盘与 360×640/390×844 两个视口的逐流程成功率和观察记录；不得以
+  自动化结构检查替代人工结果，也不得在仍为“待执行”时宣称 Phase 完成 per
+  SC-001 / SC-002 / SC-010 / T076 / T082 (missing)
+- [ ] T091 解决统计探针实现与 `plan.md` “本功能不新增任何依赖、go.mod/go.sum 零变化”决策的冲突：
+  优先使用已批准的 Xray Adapter 依赖面实现探针并移除 `github.com/sagernet/sing`、
+  `github.com/sagernet/sing-shadowsocks` 的新增直接依赖；若确实无法替代，则必须在 `plan.md` 的 Primary
+  Dependencies、Constitution Check 与 Complexity Tracking 中显式记录这两个固定版本依赖的必要性、
+  安全边界和单二进制影响。执行 `go mod tidy -diff`、`CGO_ENABLED=0 go build ./cmd/xpanel` 与完整发布
+  门禁并更新验证证据 per plan: Primary Dependencies / plan: Constraints (contradicts)

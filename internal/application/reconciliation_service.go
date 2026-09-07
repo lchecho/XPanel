@@ -145,14 +145,28 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 				s.markDegraded(ctx, err)
 				return summary, err
 			}
+			// 专属入站里只应有该分配的期望身份。除它之外的任何客户端都是漂移——
+			// 包括没有 xpanel- 前缀的外部身份：它们同样能用未知密钥经这个端口出网（宪章 I/II、FR-019）。
+			// 唯一豁免是轮换过渡身份，且仅当该分配确实有一条未完成的轮换意图时；意图收敛后它必须被清理。
+			rotating := false
+			if err := func() error {
+				open, err := s.store.HasOpenOperation(ctx, record.Allocation.ID)
+				rotating = open
+				return err
+			}(); err != nil {
+				return summary, err
+			}
 			expected := false
 			for _, user := range remote {
-				if !user.Present || user.Kind != "managed" {
+				if !user.Present {
 					continue
 				}
 				if user.StatisticsID == record.Identity.StatisticsID {
 					expected = true
 					continue
+				}
+				if rotating && user.StatisticsID == domain.RotationSafetyID(record.Identity.StatisticsID) {
+					continue // 轮换进行中的有界过渡身份，由同步器在收敛时清理
 				}
 				created, err := s.store.EnqueueDriftRemoval(ctx, template.Template.ID, tag, "identity", user.StatisticsID, now)
 				if err != nil {
@@ -161,8 +175,8 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 				if created {
 					summary.RemovedUnknown++
 					enqueued = true
-					s.logger.Info("unknown namespace identity queued for removal", logging.FieldNodeID, template.Template.InstanceID.String(),
-						"template_id", template.Template.ID.String(), logging.FieldResult, "queued")
+					s.logger.Info("unknown identity in a panel inbound queued for removal", logging.FieldNodeID, template.Template.InstanceID.String(),
+						"template_id", template.Template.ID.String(), logging.FieldInboundTag, tag, logging.FieldResult, "queued")
 				}
 			}
 			actual = expected

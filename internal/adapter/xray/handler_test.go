@@ -3,6 +3,7 @@ package xray
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ import (
 )
 
 type handlerStub struct {
+	users []*protocol.User
 	handlercommand.UnimplementedHandlerServiceServer
 	mu       sync.Mutex
 	last     *handlercommand.AlterInboundRequest
@@ -51,6 +53,9 @@ func (s *handlerStub) GetInboundUsersCount(context.Context, *handlercommand.GetI
 }
 
 func (s *handlerStub) GetInboundUsers(context.Context, *handlercommand.GetInboundUserRequest) (*handlercommand.GetInboundUserResponse, error) {
+	if s.users != nil {
+		return &handlercommand.GetInboundUserResponse{Users: s.users}, nil
+	}
 	return &handlercommand.GetInboundUserResponse{Users: []*protocol.User{{Email: "bootstrap"}, {Email: "xpanel-managed"}, {Email: "foreign"}}}, nil
 }
 
@@ -151,6 +156,8 @@ func TestHandlerContractEncodingAndCapabilities(t *testing.T) {
 	if !ok || account.GetKey() != key {
 		t.Fatalf("account type/value = %T", accountMessage)
 	}
+	// 入站里另有一个受管客户端（轮换过渡身份）时，移除期望身份是允许的。
+	handler.users = []*protocol.User{{Email: "bootstrap"}, {Email: "xpanel-managed"}, {Email: "xpanel-managed-rotate"}, {Email: "foreign"}}
 	if _, err := client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "xpanel-managed-inbound", StatisticsID: "xpanel-managed"}); err != nil {
 		t.Fatal(err)
 	}
@@ -159,6 +166,22 @@ func TestHandlerContractEncodingAndCapabilities(t *testing.T) {
 	if err != nil || !ok || remove.GetEmail() != "xpanel-managed" {
 		t.Fatalf("remove operation = %#v, %v", instance, err)
 	}
+
+	// 外部身份不算「还有人」：入站里只剩未知身份时，移除唯一的受管客户端必须被拒绝，
+	// 否则这条入站会只剩未知凭证还在对外服务（T086 / FR-019）。
+	handler.users = []*protocol.User{{Email: "bootstrap"}, {Email: "xpanel-managed"}, {Email: "foreign"}}
+	_, lastErr := client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "xpanel-managed-inbound",
+		StatisticsID: "xpanel-managed"})
+	var lastAdapterErr *ports.AdapterError
+	if !errors.As(lastErr, &lastAdapterErr) || lastAdapterErr.Kind != ports.ErrorLastManagedClient {
+		t.Fatalf("removing the only managed client alongside foreign identities = %v", lastErr)
+	}
+	// 反过来，清理未知身份是允许的——期望身份还在。
+	if _, err := client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "xpanel-managed-inbound",
+		StatisticsID: "foreign"}); err != nil {
+		t.Fatalf("removing an unknown identity while the managed client is present: %v", err)
+	}
+	handler.users = nil
 
 	// 命名空间之外的入站对面板只读：变更在到达 Xray 之前就被拒绝。
 	before := handler.last

@@ -111,3 +111,64 @@ func TestLiveInboundsAreIsolatedFromEachOther(t *testing.T) {
 		t.Fatalf("second inbound users = %#v, %v", users, err)
 	}
 }
+
+// T086 / 契约门禁 10：面板专属入站里被注入未知身份时，适配器只允许在「期望身份仍在」的前提下
+// 清理它；反过来，当入站里只剩未知身份时，移除唯一的受管客户端必须被拒绝——
+// 否则这条入站会只剩未知凭证还在对外服务。
+func TestLiveUnknownIdentityInsideAPanelInboundCanBeCleanedSafely(t *testing.T) {
+	runtime := startRuntime(t)
+	tag, port := panelTag("intruder"), freePort(t)
+	createInbound(t, runtime, tag, port, testKey('u'))
+	inbound := ports.RuntimeInbound{InboundTag: tag, Method: security.MethodAES256}
+	expected := panelTag("intruder-client")
+
+	// 注入一个命名空间之外的身份：Xray 接受它，它能用自己的密钥经这个端口出网。
+	intruder := ports.AddUserCommand{InboundTag: tag, StatisticsID: "intruder-without-prefix", CredentialVersion: 1,
+		UserKey: security.NewRedactedString(testKey('i'))}
+	if _, err := runtime.client.AddUser(context.Background(), intruder); err != nil {
+		t.Fatalf("injecting a foreign identity: %v\n%s", err, runtime.diagnostics())
+	}
+	users, err := runtime.client.ListUsers(context.Background(), inbound)
+	if err != nil || len(users) != 2 {
+		t.Fatalf("users after injection = %#v, %v", users, err)
+	}
+	// 期望身份还在，因此清理未知身份是允许的。
+	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+		StatisticsID: intruder.StatisticsID}); err != nil {
+		t.Fatalf("cleaning the foreign identity: %v", err)
+	}
+	if users, err = runtime.client.ListUsers(context.Background(), inbound); err != nil || len(users) != 1 ||
+		users[0].StatisticsID != expected {
+		t.Fatalf("users after cleanup = %#v, %v", users, err)
+	}
+	if !listening(port) {
+		t.Fatalf("port %d stopped listening during cleanup", port)
+	}
+
+	// 再注入一次，然后尝试移除期望身份：外部身份不算「还有受管客户端」，必须被拒绝。
+	// 也就是说面板根本无法把入站变成「只剩未知身份」的状态——这是守卫的价值所在。
+	if _, err := runtime.client.AddUser(context.Background(), intruder); err != nil {
+		t.Fatal(err)
+	}
+	_, refused := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+		StatisticsID: expected})
+	var adapterErr *ports.AdapterError
+	if !errors.As(refused, &adapterErr) || adapterErr.Kind != ports.ErrorLastManagedClient {
+		t.Fatalf("removing the only managed client while a foreign one remains = %v (want last_managed_client)", refused)
+	}
+	if users, err = runtime.client.ListUsers(context.Background(), inbound); err != nil || len(users) != 2 {
+		t.Fatalf("the refused removal changed the inbound: %#v, %v", users, err)
+	}
+	// 清理未知身份后回到稳态：恰好一个受管客户端。
+	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+		StatisticsID: intruder.StatisticsID}); err != nil {
+		t.Fatal(err)
+	}
+	if users, err = runtime.client.ListUsers(context.Background(), inbound); err != nil || len(users) != 1 ||
+		users[0].StatisticsID != expected {
+		t.Fatalf("final users = %#v, %v", users, err)
+	}
+	if !listening(port) || !listening(runtime.operatorPort) {
+		t.Fatal("cleanup disturbed a listening port")
+	}
+}

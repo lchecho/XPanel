@@ -64,6 +64,10 @@ const (
 	defaultLeaseDuration  = 30 * time.Second
 	defaultPollInterval   = time.Second
 	defaultMaxRetryPeriod = 30 * time.Second
+	// defaultRPCTimeout 与 config 默认 rpc_timeout 一致；所有构造路径都必须有明确的 RPC 超时以推导租约下限。
+	defaultRPCTimeout = 5 * time.Second
+	// leaseRPCMultiple 保证租约覆盖单次 RPC 及其读后写：lease ≥ 3 × RPC 超时。
+	leaseRPCMultiple = 3
 )
 
 func NewSynchronizer(store ports.Store, adapter ports.Adapter, keyring *security.Keyring, clock ports.Clock,
@@ -77,8 +81,11 @@ func NewSynchronizer(store ports.Store, adapter ports.Adapter, keyring *security
 	if options.LeaseDuration <= 0 {
 		options.LeaseDuration = defaultLeaseDuration
 	}
-	if options.RPCTimeout > 0 && options.LeaseDuration < 3*options.RPCTimeout {
-		options.LeaseDuration = 3 * options.RPCTimeout
+	if options.RPCTimeout <= 0 {
+		options.RPCTimeout = defaultRPCTimeout
+	}
+	if options.LeaseDuration < leaseRPCMultiple*options.RPCTimeout {
+		options.LeaseDuration = leaseRPCMultiple * options.RPCTimeout
 	}
 	if options.PollInterval <= 0 {
 		options.PollInterval = defaultPollInterval
@@ -166,6 +173,16 @@ func (s *Synchronizer) handleDriftRemoval(ctx context.Context, removal *ports.Dr
 	profile := ports.RuntimeProfile{ID: removal.ProfileID, InboundTag: removal.InboundTag}
 	if held, err := s.fenceDrift(ctx, removal, logger); err != nil || !held {
 		return err
+	}
+	if removal.Reclaimed {
+		// 回收过期租约：前一持有者的 RemoveUser 可能已经生效（RPC 成功后崩溃）。先读原入站的实际身份，
+		// 已不存在则直接完成，不再重复调用外部移除（FR-021）。
+		present, observeErr := s.observe(ctx, profile, removal.StatisticsID)
+		if observeErr == nil && !present {
+			logger.Info("unknown namespace identity already absent after lease reclaim", logging.FieldResult, "succeeded")
+			return s.store.CompleteDriftRemoval(ctx, removal.ID, s.owner, now,
+				s.driftAudit(removal, domain.AuditSucceeded, "unknown identity "+removal.StatisticsID+" confirmed absent after lease reclaim", now))
+		}
 	}
 	_, err := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: removal.ID, ProfileTag: removal.InboundTag, StatisticsID: removal.StatisticsID})
 	if err != nil {

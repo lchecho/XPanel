@@ -369,6 +369,8 @@ type DriftRemoval struct {
 	State         domain.SyncState
 	AttemptCount  int
 	NextAttemptAt time.Time
+	// Reclaimed 表示本次领取回收了另一个 worker 的过期租约：其 RemoveUser 可能已生效，执行前必须先读实际身份。
+	Reclaimed bool
 }
 
 // ValidationOutcome 是一次 profile 验证的完整结果，按 ExpectedRevision 条件在一个事务中提交（FR-021）。

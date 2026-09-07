@@ -80,7 +80,7 @@ func newSyncFixture(t *testing.T) *syncFixture {
 	}
 	node := &sync.Mutex{}
 	synchronizer := NewSynchronizer(store, adapter, keyring, clock, nil, node, SynchronizerOptions{
-		MaxRetryInterval: 30 * time.Second, LeaseDuration: 10 * time.Second, Random: func(n int64) int64 { return n - 1 }})
+		MaxRetryInterval: 30 * time.Second, LeaseDuration: 10 * time.Second, RPCTimeout: target.RPCTimeout, Random: func(n int64) int64 { return n - 1 }})
 	users := application.NewUserService(store, keyring, clock, synchronizer.Wake)
 	return &syncFixture{store: store, keyring: keyring, clock: clock, adapter: adapter, sync: synchronizer, users: users,
 		profile: profileID, tag: "managed"}

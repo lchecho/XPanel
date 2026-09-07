@@ -57,7 +57,7 @@ func TestTwoWorkersOnOneDatabaseDoNotDoubleApply(t *testing.T) {
 	ctx := context.Background()
 	record := f.createUser(t, "Shared")
 	second := NewSynchronizer(f.store, f.adapter, f.keyring, f.clock, nil, f.sync.node, SynchronizerOptions{Owner: "second",
-		MaxRetryInterval: 30 * time.Second, LeaseDuration: 10 * time.Second, Random: func(n int64) int64 { return n - 1 }})
+		MaxRetryInterval: 30 * time.Second, LeaseDuration: 10 * time.Second, RPCTimeout: time.Second, Random: func(n int64) int64 { return n - 1 }})
 	var wg sync.WaitGroup
 	results := make([]int, 2)
 	for i, worker := range []*Synchronizer{f.sync, second} {

@@ -144,7 +144,7 @@ func NewWith(t *testing.T, options Options) *App {
 		}
 	})
 	app.Sync = worker.NewSynchronizer(store, adapter, keyring, clock, nil, node, worker.SynchronizerOptions{
-		MaxRetryInterval: 30 * time.Second, LeaseDuration: 10 * time.Second, Random: func(n int64) int64 { return n - 1 }})
+		MaxRetryInterval: 30 * time.Second, LeaseDuration: 10 * time.Second, RPCTimeout: target.RPCTimeout, Random: func(n int64) int64 { return n - 1 }})
 	app.Users = application.NewUserService(store, keyring, clock, app.Sync.Wake)
 	app.Connections = application.NewConnectionService(store, keyring)
 	app.Settings = application.NewSettingsService(store).WithClock(clock)

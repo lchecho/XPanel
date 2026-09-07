@@ -34,7 +34,7 @@ func (s *Store) LeaseDueDriftRemoval(ctx context.Context, owner string, now time
 	}
 	defer tx.Rollback()
 	var removal ports.DriftRemoval
-	var id, profileID string
+	var id, profileID, previousState string
 	var next int64
 	var previousOwner sql.NullString
 	err = tx.QueryRowContext(ctx, `SELECT d.id,d.profile_id,p.inbound_tag,d.statistics_id,d.state,d.attempt_count,d.next_attempt_at,d.lease_owner
@@ -42,7 +42,7 @@ func (s *Store) LeaseDueDriftRemoval(ctx context.Context, owner string, now time
         WHERE ((d.state IN ('pending','retry_wait') AND d.next_attempt_at<=?) OR (d.state='leased' AND d.lease_expires_at<=?))
           AND p.compatibility_state IN ('compatible','unreachable')
         ORDER BY d.next_attempt_at,d.created_at LIMIT 1`, millis(now), millis(now)).Scan(
-		&id, &profileID, &removal.InboundTag, &removal.StatisticsID, &removal.State, &removal.AttemptCount, &next, &previousOwner)
+		&id, &profileID, &removal.InboundTag, &removal.StatisticsID, &previousState, &removal.AttemptCount, &next, &previousOwner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -63,6 +63,7 @@ func (s *Store) LeaseDueDriftRemoval(ctx context.Context, owner string, now time
 		return nil, err
 	}
 	removal.ID, removal.ProfileID, removal.NextAttemptAt, removal.State = domain.ID(id), domain.ID(profileID), fromMillis(next), domain.SyncLeased
+	removal.Reclaimed = previousState == string(domain.SyncLeased)
 	return &removal, nil
 }
 

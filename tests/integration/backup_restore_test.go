@@ -62,7 +62,7 @@ func TestBackupRestoreAndReconcileAfterRestore(t *testing.T) {
 	app.Adapter.Restart()
 	app.Adapter.Users["managed"]["bootstrap"] = ports.RemoteUser{StatisticsID: "bootstrap", Present: true, Kind: "bootstrap"}
 	node := &sync.Mutex{}
-	synchronizer := worker.NewSynchronizer(store, app.Adapter, app.Keyring, app.Clock, nil, node, worker.SynchronizerOptions{Random: func(n int64) int64 { return n - 1 }})
+	synchronizer := worker.NewSynchronizer(store, app.Adapter, app.Keyring, app.Clock, nil, node, worker.SynchronizerOptions{RPCTimeout: app.Target.RPCTimeout, Random: func(n int64) int64 { return n - 1 }})
 	reconcile := application.NewReconciliationService(store, app.Adapter, app.Clock, app.Target, node, 15*time.Second, synchronizer.Wake, nil, nil)
 	summary, err := reconcile.ReconcileOnce(context.Background())
 	if err != nil || summary.Drift != 1 {

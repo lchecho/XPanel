@@ -36,7 +36,7 @@ func newMatrixApp(t *testing.T) *matrixApp {
 	fault := newFaultStore(app.Store)
 	m := &matrixApp{App: app, fault: fault, limit: 1 << 20}
 	m.sync = worker.NewSynchronizer(fault, app.Adapter, app.Keyring, app.Clock, nil, app.Node, worker.SynchronizerOptions{
-		MaxRetryInterval: 30 * time.Second, LeaseDuration: 10 * time.Second, Random: func(n int64) int64 { return n - 1 }})
+		MaxRetryInterval: 30 * time.Second, LeaseDuration: 10 * time.Second, RPCTimeout: app.Target.RPCTimeout, Random: func(n int64) int64 { return n - 1 }})
 	m.users = application.NewUserService(fault, app.Keyring, app.Clock, m.sync.Wake)
 	m.traffic = application.NewTrafficService(fault, app.Adapter, app.Clock, app.Target, 5*time.Second, m.sync.Wake, nil)
 	m.quota = application.NewQuotaService(fault, app.Clock, m.sync.Wake, nil)

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -118,7 +119,24 @@ func TestConfirmRequiresLeaseOwnership(t *testing.T) {
 	}
 }
 
-// T143：漂移移除被第二个 worker 回收后，旧 worker 的结果不得重复执行或重复审计。
+// crashingStore 模拟“外部移除 RPC 已成功但完成写入前崩溃”：CompleteDriftRemoval 第一次调用返回错误。
+type crashingStore struct {
+	ports.Store
+	crashed bool
+}
+
+func (c *crashingStore) CompleteDriftRemoval(ctx context.Context, id domain.ID, owner string, now time.Time, audit domain.AuditEvent) error {
+	if !c.crashed {
+		c.crashed = true
+		return errCrash
+	}
+	return c.Store.CompleteDriftRemoval(ctx, id, owner, now, audit)
+}
+
+var errCrash = errors.New("simulated crash before completion")
+
+// T143/T151：外部移除已生效但完成写入前崩溃，租约到期后另一 worker 回收重放：
+// 回收者先读原入站的实际身份，已不存在则直接完成——外部移除、完成状态与审计各恰好一次。
 func TestReclaimedDriftRemovalIsNotExecutedTwice(t *testing.T) {
 	f := newSyncFixture(t)
 	ctx := context.Background()
@@ -130,18 +148,27 @@ func TestReclaimedDriftRemovalIsNotExecutedTwice(t *testing.T) {
 	if _, err := f.store.EnqueueDriftRemoval(ctx, f.profile, unknown, f.clock.Now()); err != nil {
 		t.Fatal(err)
 	}
-	second := secondWorker(f)
-	f.adapter.OnRemoveUser = func() {
-		f.clock.Advance(11 * time.Second)
-		if processed, err := second.Drain(ctx); err != nil || processed != 1 {
-			t.Errorf("second worker drain = %d, %v", processed, err)
-		}
-	}
-	if _, err := f.sync.Drain(ctx); err != nil {
-		t.Fatal(err)
+	crashing := NewSynchronizer(&crashingStore{Store: f.store}, f.adapter, f.keyring, f.clock, nil, &sync.Mutex{}, SynchronizerOptions{Owner: "crashing",
+		MaxRetryInterval: 30 * time.Second, LeaseDuration: 10 * time.Second, RPCTimeout: time.Second, Random: func(n int64) int64 { return n - 1 }})
+	if _, err := crashing.Drain(ctx); !errors.Is(err, errCrash) {
+		t.Fatalf("crash drain err = %v", err)
 	}
 	if _, present := f.adapter.Users[f.tag][unknown]; present {
-		t.Fatal("unknown identity still present")
+		t.Fatal("external removal did not take effect before the crash")
+	}
+	if state, _ := f.driftState(t); state != string(domain.SyncLeased) {
+		t.Fatalf("removal state after crash = %s, want leased (lease still held by the crashed worker)", state)
+	}
+	// 未到期前不可回收；到期后第二个 worker 回收并读后完成，不再调用 RemoveUser。
+	if processed, _ := secondWorker(f).Drain(ctx); processed != 0 {
+		t.Fatal("live lease reclaimed early")
+	}
+	f.clock.Advance(11 * time.Second)
+	if processed, err := secondWorker(f).Drain(ctx); err != nil || processed != 1 {
+		t.Fatalf("reclaim drain = %d, %v", processed, err)
+	}
+	if f.calls("remove_user") != 1 {
+		t.Fatalf("remove_user calls = %d, want exactly 1 (reclaim must read before removing)", f.calls("remove_user"))
 	}
 	var removals, succeeded int
 	_ = f.store.DB().Read.QueryRow(`SELECT count(*),SUM(state='succeeded') FROM drift_removals`).Scan(&removals, &succeeded)
@@ -153,7 +180,21 @@ func TestReclaimedDriftRemovalIsNotExecutedTwice(t *testing.T) {
 	if audits != 1 {
 		t.Fatalf("drift removal audited %d times, want 1", audits)
 	}
-	if f.calls("remove_user") != 2 {
-		t.Fatalf("remove_user calls = %d (one in-flight from A, one from B)", f.calls("remove_user"))
+	// 再次 Drain 没有可领取的工作，也不会再调用 Xray。
+	if processed, _ := f.sync.Drain(ctx); processed != 0 || f.calls("remove_user") != 1 {
+		t.Fatalf("replay drain processed=%d remove_user=%d", processed, f.calls("remove_user"))
+	}
+}
+
+// T151：所有构造路径都有明确 RPC 超时，租约至少覆盖 3 次 RPC。
+func TestSynchronizerLeaseCoversRPCTimeout(t *testing.T) {
+	f := newSyncFixture(t)
+	implicit := NewSynchronizer(f.store, f.adapter, f.keyring, f.clock, nil, &sync.Mutex{}, SynchronizerOptions{LeaseDuration: time.Second})
+	if implicit.lease < 3*defaultRPCTimeout {
+		t.Fatalf("lease %s does not cover the default RPC timeout", implicit.lease)
+	}
+	explicit := NewSynchronizer(f.store, f.adapter, f.keyring, f.clock, nil, &sync.Mutex{}, SynchronizerOptions{LeaseDuration: time.Second, RPCTimeout: 2 * time.Second})
+	if explicit.lease != 6*time.Second {
+		t.Fatalf("lease = %s, want 6s (3 × RPC timeout)", explicit.lease)
 	}
 }

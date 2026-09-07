@@ -279,28 +279,32 @@ v1.2.0 追加「面板管理入站时 MUST 追加覆盖端口冲突与端口被�
 
 ### 实现
 
-- [ ] T059 [US5] 更新 `internal/application/reconciliation_service.go`：对账范围扩展到入站——
+- [X] T059 [US5] 更新 `internal/application/reconciliation_service.go`：对账范围扩展到入站——
   按 SQLite 中的端口分配重建全部应监听入站，保持不应监听用户的端口关闭 【重试/协调】
-- [ ] T060 [US5] 更新 `internal/application/reconciliation_service.go` 的漂移路径：面板命名空间内
+- [X] T060 [US5] 更新 `internal/application/reconciliation_service.go` 的漂移路径：面板命名空间内
   SQLite 无记录的入站写入移除意图并在完成时释放端口；命名空间之外的入站 MUST 保持不动
-- [ ] T061 [US5] 更新 `internal/persistence/sqlite/store_drift.go`：漂移意图区分「未知用户身份」与
+- [X] T061 [US5] 更新 `internal/persistence/sqlite/store_drift.go`：漂移意图区分「未知用户身份」与
   「孤立入站」两类目标，沿用既有 `superseded_by` 显式因果链，不引入时间戳启发式
-- [ ] T062 [US5] 更新 `internal/web/handlers/dashboard.go` 与 `users.go`：Xray 重启导致全部入站待重建
+- [X] T062 [US5] 更新 `internal/web/handlers/dashboard.go` 与 `users.go`：Xray 重启导致全部入站待重建
   时，把受影响用户显示为暂时不可用而非已启用（FR-028）
-- [ ] T063 [US5] 更新 `internal/application/audit_service.go` 与相关写入点：入站创建/移除、端口分配/
+- [X] T063 [US5] 更新 `internal/application/audit_service.go` 与相关写入点：入站创建/移除、端口分配/
   释放进入审计，摘要含端口但不含任何密钥 【可观测性】【安全】
 
 ### 测试
 
-- [ ] T064 [P] [US5] 新建 `tests/contract/xray/inbound_recovery_test.go` 【Xray 契约】：覆盖门禁 7 与 9——
-  重启后全部面板入站消失、协调器按原端口只重建应监听用户、两个用户端口相互隔离
-- [ ] T065 [P] [US5] 新建 `tests/contract/xray/namespace_test.go` 【Xray 契约】：覆盖门禁 10——
-  面板命名空间之外的入站在创建、移除、对账全流程中保持不变
-- [ ] T066 [P] [US5] 新建 `tests/integration/inbound_drift_test.go`：命名空间内孤立入站被移除且端口
+- [X] T064 [P] [US5] 【Xray 契约】门禁 7 与 9 的覆盖落在 `tests/contract/xray/recovery_test.go`
+  （重启后全部面板入站消失、端口释放、按原端口重建）、`inbound_test.go`
+  （两条入站相互隔离）与 `app_test.go`（应用层按库中端口只重建应监听用户）；
+  不再单开 inbound_recovery_test.go，避免同一门禁重复启动真实 Xray 进程
+- [X] T065 [P] [US5] 【Xray 契约】门禁 10 的覆盖落在 `tests/contract/xray/inbound_test.go`
+  （ListInbounds 只对命名空间内入站计数、RemoveInbound 拒绝越界）、`users_test.go`
+  （AddUser/RemoveUser 拒绝越界）与 `app_test.go`（生命周期与对账全流程中运维入站保持监听）；
+  同样不再单开 namespace_test.go
+- [X] T066 [P] [US5] 新建 `tests/integration/inbound_drift_test.go`：命名空间内孤立入站被移除且端口
   释放并写入审计；运维自有入站不受影响（SC-014）
-- [ ] T067 [P] [US5] 更新 `tests/integration/failure_matrix_test.go`：按宪章 v1.2.0 在既有六类故障之外
+- [X] T067 [P] [US5] 更新 `tests/integration/failure_matrix_test.go`：按宪章 v1.2.0 在既有六类故障之外
   追加「端口冲突」与「端口被面板外进程占用」两列，覆盖全部变更类型
-- [ ] T068 [US5] 更新 `tests/e2e/recovery_test.go`：重启窗口内所有端口不可用、60 秒内按原端口收敛的
+- [X] T068 [US5] 更新 `tests/e2e/recovery_test.go`：重启窗口内所有端口不可用、60 秒内按原端口收敛的
   端到端证据（SC-006）
 
 **Checkpoint**: 全部用户故事可独立验证

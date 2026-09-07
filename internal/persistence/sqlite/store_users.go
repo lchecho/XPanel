@@ -88,7 +88,10 @@ func (s *Store) CreateUser(ctx context.Context, record ports.UserCreateRecord) (
 		if err := tx.SaveCommand(ctx, record.Command); err != nil {
 			return err
 		}
-		return tx.AppendAudit(ctx, record.Audit)
+		if err := tx.AppendAudit(ctx, record.Audit); err != nil {
+			return err
+		}
+		return tx.AppendAudit(ctx, record.PortAudit)
 	})
 	return record.User.ID, replay, err
 }

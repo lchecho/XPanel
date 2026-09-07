@@ -44,8 +44,10 @@ type DashboardSummary struct {
 	PortsAssigned  int
 	PortsRemaining int
 	PortsOutside   int
-	Failed         []ports.FailedOperationRecord
-	GeneratedAt    time.Time
+	// PortsRebuilding 是「应当监听但当前没在监听」的端口数：节点重启后重建期间会同时变大（FR-028）。
+	PortsRebuilding int
+	Failed          []ports.FailedOperationRecord
+	GeneratedAt     time.Time
 }
 
 func (s *DashboardService) Summary(ctx context.Context) (DashboardSummary, error) {
@@ -86,6 +88,10 @@ func (s *DashboardService) Summary(ctx context.Context) (DashboardSummary, error
 			if now.Sub(record.Allocation.UpdatedAt) > 3*s.reconcile {
 				summary.StuckSync++
 			}
+		}
+		if record.Allocation.DesiredPresent(record.User) &&
+			!(record.Inbound.Inbound.ObservedPresent != nil && *record.Inbound.Inbound.ObservedPresent) {
+			summary.PortsRebuilding++
 		}
 		summary.AccountedBytes += record.Cycle.AccountedUplinkBytes + record.Cycle.AccountedDownlinkBytes
 	}

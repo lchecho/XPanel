@@ -28,7 +28,9 @@
   <dt>已分配</dt><dd>{{.Data.PortsAssigned}}</dd>
   <dt>剩余可分配</dt><dd>{{.Data.PortsRemaining}}{{if eq .Data.PortsRemaining 0}} <span class="badge error">端口池已耗尽</span>{{end}}</dd>
   {{if .Data.PortsOutside}}<dt>池外分配</dt><dd>{{.Data.PortsOutside}} <span class="badge">端口池缩小后仍在使用</span></dd>{{end}}
-</dl>{{end}}
+  {{if .Data.PortsRebuilding}}<dt>待重建</dt><dd>{{.Data.PortsRebuilding}} <span class="badge">端口暂时不可用</span></dd>{{end}}
+</dl>
+{{if .Data.PortsRebuilding}}<p class="notice">有 {{.Data.PortsRebuilding}} 个应当监听的端口当前没有在监听。节点重启会让所有用户的端口短暂不可用，面板会按保存的端口分配自动重建，通常在一个对账周期内完成。</p>{{end}}{{end}}
 </section>
 <section aria-labelledby="sync-heading">
 <h2 id="sync-heading">最近同步结果</h2>

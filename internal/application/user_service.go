@@ -135,6 +135,15 @@ func (s *UserService) CreateUser(ctx context.Context, input CreateUserInput) (do
 	inbound := domain.DedicatedInbound{AllocationID: allocationID, TemplateID: template.Template.ID,
 		InboundTag: domain.InboundTag(allocationID), ListenAddress: template.Template.ListenAddress, Port: port,
 		DesiredPresent: true, CreatedAt: now, UpdatedAt: now}
+	portAuditID, err := domain.NewID()
+	if err != nil {
+		return "", false, err
+	}
+	// 端口分配留痕：摘要含端口与入站标签，不含任何密钥（FR-036/FR-037）。
+	portAudit := domain.AuditEvent{ID: portAuditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor,
+		TargetType: "user", TargetID: userID, Action: domain.ActionPortAssigned, Result: domain.AuditAccepted,
+		CommandID: &input.RequestID, OperationID: &operationID,
+		SafeSummary: fmt.Sprintf("port %d assigned on %s (tag %s)", port, template.Template.ListenAddress, inbound.InboundTag)}
 	record := ports.UserCreateRecord{User: user,
 		Identity: domain.XrayUserIdentity{ID: identityID, InstanceID: template.Template.InstanceID, TemplateID: template.Template.ID,
 			StatisticsID: statisticsID, Kind: domain.IdentityManaged, CreatedAt: now}, Allocation: allocation,
@@ -143,7 +152,7 @@ func (s *UserService) CreateUser(ctx context.Context, input CreateUserInput) (do
 		Policy: ports.QuotaPolicyRecord{AllocationID: allocationID, LimitBytes: input.LimitBytes, ResetDay: input.ResetDay, CreatedAt: now, UpdatedAt: now},
 		Cycle: ports.QuotaCycleRecord{ID: cycleID, AllocationID: allocationID, StartsAt: start, EndsAt: end,
 			Timezone: settings.QuotaTimezone, ResetDay: input.ResetDay, Status: "open", OpenedAt: now},
-		Operation: operation, Command: command, Audit: audit}
+		Operation: operation, Command: command, Audit: audit, PortAudit: portAudit}
 	id, replay, err := s.store.CreateUser(ctx, record)
 	if err != nil {
 		return "", false, err

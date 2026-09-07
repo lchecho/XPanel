@@ -35,7 +35,7 @@ func NewDashboardView(summary application.DashboardSummary, location *time.Locat
 		GeneratedAt: views.FormatTimeValue(summary.GeneratedAt, location), TotalUsers: summary.TotalUsers, Active: summary.Active,
 		Disabled: summary.Disabled, QuotaExceeded: summary.QuotaExceeded, Pending: summary.Pending, StuckSync: summary.StuckSync, Deleted: summary.Deleted,
 		AccountedText: views.FormatBytes(summary.AccountedBytes), PortsCapacity: summary.PortsCapacity, PortsAssigned: summary.PortsAssigned,
-		PortsRemaining: summary.PortsRemaining, PortsOutside: summary.PortsOutside,
+		PortsRemaining: summary.PortsRemaining, PortsOutside: summary.PortsOutside, PortsRebuilding: summary.PortsRebuilding,
 		Failed: views.NewFailedOperationViews(summary.Failed, location)}
 }
 

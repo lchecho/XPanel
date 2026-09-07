@@ -236,6 +236,38 @@ var failures = []failure{
 		}
 		m.drain()
 	}},
+	// 宪章 v1.2.0 追加的两列：端口被面板外进程占用，以及端口被命名空间内的孤儿入站占用。
+	{name: "external_port_occupied", run: func(t *testing.T, m *matrixApp, c change) {
+		if err := c.apply(m); err != nil {
+			t.Fatal(err)
+		}
+		// 端口被面板外进程占用：创建必须失败并补偿移除，避免重试永久卡在 inbound_already_exists。
+		port := m.refresh().Inbound.Inbound.Port
+		m.Adapter.ExternalPorts[port] = true
+		m.drain()
+		delete(m.Adapter.ExternalPorts, port)
+		retryAfterBackoff(m)
+	}},
+	{name: "port_conflict", run: func(t *testing.T, m *matrixApp, c change) {
+		if err := c.apply(m); err != nil {
+			t.Fatal(err)
+		}
+		// 端口被面板命名空间内的一条孤儿入站占用：对账清理孤儿并释放端口后本轮意图才能收敛。
+		port := m.refresh().Inbound.Inbound.Port
+		orphan := domain.NamespacePrefix + "orphan-conflict"
+		m.Adapter.AddOrphanInbound(orphan, port)
+		m.Adapter.ExternalPorts[port] = true
+		m.drain()
+		if _, err := m.reconcile.ReconcileOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		m.drain()
+		if _, present := m.Adapter.Inbounds[orphan]; present {
+			t.Fatal("orphan inbound holding the port was not removed")
+		}
+		delete(m.Adapter.ExternalPorts, port)
+		retryAfterBackoff(m)
+	}},
 	{name: "reconciler_replay", run: func(t *testing.T, m *matrixApp, c change) {
 		if err := c.apply(m); err != nil {
 			t.Fatal(err)

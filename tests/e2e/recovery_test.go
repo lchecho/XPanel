@@ -50,7 +50,23 @@ func TestRecoveryAfterXrayRestartAndUncertainMutations(t *testing.T) {
 	app.Adapter.AddExternalInbound("operator-inbound", 45000)
 	app.Adapter.AddOrphanInbound(domain.NamespacePrefix+"orphan", 30090)
 	app.Adapter.Available = true
+	// 重启窗口内：所有面板端口都不在监听，界面明确告知端口暂时不可用（FR-028/SC-006）。
+	for _, record := range []ports.UserRecord{active, pending} {
+		if app.Listening(app.User(record.User.ID).Inbound.Inbound.Port) {
+			t.Fatalf("port of %s survived the restart", record.User.DisplayName)
+		}
+	}
+	restartedAt := app.Clock.Now()
 	summary := app.ReconcileOnce()
+	// 对账已观察到端口不在监听、重建尚未完成：界面必须明确告知端口暂时不可用（FR-028）。
+	_, body := app.Get("/")
+	if !strings.Contains(body, "端口暂时不可用") || !strings.Contains(body, "自动重建") {
+		t.Fatalf("dashboard does not explain the restart window: %s", body)
+	}
+	_, body = app.Get("/users/" + active.User.ID.String())
+	if !strings.Contains(body, "暂时不可用") {
+		t.Fatalf("user detail does not explain the restart window: %s", body)
+	}
 	if !summary.Reconnected || summary.Drift != 1 {
 		t.Fatalf("reconcile summary = %#v", summary)
 	}
@@ -94,6 +110,11 @@ func TestRecoveryAfterXrayRestartAndUncertainMutations(t *testing.T) {
 			t.Fatalf("port %d is not listening after recovery", port)
 		}
 	}
+	// SC-006：一次对账 + 一次同步内按原端口收敛，用时远小于 60 秒的验收上界。
+	if elapsed := app.Clock.Now().Sub(restartedAt); elapsed > 60*time.Second {
+		t.Fatalf("convergence took %s, longer than the 60s bound", elapsed)
+	}
+
 	// 重启后计数回落：无负流量、无重复计量，事件可见。
 	before := app.User(active.User.ID)
 	app.SetTraffic(active, 100, 100)
@@ -102,9 +123,12 @@ func TestRecoveryAfterXrayRestartAndUncertainMutations(t *testing.T) {
 	if after.Cycle.AccountedUplinkBytes != before.Cycle.AccountedUplinkBytes+100 || after.Cycle.AccountedUplinkBytes < before.Cycle.AccountedUplinkBytes {
 		t.Fatalf("restart accounting before=%d after=%d", before.Cycle.AccountedUplinkBytes, after.Cycle.AccountedUplinkBytes)
 	}
-	_, body := app.Get("/users/" + active.User.ID.String())
+	_, body = app.Get("/users/" + active.User.ID.String())
 	if !strings.Contains(body, "节点已重启") {
 		t.Fatalf("restart event not shown: %s", body)
+	}
+	if strings.Contains(body, "暂时不可用") {
+		t.Fatalf("the restart notice is still shown after convergence: %s", body)
 	}
 	// 不确定的变更结果：超时但已生效 → 读后写确认，不重复添加。
 	if _, err := app.Users.SetAdminEnabled(context.Background(), application.SetEnabledInput{ID: disabled.User.ID, Enabled: true, ExpectedRevision: 1, RequestID: testsupport.NewID(t), ActorID: actor}); err != nil {

@@ -219,6 +219,8 @@ type UserCreateRecord struct {
 	Operation  domain.SynchronizationOperation
 	Command    domain.DomainCommand
 	Audit      domain.AuditEvent
+	// PortAudit 记录端口分配（FR-036）；与用户创建在同一事务内写入，摘要含端口但不含任何密钥。
+	PortAudit domain.AuditEvent
 }
 
 type UserRecord struct {

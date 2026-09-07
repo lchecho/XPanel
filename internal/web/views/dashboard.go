@@ -25,11 +25,12 @@ type DashboardView struct {
 	Deleted          int
 	AccountedText    string
 	// 端口池占用（FR-035）：跨全部未归档模板汇总。
-	PortsCapacity  int
-	PortsAssigned  int
-	PortsRemaining int
-	PortsOutside   int
-	Failed         []FailedOperationView
+	PortsCapacity   int
+	PortsAssigned   int
+	PortsRemaining  int
+	PortsOutside    int
+	PortsRebuilding int
+	Failed          []FailedOperationView
 }
 
 type FailedOperationView struct {

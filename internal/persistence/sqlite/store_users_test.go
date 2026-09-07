@@ -55,8 +55,11 @@ func userFixture(t *testing.T, store *Store, now time.Time, name string) ports.U
 	audit := domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor,
 		TargetType: "user", TargetID: user.ID, Action: domain.ActionUserCreated, Result: domain.AuditSucceeded,
 		CommandID: &commandID, OperationID: &operation.ID, SafeSummary: "user created"}
+	portAudit := domain.AuditEvent{ID: fixtureID(t), OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor,
+		TargetType: "user", TargetID: user.ID, Action: domain.ActionPortAssigned, Result: domain.AuditSucceeded,
+		CommandID: &commandID, OperationID: &operation.ID, SafeSummary: "port assigned"}
 	return ports.UserCreateRecord{User: user, Identity: identity, Allocation: allocation, Inbound: inbound, Credential: credential,
-		Policy: policy, Cycle: cycle, Operation: operation, Command: command, Audit: audit}
+		Policy: policy, Cycle: cycle, Operation: operation, Command: command, Audit: audit, PortAudit: portAudit}
 }
 
 func TestCreateUserIsAtomicAndReplayable(t *testing.T) {

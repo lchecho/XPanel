@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -368,6 +369,12 @@ func (s *Synchronizer) createDedicatedInbound(ctx context.Context, work *ports.S
 					return s.confirm(ctx, work, true, work.Credential.Version, logger, started)
 				}
 			}
+			if kind == ports.ErrorPortUnavailable {
+				// 端口被面板外的进程或残留入站占用是外部条件，不是这条意图本身的永久错误：
+				// 补偿移除后以有界退避重试，界面显示「待同步」并给出可理解原因，管理员可改端口
+				// （contracts/http.md 端口被面板外进程占用一行；宪章 IV）。
+				return s.retryLater(ctx, work, kind, summaryOf(err), logger, started)
+			}
 		}
 		return s.retry(ctx, work, err, logger, started)
 	}
@@ -465,6 +472,21 @@ func (s *Synchronizer) rotateWithinInbound(ctx context.Context, work *ports.Sync
 	return s.confirm(ctx, work, true, work.Credential.Version, logger, started)
 }
 
+// retryLater 以有界退避重试外部条件导致的失败（例如端口暂时被占用）：
+// 它不把错误当作永久失败，分配保持「待同步」直到外部条件解除（宪章 IV）。
+func (s *Synchronizer) retryLater(ctx context.Context, work *ports.SyncWork, kind, summary string, logger *slog.Logger, started time.Time) error {
+	now := s.clock.Now()
+	attempts := work.Operation.AttemptCount + 1
+	next := now.Add(domain.NextBackoff(attempts, s.maxRetry, s.random))
+	if err := s.store.RescheduleSync(ctx, work.Operation.ID, s.owner, attempts, next, kind, summary); err != nil {
+		return err
+	}
+	logger.Warn("synchronization deferred until the external condition clears", logging.FieldResult, "retry_wait",
+		logging.FieldErrorKind, kind, "attempt", attempts, "next_attempt_at", next.Format(time.RFC3339),
+		logging.FieldDurationMS, now.Sub(started).Milliseconds())
+	return nil
+}
+
 // inboundPresent 读后写：确认某入站当前是否存在于 Xray。
 func (s *Synchronizer) inboundPresent(ctx context.Context, tag string) (bool, error) {
 	inbounds, err := s.adapter.ListInbounds(ctx)
@@ -504,7 +526,28 @@ func (s *Synchronizer) confirm(ctx context.Context, work *ports.SyncWork, presen
 		return nil
 	}
 	logger.Info("synchronization confirmed", logging.FieldResult, "succeeded", logging.FieldDurationMS, now.Sub(started).Milliseconds())
-	return s.audit(ctx, work, domain.ActionSyncSucceeded, domain.AuditSucceeded, "Xray projection confirmed", now)
+	if err := s.audit(ctx, work, domain.ActionSyncSucceeded, domain.AuditSucceeded, "Xray projection confirmed", now); err != nil {
+		return err
+	}
+	// 入站生命周期单独留痕：摘要含端口与入站标签，MUST NOT 含任何密钥（FR-036/FR-037）。
+	if work.Operation.Reason == domain.SyncRotate {
+		return nil // 轮换不改变入站，只换密钥；已由 sync_succeeded 覆盖。
+	}
+	action, sentence := domain.ActionInboundRemoved, "dedicated inbound removed; the port stopped listening"
+	if present {
+		action, sentence = domain.ActionInboundCreated, "dedicated inbound created and listening"
+	}
+	if err := s.audit(ctx, work, action, domain.AuditSucceeded,
+		fmt.Sprintf("%s (tag %s, port %d)", sentence, work.Inbound.Inbound.InboundTag, work.Inbound.Inbound.Port), now); err != nil {
+		return err
+	}
+	// 删除的用户在移除确认事务内释放了端口分配，端口回到池中，需单独留痕（FR-018/FR-036）。
+	if !present && work.User.Lifecycle == domain.LifecycleDeleted {
+		return s.audit(ctx, work, domain.ActionPortReleased, domain.AuditSucceeded,
+			fmt.Sprintf("port %d released back to the template pool (tag %s)", work.Inbound.Inbound.Port,
+				work.Inbound.Inbound.InboundTag), now)
+	}
+	return nil
 }
 
 func (s *Synchronizer) recordSuccess(ctx context.Context, work *ports.SyncWork, now time.Time) {

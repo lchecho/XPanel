@@ -66,6 +66,7 @@ type Store interface {
 	EnqueueDriftRemoval(context.Context, domain.ID, string, time.Time) (bool, error)
 	LeaseDueDriftRemoval(context.Context, string, time.Time, time.Duration) (*DriftRemoval, error)
 	RenewDriftRemovalLease(context.Context, domain.ID, string, time.Time, time.Duration) (bool, error)
+	StaleDriftRemovals(context.Context, domain.ID) ([]DriftRemoval, error)
 	CompleteDriftRemoval(context.Context, domain.ID, string, time.Time, domain.AuditEvent) error
 	RescheduleDriftRemoval(context.Context, domain.ID, string, int, time.Time, string, string) error
 	FailDriftRemoval(context.Context, domain.ID, string, string, string, time.Time, domain.AuditEvent) error
@@ -85,6 +86,33 @@ type WriteTx interface {
 	CreateAdministrator(context.Context, AdministratorRecord) error
 	UpdateAdministratorPassword(context.Context, domain.ID, string, int64, time.Time) error
 	RevokeAllSessions(context.Context, domain.ID, time.Time) error
+	// InsertSession / RevokeSession 让当前会话的建立与撤销和登录/登出审计处于同一写事务（T152）。
+	InsertSession(context.Context, SessionRecord) error
+	RevokeSession(context.Context, []byte, time.Time) (bool, error)
+}
+
+// SessionRecord 是会话存储在事务内写入的 admin_sessions 行（管理员 ID 与密码版本由事务内读取）。
+type SessionRecord struct {
+	ID                domain.ID
+	TokenDigest       []byte
+	Data              []byte
+	CreatedAt         time.Time
+	LastSeenAt        time.Time
+	IdleExpiresAt     time.Time
+	AbsoluteExpiresAt time.Time
+}
+
+type writeTxKey struct{}
+
+// ContextWithWriteTx 把正在进行的写事务放入 ctx，供会话存储的 CtxStore 路径在同一事务内写入。
+func ContextWithWriteTx(ctx context.Context, tx WriteTx) context.Context {
+	return context.WithValue(ctx, writeTxKey{}, tx)
+}
+
+// WriteTxFromContext 取出 ContextWithWriteTx 放入的事务。
+func WriteTxFromContext(ctx context.Context) (WriteTx, bool) {
+	tx, ok := ctx.Value(writeTxKey{}).(WriteTx)
+	return tx, ok
 }
 
 type AdministratorRecord struct {

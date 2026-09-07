@@ -54,6 +54,11 @@ func (t *memoryAuthTx) RevokeAllSessions(context.Context, domain.ID, time.Time) 
 	t.store.revoked = true
 	return nil
 }
+func (t *memoryAuthTx) InsertSession(context.Context, ports.SessionRecord) error { return nil }
+func (t *memoryAuthTx) RevokeSession(context.Context, []byte, time.Time) (bool, error) {
+	t.store.revoked = true
+	return true, nil
+}
 
 func TestInitializeLoginAndReset(t *testing.T) {
 	clock := &ports.FixedClock{Time: time.Now()}

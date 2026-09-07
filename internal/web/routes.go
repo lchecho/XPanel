@@ -116,6 +116,6 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 	public.Handle("/", webmiddleware.RequireAuth(deps.Sessions, deps.Auth.SessionValid, protected))
 
 	stack := webmiddleware.CSRF(deps.CSRFKey, deps.Secure, public)
-	stack = webmiddleware.LoadAndSave(deps.Sessions, stack)
+	stack = webmiddleware.LoadAndSave(deps.Sessions, deps.Logger, stack)
 	return webmiddleware.SecurityHeaders(stack), nil
 }

@@ -158,6 +158,34 @@ func (t *txStore) UpdateAdministratorPassword(ctx context.Context, id domain.ID,
 	return nil
 }
 
+// InsertSession 在当前事务内写入会话行；已撤销的令牌不会被复活（与 SessionStore.Commit 语义一致）。
+func (t *txStore) InsertSession(ctx context.Context, record ports.SessionRecord) error {
+	var adminID string
+	var passwordVersion int64
+	if err := t.tx.QueryRowContext(ctx, `SELECT id,password_version FROM administrators LIMIT 1`).Scan(&adminID, &passwordVersion); err != nil {
+		return err
+	}
+	_, err := t.tx.ExecContext(ctx, `INSERT INTO admin_sessions
+        (id,administrator_id,token_digest,password_version,data,created_at,last_seen_at,idle_expires_at,absolute_expires_at)
+        VALUES (?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(token_digest) DO UPDATE SET data=excluded.data,last_seen_at=excluded.last_seen_at,
+        idle_expires_at=excluded.idle_expires_at,absolute_expires_at=excluded.absolute_expires_at
+        WHERE admin_sessions.revoked_at IS NULL`,
+		record.ID.String(), adminID, record.TokenDigest, passwordVersion, record.Data, millis(record.CreatedAt), millis(record.LastSeenAt),
+		millis(record.IdleExpiresAt), millis(record.AbsoluteExpiresAt))
+	return err
+}
+
+// RevokeSession 在当前事务内撤销一个仍有效的会话；返回是否确实撤销了一行。
+func (t *txStore) RevokeSession(ctx context.Context, tokenDigest []byte, now time.Time) (bool, error) {
+	result, err := t.tx.ExecContext(ctx, `UPDATE admin_sessions SET revoked_at=? WHERE token_digest=? AND revoked_at IS NULL`, millis(now), tokenDigest)
+	if err != nil {
+		return false, err
+	}
+	rows, _ := result.RowsAffected()
+	return rows == 1, nil
+}
+
 func (t *txStore) RevokeAllSessions(ctx context.Context, id domain.ID, now time.Time) error {
 	_, err := t.tx.ExecContext(ctx, `UPDATE admin_sessions SET revoked_at=? WHERE administrator_id=? AND revoked_at IS NULL`, millis(now), id.String())
 	return err

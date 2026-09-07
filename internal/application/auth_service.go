@@ -132,6 +132,36 @@ func (s *AuthService) Authenticate(ctx context.Context, username string, passwor
 	return admin, nil
 }
 
+// EstablishSession 在同一写事务内持久化当前会话并写入 succeeded 登录审计：commit 在事务上下文中执行
+// （会话存储经 ports.WriteTxFromContext 走同一事务），任一失败整体回滚；只有事务成功调用方才写浏览器 cookie（T152）。
+func (s *AuthService) EstablishSession(ctx context.Context, admin ports.AdministratorRecord,
+	commit func(context.Context) (string, time.Time, error)) (string, time.Time, error) {
+	var token string
+	var expiry time.Time
+	err := s.store.WithWriteTx(ctx, func(tx ports.WriteTx) error {
+		var err error
+		token, expiry, err = commit(ports.ContextWithWriteTx(ctx, tx))
+		if err != nil {
+			return err
+		}
+		return s.appendAudit(ctx, tx, admin, domain.ActionLogin, domain.AuditSucceeded, "administrator login succeeded")
+	})
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return token, expiry, nil
+}
+
+// RevokeSession 在同一写事务内写入 succeeded 登出审计并撤销当前会话；任一失败整体回滚，原会话保持可用（T152）。
+func (s *AuthService) RevokeSession(ctx context.Context, admin ports.AdministratorRecord, destroy func(context.Context) error) error {
+	return s.store.WithWriteTx(ctx, func(tx ports.WriteTx) error {
+		if err := s.appendAudit(ctx, tx, admin, domain.ActionLogout, domain.AuditSucceeded, "administrator logout succeeded"); err != nil {
+			return err
+		}
+		return destroy(ports.ContextWithWriteTx(ctx, tx))
+	})
+}
+
 // RecordLogin 在会话已持久化后写入 succeeded 登录审计。
 func (s *AuthService) RecordLogin(ctx context.Context, admin ports.AdministratorRecord) error {
 	return s.audit(ctx, admin, domain.ActionLogin, domain.AuditSucceeded, "administrator login succeeded")
@@ -205,16 +235,19 @@ func (s *AuthService) ResetPassword(ctx context.Context, password []byte) error 
 }
 
 func (s *AuthService) audit(ctx context.Context, admin ports.AdministratorRecord, action string, result domain.AuditResult, summary string) error {
+	return s.store.WithWriteTx(ctx, func(tx ports.WriteTx) error {
+		return s.appendAudit(ctx, tx, admin, action, result, summary)
+	})
+}
+
+func (s *AuthService) appendAudit(ctx context.Context, tx ports.WriteTx, admin ports.AdministratorRecord, action string, result domain.AuditResult, summary string) error {
 	id, err := domain.NewID()
 	if err != nil {
 		return err
 	}
-	return s.store.WithWriteTx(ctx, func(tx ports.WriteTx) error {
-		actorID := admin.ID
-		return tx.AppendAudit(ctx, domain.AuditEvent{ID: id, OccurredAt: s.clock.Now(), ActorType: domain.ActorAdministrator,
-			ActorID: &actorID, TargetType: "administrator", TargetID: admin.ID, Action: action,
-			Result: result, SafeSummary: summary})
-	})
+	actorID := admin.ID
+	return tx.AppendAudit(ctx, domain.AuditEvent{ID: id, OccurredAt: s.clock.Now(), ActorType: domain.ActorAdministrator,
+		ActorID: &actorID, TargetType: "administrator", TargetID: admin.ID, Action: action, Result: result, SafeSummary: summary})
 }
 
 // RecordLoginFailure 记录失败、被限流或会话无法建立的登录：不区分用户名是否存在、不含密码，

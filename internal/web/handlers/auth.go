@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/gorilla/csrf"
@@ -74,31 +76,25 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		h.Renderer.Error(w, http.StatusInternalServerError, "登录暂时无法完成", NewRequestID())
 		return
 	}
-	// 认证结果语义：只有会话持久化成功后才记录 succeeded；任一步失败都记录 failed 并拒绝请求，不留下已登录会话（FR-025/FR-027）。
+	// 认证结果协议（T152）：会话行与 succeeded 审计在同一 SQLite 事务提交，成功后才写 cookie；
+	// 任一步失败整体回滚，丢弃内存会话，再以独立事务记录 failed 审计并返回 500。
 	if err := h.Sessions.RenewToken(r.Context()); err != nil {
+		webmiddleware.AbandonSession(r.Context())
 		h.loginNotEstablished(w, r, "login failed: session could not be established")
 		return
 	}
 	h.Sessions.Put(r.Context(), webmiddleware.SessionAdministratorID, admin.ID.String())
 	h.Sessions.Put(r.Context(), webmiddleware.SessionPasswordVersion, admin.PasswordVersion)
-	if err := webmiddleware.EstablishSession(r.Context(), h.Sessions, w); err != nil {
-		// 提交失败：数据库中没有会话行，销毁内存会话即可（中间件随后只写过期 cookie）。
+	token, expiry, err := h.Service.EstablishSession(r.Context(), *admin, func(txCtx context.Context) (string, time.Time, error) {
+		return h.Sessions.Commit(txCtx)
+	})
+	if err != nil {
 		_ = h.Sessions.Destroy(r.Context())
-		h.loginNotEstablished(w, r, "login failed: session could not be persisted")
+		webmiddleware.AbandonSession(r.Context())
+		h.loginNotEstablished(w, r, "login failed: session could not be established")
 		return
 	}
-	if err := h.Service.RecordLogin(r.Context(), *admin); err != nil {
-		// 补偿：撤回已写入响应的会话 cookie，并撤销已持久化的会话；撤销失败再撤销该管理员全部会话，仍失败则记录错误。
-		webmiddleware.WithdrawSessionCookie(w, h.Sessions)
-		if destroyErr := h.Sessions.Destroy(r.Context()); destroyErr != nil {
-			if revokeErr := h.Service.RevokeSessions(r.Context(), admin.ID); revokeErr != nil {
-				h.logger().Error("login compensation failed: persisted session could not be revoked", "error_kind", "internal")
-			}
-		}
-		_ = h.Service.RecordLoginFailure(r.Context(), "login failed: audit could not be written; session revoked")
-		h.Renderer.Error(w, http.StatusInternalServerError, "登录暂时无法完成", NewRequestID())
-		return
-	}
+	webmiddleware.SessionEstablished(r.Context(), h.Sessions, w, token, expiry)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -107,17 +103,16 @@ func (h *AuthHandler) loginNotEstablished(w http.ResponseWriter, r *http.Request
 	h.Renderer.Error(w, http.StatusInternalServerError, "登录暂时无法完成", NewRequestID())
 }
 
-// Logout 先撤销当前会话，确认撤销后才记录 succeeded；撤销失败记录 failed 并返回 500，审计写入失败同样不返回成功。
+// Logout：succeeded 审计与当前会话撤销在同一事务提交；任一失败整体回滚，原会话保持可用，
+// 再以独立事务记录 failed 审计并返回 500（T152）。
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	id := domain.ID(h.Sessions.GetString(r.Context(), webmiddleware.SessionAdministratorID))
 	version := h.Sessions.GetInt64(r.Context(), webmiddleware.SessionPasswordVersion)
 	admin := ports.AdministratorRecord{ID: id, PasswordVersion: version}
-	if err := h.Sessions.Destroy(r.Context()); err != nil {
+	if err := h.Service.RevokeSession(r.Context(), admin, func(txCtx context.Context) error {
+		return h.Sessions.Destroy(txCtx)
+	}); err != nil {
 		_ = h.Service.LogoutFailed(r.Context(), admin, "logout failed: session could not be revoked")
-		h.Renderer.Error(w, http.StatusInternalServerError, "退出暂时无法完成", NewRequestID())
-		return
-	}
-	if err := h.Service.Logout(r.Context(), admin); err != nil {
 		h.Renderer.Error(w, http.StatusInternalServerError, "退出暂时无法完成", NewRequestID())
 		return
 	}

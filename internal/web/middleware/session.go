@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -60,17 +61,23 @@ func RequireAuth(manager *scs.SessionManager, validate SessionValidator, next ht
 	})
 }
 
-// sessionCommitState 记录本请求的会话是否已由 handler 显式提交（登录路径），中间件据此不再重复提交。
+// sessionCommitState 记录本请求会话的最终处置：已由登录事务建立（不再提交）或已放弃（只写过期 cookie）。
 type sessionCommitState struct {
 	committed bool
+	abandoned bool
 }
 
 type sessionStateKey struct{}
 
-// LoadAndSave 是面板自己的会话中间件，替代 scs 自带实现以保证“每个请求会话至多提交一次”的可判定协议：
-// 登录 handler 通过 EstablishSession 显式提交并写 cookie 后，中间件不再二次提交；其他请求在首次写响应前提交，
-// 提交失败返回 500 且不写会话 cookie；已销毁的会话只写过期 cookie（FR-025/FR-027）。
-func LoadAndSave(manager *scs.SessionManager, next http.Handler) http.Handler {
+// LoadAndSave 是面板自己的会话中间件，区分两类会话写入（T152/T153）：
+//   - 安全关键的会话建立/撤销由登录/登出 handler 在与审计同一事务内完成，本中间件不再提交；
+//   - 既有会话的辅助刷新（idle 滑动、flash）在首次写响应前提交；失败时保留原会话与 handler 的真实业务响应，
+//     不写新 cookie，只记录脱敏诊断——业务事实已由 service 提交，不得因辅助保存失败改报 500。
+func LoadAndSave(manager *scs.SessionManager, logger *slog.Logger, next http.Handler) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger = logger.With("component", "session")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var token string
 		if cookie, err := r.Cookie(manager.Cookie.Name); err == nil {
@@ -83,7 +90,7 @@ func LoadAndSave(manager *scs.SessionManager, next http.Handler) http.Handler {
 		}
 		state := &sessionCommitState{}
 		ctx = context.WithValue(ctx, sessionStateKey{}, state)
-		writer := &sessionWriter{ResponseWriter: w, manager: manager, ctx: ctx, state: state}
+		writer := &sessionWriter{ResponseWriter: w, manager: manager, logger: logger, ctx: ctx, state: state}
 		next.ServeHTTP(writer, r.WithContext(ctx))
 		writer.finish()
 	})
@@ -92,18 +99,22 @@ func LoadAndSave(manager *scs.SessionManager, next http.Handler) http.Handler {
 type sessionWriter struct {
 	http.ResponseWriter
 	manager *scs.SessionManager
+	logger  *slog.Logger
 	ctx     context.Context
 	state   *sessionCommitState
 	written bool
-	failed  bool
 }
 
-// finish 在首次写响应前恰好执行一次：按会话状态提交或写过期 cookie。
+// finish 在首次写响应前恰好执行一次：按会话状态做辅助提交或写过期 cookie；辅助提交失败不改变响应状态。
 func (sw *sessionWriter) finish() {
 	if sw.written {
 		return
 	}
 	sw.written = true
+	if sw.state.abandoned {
+		sw.manager.WriteSessionCookie(sw.ctx, sw.ResponseWriter, "", time.Time{})
+		return
+	}
 	switch sw.manager.Status(sw.ctx) {
 	case scs.Modified:
 		if sw.state.committed {
@@ -111,8 +122,7 @@ func (sw *sessionWriter) finish() {
 		}
 		token, expiry, err := sw.manager.Commit(sw.ctx)
 		if err != nil {
-			sw.failed = true
-			http.Error(sw.ResponseWriter, "请求暂时无法完成", http.StatusInternalServerError)
+			sw.logger.Warn("auxiliary session refresh failed; existing session kept, response unchanged", "result", "degraded", "error_kind", "session_refresh_failed")
 			return
 		}
 		sw.manager.WriteSessionCookie(sw.ctx, sw.ResponseWriter, token, expiry)
@@ -123,41 +133,25 @@ func (sw *sessionWriter) finish() {
 
 func (sw *sessionWriter) WriteHeader(code int) {
 	sw.finish()
-	if sw.failed {
-		return
-	}
 	sw.ResponseWriter.WriteHeader(code)
 }
 
 func (sw *sessionWriter) Write(b []byte) (int, error) {
 	sw.finish()
-	if sw.failed {
-		return len(b), nil
-	}
 	return sw.ResponseWriter.Write(b)
 }
 
-// EstablishSession 显式提交当前会话并写会话 cookie；成功后本请求不再由中间件重复提交，登录只在此步成功后才算建立。
-func EstablishSession(ctx context.Context, manager *scs.SessionManager, w http.ResponseWriter) error {
-	token, expiry, err := manager.Commit(ctx)
-	if err != nil {
-		return err
-	}
+// SessionEstablished 由登录 handler 在“会话 + 审计”事务成功后调用：写会话 cookie，并标记本请求不再提交。
+func SessionEstablished(ctx context.Context, manager *scs.SessionManager, w http.ResponseWriter, token string, expiry time.Time) {
 	manager.WriteSessionCookie(ctx, w, token, expiry)
 	if state, ok := ctx.Value(sessionStateKey{}).(*sessionCommitState); ok {
 		state.committed = true
 	}
-	return nil
 }
 
-// WithdrawSessionCookie 从尚未发送的响应中移除会话 cookie（登录补偿路径），保留其他 cookie。
-func WithdrawSessionCookie(w http.ResponseWriter, manager *scs.SessionManager) {
-	header := w.Header()
-	values := header.Values("Set-Cookie")
-	header.Del("Set-Cookie")
-	for _, value := range values {
-		if !strings.HasPrefix(value, manager.Cookie.Name+"=") {
-			header.Add("Set-Cookie", value)
-		}
+// AbandonSession 由登录失败路径调用：内存会话不得被中间件提交，响应只写过期 cookie。
+func AbandonSession(ctx context.Context) {
+	if state, ok := ctx.Value(sessionStateKey{}).(*sessionCommitState); ok {
+		state.abandoned = true
 	}
 }

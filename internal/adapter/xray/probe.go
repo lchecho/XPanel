@@ -47,7 +47,12 @@ func (c *Client) verifyUserTrafficAccounting(ctx context.Context, probe ports.Te
 	serverKey, userKey security.RedactedString, statisticsID string) (bool, string, error) {
 	// 计数器按统计标识注册，Xray 没有删除计数器的 API；探针身份每次都是新的，
 	// 因此不会有陈旧数据让后续验证误通过，退出前再清零一次以免留下非零值。
-	defer c.resetCounters(ctx, statisticsID)
+	// 用独立的有界上下文清理：原请求可能已被取消或超时，但清理不能因此被跳过（T093）。
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), probeTrafficBudget)
+		defer cancel()
+		c.resetCounters(cleanup, statisticsID)
+	}()
 
 	host := dialTarget(probe.ListenAddress)
 	// 网络能力必须明确：探针要按模板实际会用的网络发送流量。取值异常时宁可报错，

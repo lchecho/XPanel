@@ -161,6 +161,11 @@ func (c *Client) ListInbounds(ctx context.Context) ([]ports.RemoteInbound, error
 // 它只能通过在探针入站上产生经过 SS2022 身份认证的最小流量再回读计数器来证实（research.md C-007）。
 func (c *Client) ValidateTemplate(ctx context.Context, probe ports.TemplateProbe) (capabilities ports.TemplateCapabilities, err error) {
 	capabilities = ports.TemplateCapabilities{ProtocolSupported: true}
+	// 网络能力缺失是面板自身的调用错误，不能表现为「节点不兼容」——那会把 bug 记到节点头上。
+	if probe.Network != domain.NetworkTCP && probe.Network != domain.NetworkUDP && probe.Network != domain.NetworkTCPUDP {
+		return capabilities, &ports.AdapterError{Kind: ports.ErrorInvalidArgument, Operation: "validate_template",
+			SafeSummary: "template probe carries an unsupported network selection"}
+	}
 	capabilities.MethodSupported = probe.Method == security.MethodAES128 || probe.Method == security.MethodAES256
 	if !capabilities.MethodSupported {
 		capabilities.CompatibilityReason = "unsupported Shadowsocks 2022 method"
@@ -182,9 +187,12 @@ func (c *Client) ValidateTemplate(ctx context.Context, probe ports.TemplateProbe
 	}
 	tag := fmt.Sprintf("%sprobe-%s", domain.NamespacePrefix, probe.TemplateID.String())
 	probeIdentity := fmt.Sprintf("%sprobe-%s", domain.NamespacePrefix, run.String())
+	// 探针入站必须按模板真实的网络能力创建：用 tcp_udp 代替 udp-only 模板会让探针验证的是
+	// 一个模板永远不会使用的组合（T093）。
 	command := ports.CreateInboundCommand{InboundTag: tag, ListenAddress: probe.ListenAddress, Port: probe.ProbePort,
-		Method: probe.Method, Network: domain.NetworkTCPUDP, ServerKey: serverKey,
+		Method: probe.Method, Network: probe.Network, ServerKey: serverKey,
 		Client: ports.InboundClient{StatisticsID: probeIdentity, CredentialVersion: 1, UserKey: userKey}}
+	capabilities.ProbeStatisticsID = probeIdentity
 	_, createErr := c.CreateInbound(ctx, command)
 	// 探针入站无论创建结果如何都必须移除：bind 失败时它仍可能被注册（research.md R-003）。
 	// 移除结果 MUST NOT 被忽略——它本身就是一项被验证的能力。

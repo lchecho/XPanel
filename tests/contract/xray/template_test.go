@@ -144,26 +144,24 @@ func TestLiveTemplateValidationMatrixAcrossMethodsAndNetworks(t *testing.T) {
 					return ports.TemplateProbe{TemplateID: testsupport.NewID(t), ListenAddress: listenAddress,
 						ProbePort: freePort(t), Method: method, Network: network}
 				}
-				capabilities, err := runtime.client.ValidateTemplate(context.Background(), probe())
+				first := probe()
+				capabilities, err := runtime.client.ValidateTemplate(context.Background(), first)
 				if err != nil || !capabilities.Compatible() {
 					t.Fatalf("capabilities = %#v, %v\n%s", capabilities, err, runtime.diagnostics())
 				}
+				assertProbeCleanedUp(t, runtime, capabilities.ProbeStatisticsID, first.ProbePort)
+
 				// 重复验证必须同样通过：探针身份每次都是新的，不会被上一次的残留计数影响，
 				// 也不会因为残留计数而在缺少 policy 时误判为通过。
-				repeat, err := runtime.client.ValidateTemplate(context.Background(), probe())
+				second := probe()
+				repeat, err := runtime.client.ValidateTemplate(context.Background(), second)
 				if err != nil || !repeat.Compatible() {
 					t.Fatalf("repeat validation = %#v, %v", repeat, err)
 				}
-				// 探针入站与端口都不残留。
-				inbounds, err := runtime.client.ListInbounds(context.Background())
-				if err != nil {
-					t.Fatal(err)
+				if repeat.ProbeStatisticsID == capabilities.ProbeStatisticsID {
+					t.Fatalf("the probe identity was reused across validations: %q", repeat.ProbeStatisticsID)
 				}
-				for _, inbound := range inbounds {
-					if inbound.PanelManaged {
-						t.Fatalf("probe inbound survived: %#v", inbound)
-					}
-				}
+				assertProbeCleanedUp(t, runtime, repeat.ProbeStatisticsID, second.ProbePort)
 			})
 		}
 	}
@@ -171,26 +169,67 @@ func TestLiveTemplateValidationMatrixAcrossMethodsAndNetworks(t *testing.T) {
 
 // T088：缺少 policy 时，每种方法与网络组合都必须判为不兼容——不能因为某个组合没发流量而误通过。
 func TestLiveTemplateValidationMatrixRejectsMissingPolicy(t *testing.T) {
-	for _, network := range []domain.Network{domain.NetworkTCP, domain.NetworkUDP, domain.NetworkTCPUDP} {
-		t.Run(string(network), func(t *testing.T) {
-			apiAddress, operatorAddress := freeAddress(t), freeAddress(t)
-			config := baseConfig(apiAddress, operatorAddress)
-			delete(config, "policy")
-			runtime, err := launchRuntime(t, apiAddress, config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			runtime.operator, runtime.operatorPort = operatorAddress, portOf(t, operatorAddress)
-			capabilities, err := runtime.client.ValidateTemplate(context.Background(), ports.TemplateProbe{
-				TemplateID: testsupport.NewID(t), ListenAddress: listenAddress, ProbePort: freePort(t),
-				Method: security.MethodAES256, Network: network})
-			if err != nil {
-				t.Fatalf("validation failed outright: %v\n%s", err, runtime.diagnostics())
-			}
-			if capabilities.TrafficAccounted || capabilities.Compatible() {
-				t.Fatalf("%s without policy reported compatible: %#v", network, capabilities)
-			}
-		})
+	for _, method := range []string{security.MethodAES128, security.MethodAES256} {
+		for _, network := range []domain.Network{domain.NetworkTCP, domain.NetworkUDP, domain.NetworkTCPUDP} {
+			t.Run(method+"/"+string(network), func(t *testing.T) {
+				apiAddress, operatorAddress := freeAddress(t), freeAddress(t)
+				config := baseConfig(apiAddress, operatorAddress)
+				delete(config, "policy")
+				runtime, err := launchRuntime(t, apiAddress, config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				runtime.operator, runtime.operatorPort = operatorAddress, portOf(t, operatorAddress)
+				probe := ports.TemplateProbe{TemplateID: testsupport.NewID(t), ListenAddress: listenAddress,
+					ProbePort: freePort(t), Method: method, Network: network}
+				capabilities, err := runtime.client.ValidateTemplate(context.Background(), probe)
+				if err != nil {
+					t.Fatalf("validation failed outright: %v\n%s", err, runtime.diagnostics())
+				}
+				if capabilities.TrafficAccounted || capabilities.Compatible() {
+					t.Fatalf("%s/%s without policy reported compatible: %#v", method, network, capabilities)
+				}
+				// 失败路径同样不得留下探针入站、端口或计数。
+				assertProbeCleanedUp(t, runtime, capabilities.ProbeStatisticsID, probe.ProbePort)
+				// 重复验证仍然判为不兼容：不会因为上一次的残留而误通过。
+				retry := probe
+				retry.ProbePort = freePort(t)
+				again, err := runtime.client.ValidateTemplate(context.Background(), retry)
+				if err != nil || again.Compatible() {
+					t.Fatalf("repeat validation without policy = %#v, %v", again, err)
+				}
+				assertProbeCleanedUp(t, runtime, again.ProbeStatisticsID, retry.ProbePort)
+			})
+		}
+	}
+}
+
+// assertProbeCleanedUp 断言一次验证结束后探针入站、端口与该探针身份的两个方向计数都已清理。
+func assertProbeCleanedUp(t *testing.T, runtime *liveRuntime, probeIdentity string, probePort int) {
+	t.Helper()
+	if probeIdentity == "" {
+		t.Fatal("validation did not report the probe identity it used")
+	}
+	if listening(probePort) {
+		t.Fatalf("probe port %d is still listening", probePort)
+	}
+	inbounds, err := runtime.client.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inbound := range inbounds {
+		if inbound.PanelManaged {
+			t.Fatalf("probe inbound survived: %#v", inbound)
+		}
+	}
+	round, err := runtime.client.ReadTraffic(context.Background(), ports.TrafficQuery{StatisticsIDs: []string{probeIdentity}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, snapshot := range round.Snapshots {
+		if snapshot.Found && snapshot.Bytes != 0 {
+			t.Fatalf("probe counter %s was not reset: %d bytes", snapshot.Direction, snapshot.Bytes)
+		}
 	}
 }
 

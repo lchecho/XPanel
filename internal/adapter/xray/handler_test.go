@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
+	"xpanel/internal/domain"
 	"xpanel/internal/ports"
 	"xpanel/internal/security"
 )
@@ -126,13 +127,21 @@ func TestHandlerContractEncodingAndCapabilities(t *testing.T) {
 	// 但它不是真的 SS2022 监听器，因此「用户级统计可读」这一项只能由真实 Xray 契约测试证明
 	// （tests/contract/xray/template_test.go）。这里断言前三项能力与「卡在流量探测」这一事实。
 	capabilities, err := client.ValidateTemplate(context.Background(), ports.TemplateProbe{ListenAddress: "127.0.0.1",
-		ProbePort: 39999, Method: security.MethodAES256})
+		ProbePort: 39999, Method: security.MethodAES256, Network: domain.NetworkTCPUDP})
 	if err == nil {
 		t.Fatalf("stub without a real listener unexpectedly completed the traffic probe: %#v", capabilities)
 	}
 	if !capabilities.InboundCreatable || !capabilities.InboundRemovable || !capabilities.MultiUserSupported ||
 		!capabilities.MethodSupported || capabilities.TrafficAccounted {
 		t.Fatalf("capabilities before the traffic probe = %#v", capabilities)
+	}
+	if capabilities.ProbeStatisticsID == "" || !domain.IsPanelNamespace(capabilities.ProbeStatisticsID) {
+		t.Fatalf("probe identity is not observable: %q", capabilities.ProbeStatisticsID)
+	}
+	// 网络能力缺失是调用错误，必须直接报错，而不是记成「节点不兼容」。
+	if _, err := client.ValidateTemplate(context.Background(), ports.TemplateProbe{ListenAddress: "127.0.0.1",
+		ProbePort: 39998, Method: security.MethodAES256}); err == nil {
+		t.Fatal("a probe without a network selection was accepted")
 	}
 
 	key := base64.StdEncoding.EncodeToString(make([]byte, 32))

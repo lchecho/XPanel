@@ -524,7 +524,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   清理；“期望身份 + 前缀内未知身份”和“期望身份 + 前缀外未知身份”两种情况下移除期望身份均被拒绝；
   开放轮换时精确 safety identity 仍允许保护过渡；任意执行顺序最终都只剩期望身份 per
   Constitution I/II / FR-019 / FR-029 / T086 (partial)
-- [ ] T093 完成 T088 的真实网络组合与统计清理证据：`internal/adapter/xray/inbound.go` 创建探针入站时
+- [X] T093 完成 T088 的真实网络组合与统计清理证据：`internal/adapter/xray/inbound.go` 创建探针入站时
   必须使用 `probe.Network`，不得继续硬编码 `domain.NetworkTCPUDP`；将
   `tests/contract/xray/template_test.go` 的缺失 policy 契约扩为 AES-128/AES-256 ×
   TCP/UDP/tcp_udp 全六组合，并让每个组合都覆盖首次验证、重复验证和缺失 policy。为每次生成的探针身份

@@ -154,7 +154,10 @@ type TemplateCapabilities struct {
 	MultiUserSupported bool
 	// TrafficAccounted 表示探针身份的上行与下行计数器都读到了：节点确实开启了用户级统计。
 	// 这是 FR-005 的第四项能力，只能通过在探针入站上产生真实流量来证实（research.md C-007）。
-	TrafficAccounted    bool
+	TrafficAccounted bool
+	// ProbeStatisticsID 是本次验证使用的一次性探针身份，供测试与诊断核对清理结果；
+	// 它从不属于任何用户，也不进入任何计量口径。
+	ProbeStatisticsID   string
 	CompatibilityReason string
 }
 

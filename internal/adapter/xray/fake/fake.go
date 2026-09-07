@@ -243,6 +243,9 @@ func (a *Adapter) AddUser(ctx context.Context, command ports.AddUserCommand) (po
 	if err := a.unavailable("add_user"); err != nil {
 		return ports.MutationReceipt{}, err
 	}
+	if err := guardPanelInbound("add_user", command.InboundTag); err != nil {
+		return ports.MutationReceipt{}, err
+	}
 	if _, exists := a.Inbounds[command.InboundTag]; !exists {
 		return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorInboundNotFound, Operation: "add_user",
 			Retryable: false, SafeSummary: "inbound was not found"}
@@ -274,7 +277,15 @@ func (a *Adapter) RemoveUser(ctx context.Context, command ports.RemoveUserComman
 	if err := a.unavailable("remove_user"); err != nil {
 		return ports.MutationReceipt{}, err
 	}
+	if err := guardPanelInbound("remove_user", command.InboundTag); err != nil {
+		return ports.MutationReceipt{}, err
+	}
 	failure, fails := a.failure("remove_user")
+	if _, exists := a.Inbounds[command.InboundTag]; !exists && !fails {
+		// 入站整体不在时，真实 Xray 的 AlterInbound 报的是「找不到该入站」而不是「找不到用户」。
+		return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorInboundNotFound, Operation: "remove_user",
+			Retryable: false, SafeSummary: "inbound was not found"}
+	}
 	_, exists := a.Users[command.InboundTag][command.StatisticsID]
 	if !fails || failure.Applied {
 		delete(a.Users[command.InboundTag], command.StatisticsID)
@@ -349,6 +360,15 @@ func (a *Adapter) InboundTags() []string {
 		tags = append(tags, tag)
 	}
 	return tags
+}
+
+// guardPanelInbound 复刻真实 Adapter 的命名空间边界：面板不得变更保留前缀之外的入站。
+func guardPanelInbound(operation, tag string) error {
+	if domain.IsPanelNamespace(tag) {
+		return nil
+	}
+	return &ports.AdapterError{Kind: ports.ErrorInvalidArgument, Operation: operation,
+		SafeSummary: "refusing to mutate an inbound outside the panel namespace"}
 }
 
 // AddExternalInbound 注入一条面板命名空间之外的入站，用于验证面板只读边界。

@@ -16,8 +16,8 @@ const mib = 1 << 20
 func TestQuotaLifecycleEndToEnd(t *testing.T) {
 	app := newHarness(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
-	response, _ := app.PostForm("/users", "/users/new", url.Values{"display_name": {"Alice"}, "profile_id": {profileID.String()},
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	response, _ := app.PostForm("/users", "/users/new", url.Values{"display_name": {"Alice"}, "template_id": {templateID.String()},
 		"quota_value": {"2"}, "quota_unit": {"MiB"}, "reset_day": {"1"}})
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("create status=%d", response.StatusCode)
@@ -27,7 +27,8 @@ func TestQuotaLifecycleEndToEnd(t *testing.T) {
 	app.Drain()
 	record := app.User(userID)
 	statsID := record.Identity.StatisticsID
-	present := func() bool { _, ok := app.Adapter.Users["managed"][statsID]; return ok }
+	tag := record.Inbound.Inbound.InboundTag
+	present := func() bool { _, ok := app.Adapter.Users[tag][statsID]; return ok }
 
 	// 越界：小额配额 → 计数增长 → exceeded → 同步移除。
 	app.SetTraffic(record, mib, mib)

@@ -69,8 +69,10 @@ type AccessAllocation struct {
 	UpdatedAt                time.Time
 }
 
+// DesiredPresent 判定该分配当前是否应当在 Xray 中监听。
+// 真值表只有一处定义（InboundDesiredPresent），用户路径、配额路径与协调路径共用它，避免各处重复派生。
 func (a AccessAllocation) DesiredPresent(user ManagedUser) bool {
-	return user.Lifecycle == LifecycleActive && a.AdminEnabled && a.QuotaState == QuotaWithinLimit
+	return InboundDesiredPresent(user.Lifecycle, a.AdminEnabled, a.QuotaState)
 }
 
 type DisplayState string

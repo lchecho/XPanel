@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"testing"
 	"time"
 
@@ -19,20 +20,21 @@ import (
 	"xpanel/internal/security"
 )
 
-// 契约门禁 5–6：真实 AES-256 客户端经 server-key:user-key 通过 TCP 与 UDP，两个精确计数器递增；
-// 移除用户后新握手被拒，而已建立的连接可以继续。客户端由第二个 xray 进程（socks 入站 + shadowsocks 出站）扮演。
-func TestLiveTrafficCountersAndRemovalSemantics(t *testing.T) {
+// 契约门禁 5–6：真实 AES-256 客户端经面板在运行期创建的专属入站完成 TCP 与 UDP 流量，
+// 该用户的两个方向计数器都精确递增；移除整条入站后端口释放、新握手被拒，而已建立的连接可以继续。
+// 客户端由第二个 xray 进程（socks 入站 + shadowsocks 出站）扮演。
+func TestLiveTrafficCountersAndInboundRemovalSemantics(t *testing.T) {
 	runtime := startRuntime(t)
 	bin := contractBinary(t)
 	userKey := testKey('u')
-	statisticsID := "xpanel-11111111-2222-4333-8444-555555555555"
-	if _, err := runtime.client.AddUser(context.Background(), ports.AddUserCommand{ProfileTag: "managed", StatisticsID: statisticsID,
-		CredentialVersion: 1, UserKey: security.NewRedactedString(userKey)}); err != nil {
-		t.Fatal(err)
-	}
+	tag, port := panelTag("11111111-2222-4333-8444-555555555555"), freePort(t)
+	statisticsID := panelTag("11111111-2222-4333-8444-555555555555-client")
+	serverKey := createInbound(t, runtime, tag, port, userKey)
+	inboundAddress := net.JoinHostPort(listenAddress, strconv.Itoa(port))
+
 	tcpEcho := startTCPEcho(t)
 	udpEcho := startUDPEcho(t)
-	socks := startClientRuntime(t, bin, runtime.inbound, runtime.serverKey+":"+userKey)
+	socks := startClientRuntime(t, bin, inboundAddress, serverKey+":"+userKey)
 
 	payload := make([]byte, 64*1024)
 	if _, err := rand.Read(payload); err != nil {
@@ -64,23 +66,27 @@ func TestLiveTrafficCountersAndRemovalSemantics(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("counters did not reflect traffic: uplink=%d downlink=%d", uplink, downlink)
+			t.Fatalf("counters did not reflect traffic: uplink=%d downlink=%d\n%s", uplink, downlink, runtime.diagnostics())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	bootstrapRound, err := runtime.client.ReadTraffic(context.Background(), ports.TrafficQuery{StatisticsIDs: []string{"bootstrap"}})
+	// 运维自有入站的身份不属于面板命名空间，也不进入面板的计数口径。
+	operatorRound, err := runtime.client.ReadTraffic(context.Background(), ports.TrafficQuery{StatisticsIDs: []string{"operator"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, snapshot := range bootstrapRound.Snapshots {
+	for _, snapshot := range operatorRound.Snapshots {
 		if snapshot.Found && snapshot.Bytes != 0 {
-			t.Fatalf("bootstrap identity accumulated traffic: %#v", snapshot)
+			t.Fatalf("operator identity accumulated traffic: %#v", snapshot)
 		}
 	}
 
-	// 门禁 6：移除后新握手被拒，已建立连接继续。
-	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{ProfileTag: "managed", StatisticsID: statisticsID}); err != nil {
+	// 门禁 6：移除整条入站后端口释放、新握手被拒，已建立连接继续。
+	if _, err := runtime.client.RemoveInbound(context.Background(), ports.RemoveInboundCommand{InboundTag: tag}); err != nil {
 		t.Fatal(err)
+	}
+	if listening(port) {
+		t.Fatalf("port %d is still listening after the inbound was removed", port)
 	}
 	echoThrough(t, established, payload[:4096])
 	rejected, err := socksDial(socks, tcpEcho)
@@ -91,9 +97,20 @@ func TestLiveTrafficCountersAndRemovalSemantics(t *testing.T) {
 		_, readErr := io.ReadFull(rejected, buffer)
 		rejected.Close()
 		if writeErr == nil && readErr == nil {
-			t.Fatal("new connection succeeded after the user was removed")
+			t.Fatal("new connection succeeded after the inbound was removed")
 		}
 	}
+	// 计数器在入站移除后仍可读，且不得倒退（宪章 III：不得把缺失当作零）。
+	final, err := runtime.client.ReadTraffic(context.Background(), ports.TrafficQuery{StatisticsIDs: []string{statisticsID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, snapshot := range final.Snapshots {
+		if snapshot.Found && snapshot.Bytes < uint64(len(payload)) {
+			t.Fatalf("counter regressed after inbound removal: %#v", snapshot)
+		}
+	}
+	_ = security.MethodAES256
 }
 
 func startTCPEcho(t *testing.T) string {

@@ -310,6 +310,16 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 	}
 
 	// 3) 期望监听：创建整条入站（含唯一客户端）。
+	return s.createDedicatedInbound(ctx, work, inbound, statisticsID, logger, started)
+}
+
+// createDedicatedInbound 创建整条专属入站：一个端口、一个受管客户端。
+//
+// AddInbound 非原子（research.md R-003）：绑定失败时标签仍可能被注册，因此所有失败分支
+// 都必须读后写确认真实状态，并在需要时补偿移除，避免重试永久卡在 inbound_already_exists。
+func (s *Synchronizer) createDedicatedInbound(ctx context.Context, work *ports.SyncWork, inbound ports.RuntimeInbound,
+	statisticsID string, logger *slog.Logger, started time.Time) error {
+	op := work.Operation
 	serverKey, err := s.keyring.Decrypt(work.Inbound.ServerKeyCiphertext, work.Inbound.ServerKeyNonce,
 		security.SecretAAD("dedicated_inbounds", work.Allocation.ID.String(), "server_key", work.Inbound.KeyEncryptionVersion))
 	if err != nil {
@@ -382,8 +392,9 @@ func (s *Synchronizer) rotateWithinInbound(ctx context.Context, work *ports.Sync
 			case kind == ports.ErrorUserNotFound:
 				// 旧凭证已不在视为该阶段收敛。
 			case kind == ports.ErrorInboundNotFound:
-				// 入站不在（例如刚重启）：交由协调器重建，本轮按可重试处理。
-				return s.retry(ctx, work, err, logger, started)
+				// 入站整体不在（例如 Xray 刚重启）：轮换的目标是「入站在监听且密钥为期望版本」，
+				// 直接按期望凭证重建整条入站即可一步达成，无需等协调器（宪章 IV）。
+				return s.createDedicatedInbound(ctx, work, inbound, statisticsID, logger, started)
 			case retryable && kind != ports.ErrorInstanceUnavailable:
 				if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
 					return fenceErr
@@ -437,7 +448,8 @@ func (s *Synchronizer) rotateWithinInbound(ctx context.Context, work *ports.Sync
 				return s.retry(ctx, work, addErr, logger, started)
 			}
 		case kind == ports.ErrorInboundNotFound:
-			return s.retry(ctx, work, err, logger, started)
+			// 同上：入站在两阶段之间消失，按期望凭证重建整条入站。
+			return s.createDedicatedInbound(ctx, work, inbound, statisticsID, logger, started)
 		case retryable && kind != ports.ErrorInstanceUnavailable:
 			if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
 				return fenceErr

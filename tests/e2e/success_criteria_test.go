@@ -18,14 +18,23 @@ import (
 func TestSuccessCriteriaEvidence(t *testing.T) {
 	app := newHarness(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
+	templateID := app.RegisterCompatibleTemplate("Primary")
 	limit := int64(1 << 20)
 	var records []ports.UserRecord
 	for i := 0; i < 20; i++ {
-		records = append(records, app.CreateUser(fmt.Sprintf("SC User %02d", i), profileID, &limit))
+		records = append(records, app.CreateUser(fmt.Sprintf("SC User %02d", i), templateID, &limit))
 	}
 	app.Drain()
 	evidence := func(id, format string, args ...any) { t.Logf("SC-EVIDENCE %s: %s", id, fmt.Sprintf(format, args...)) }
+	// 存在 = 该用户的专属入站在监听且入站内含其受管客户端（每用户一入站一端口）。
+	presentIn := func(record ports.UserRecord) bool {
+		tag := app.User(record.User.ID).Inbound.Inbound.InboundTag
+		if _, ok := app.Adapter.Inbounds[tag]; !ok {
+			return false
+		}
+		_, ok := app.Adapter.Users[tag][record.Identity.StatisticsID]
+		return ok
+	}
 
 	// SC-003：采集提交后页面立即反映；结构性上界 = 采集间隔 5s + 轮询间隔 5s = 10s。
 	for i, record := range records {
@@ -45,12 +54,13 @@ func TestSuccessCriteriaEvidence(t *testing.T) {
 	reached := app.Clock.Now()
 	app.Collect()
 	app.Drain()
-	if _, present := app.Adapter.Users["managed"][blocked.Identity.StatisticsID]; present {
+	if presentIn(blocked) {
 		t.Fatal("blocked user still present")
 	}
 	evidence("SC-004", "quota crossing committed at %s; removal confirmed in the same collect+sync pass (<= 5s collection interval + immediate wake)", reached.Format(time.RFC3339))
 	failing := records[1]
-	app.Adapter.Failures["remove_user"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorDeadlineExceeded, Operation: "remove_user", Retryable: true, SafeSummary: "timed out"}}}
+	// 停止访问移除的是整条入站，故障注入到 remove_inbound。
+	app.Adapter.Failures["remove_inbound"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorDeadlineExceeded, Operation: "remove_inbound", Retryable: true, SafeSummary: "timed out"}}}
 	app.SetTraffic(failing, 1<<20, 0)
 	app.Collect()
 	app.Drain()
@@ -78,30 +88,32 @@ func TestSuccessCriteriaEvidence(t *testing.T) {
 	app.Drain()
 	wrong := 0
 	for _, record := range []ports.UserRecord{disabled, deletedUser} {
-		if _, present := app.Adapter.Users["managed"][record.Identity.StatisticsID]; present {
+		if presentIn(record) {
 			wrong++
 		}
 	}
-	if _, present := app.Adapter.Users["managed"][blocked.Identity.StatisticsID]; !present || wrong != 0 {
-		t.Fatalf("rollover restore blocked=%v wrong=%d", present, wrong)
+	if restored := presentIn(blocked); !restored || wrong != 0 {
+		t.Fatalf("rollover restore blocked=%v wrong=%d", restored, wrong)
 	}
 	evidence("SC-005", "boundary at %s; quota-blocked user restored in the same scheduler+sync pass; erroneous restores=%d", boundary.Format(time.RFC3339), wrong)
 
 	// SC-006：Xray 重启后一次协调 + 一次同步收敛（协调周期 15s < 60s）。
 	app.Adapter.Restart()
-	app.Adapter.Users["managed"]["bootstrap"] = ports.RemoteUser{StatisticsID: "bootstrap", Present: true, Kind: "bootstrap"}
+	app.Adapter.AddExternalInbound("operator-inbound", 45000)
 	summary := app.ReconcileOnce()
 	app.Drain()
 	mismatch := 0
 	for _, record := range records {
 		current := app.User(record.User.ID)
-		_, present := app.Adapter.Users["managed"][current.Identity.StatisticsID]
-		if present != current.Allocation.DesiredPresent(current.User) || current.Allocation.PendingSync() {
+		if presentIn(record) != current.Allocation.DesiredPresent(current.User) || current.Allocation.PendingSync() {
 			mismatch++
 		}
 	}
 	if mismatch != 0 {
 		t.Fatalf("allocations not converged after restart: %d", mismatch)
+	}
+	if _, kept := app.Adapter.Inbounds["operator-inbound"]; !kept {
+		t.Fatal("operator inbound outside the panel namespace was removed during reconciliation")
 	}
 	evidence("SC-006", "after Xray restart: drift=%d reconciled in one 15s cycle + immediate sync; mismatches=0", summary.Drift)
 

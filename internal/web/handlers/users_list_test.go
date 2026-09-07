@@ -13,10 +13,10 @@ import (
 func TestUserListSearchAndStatusFilters(t *testing.T) {
 	app := testsupport.New(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
-	alice := app.CreateUser("Alice", profileID, nil)
-	bob := app.CreateUser("Bob", profileID, nil)
-	carol := app.CreateUser("Carol", profileID, nil)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	alice := app.CreateUser("Alice", templateID, nil)
+	bob := app.CreateUser("Bob", templateID, nil)
+	carol := app.CreateUser("Carol", templateID, nil)
 	app.Drain()
 	if _, err := app.Users.SetAdminEnabled(context.Background(), application.SetEnabledInput{ID: bob.User.ID, Enabled: false, ExpectedRevision: 0,
 		RequestID: testsupport.NewID(t), ActorID: app.AdminID}); err != nil {

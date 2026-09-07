@@ -12,8 +12,8 @@ import (
 // 优雅关闭：在 Xray 调用进行中取消 worker，不得留下部分提交；重启后从同一操作恢复到相同结果。
 func TestWorkerCancellationLeavesNoPartialCommit(t *testing.T) {
 	app := testsupport.New(t)
-	profileID := app.RegisterCompatibleProfile("Primary")
-	record := app.CreateUser("Alice", profileID, nil)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	record := app.CreateUser("Alice", templateID, nil)
 	app.Adapter.Delay = 500 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

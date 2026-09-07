@@ -15,8 +15,8 @@ var passwordPattern = regexp.MustCompile(`<code class="print-hidden connection-s
 func TestLifecycleEndToEnd(t *testing.T) {
 	app := newHarness(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
-	response, _ := app.PostForm("/users", "/users/new", url.Values{"display_name": {"Alice"}, "profile_id": {profileID.String()},
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	response, _ := app.PostForm("/users", "/users/new", url.Values{"display_name": {"Alice"}, "template_id": {templateID.String()},
 		"unlimited": {"on"}, "reset_day": {"1"}})
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("create status=%d", response.StatusCode)
@@ -26,7 +26,10 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	app.Drain()
 	record := app.User(userID)
 	statsID := record.Identity.StatisticsID
-	present := func() bool { _, ok := app.Adapter.Users["managed"][statsID]; return ok }
+	// 专属入站标签在整个生命周期内不变；停用会移除整条入站，启用会按同一端口重建（FR-017/FR-019）。
+	tag := record.Inbound.Inbound.InboundTag
+	port := record.Inbound.Inbound.Port
+	present := func() bool { _, ok := app.Adapter.Users[tag][statsID]; return ok }
 	app.SetTraffic(record, 4096, 8192)
 	app.Collect()
 
@@ -56,6 +59,9 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if !present() || app.User(userID).Cycle.GrossDownlinkBytes != 8192 {
 		t.Fatal("re-enabled user missing or history lost")
 	}
+	if got := app.User(userID).Inbound.Inbound.Port; got != port || !app.Listening(port) {
+		t.Fatalf("re-enabled port = %d want %d listening", got, port)
+	}
 
 	// 轮换：旧凭证消失、新凭证出现、历史归属不变。
 	_, body := app.Get(path + "/connection")
@@ -67,7 +73,7 @@ func TestLifecycleEndToEnd(t *testing.T) {
 		t.Fatalf("rotate status=%d", response.StatusCode)
 	}
 	app.Drain()
-	remote := app.Adapter.Users["managed"][statsID]
+	remote := app.Adapter.Users[tag][statsID]
 	if remote.CredentialVersion != 2 {
 		t.Fatalf("fake Xray credential version = %d", remote.CredentialVersion)
 	}
@@ -102,7 +108,7 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if destroyed != 0 {
 		t.Fatalf("credentials still hold key material after delete: %d", destroyed)
 	}
-	response, _ = app.PostForm("/users", "/users/new", url.Values{"display_name": {"Alice Prime"}, "profile_id": {profileID.String()},
+	response, _ = app.PostForm("/users", "/users/new", url.Values{"display_name": {"Alice Prime"}, "template_id": {templateID.String()},
 		"unlimited": {"on"}, "reset_day": {"1"}})
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("recreate status=%d", response.StatusCode)

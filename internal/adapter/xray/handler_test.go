@@ -124,7 +124,7 @@ func TestHandlerContractEncodingAndCapabilities(t *testing.T) {
 	}
 
 	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	command := ports.AddUserCommand{InboundTag: "managed", StatisticsID: "xpanel-managed", CredentialVersion: 7,
+	command := ports.AddUserCommand{InboundTag: "xpanel-managed-inbound", StatisticsID: "xpanel-managed", CredentialVersion: 7,
 		UserKey: security.NewRedactedString(key)}
 	if _, err := client.AddUser(context.Background(), command); err != nil {
 		t.Fatal(err)
@@ -145,7 +145,7 @@ func TestHandlerContractEncodingAndCapabilities(t *testing.T) {
 	if !ok || account.GetKey() != key {
 		t.Fatalf("account type/value = %T", accountMessage)
 	}
-	if _, err := client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "managed", StatisticsID: "xpanel-managed"}); err != nil {
+	if _, err := client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "xpanel-managed-inbound", StatisticsID: "xpanel-managed"}); err != nil {
 		t.Fatal(err)
 	}
 	instance, err = handler.last.GetOperation().GetInstance()
@@ -154,8 +154,22 @@ func TestHandlerContractEncodingAndCapabilities(t *testing.T) {
 		t.Fatalf("remove operation = %#v, %v", instance, err)
 	}
 
+	// 命名空间之外的入站对面板只读：变更在到达 Xray 之前就被拒绝。
+	before := handler.last
+	if _, err := client.AddUser(context.Background(), ports.AddUserCommand{InboundTag: "operator-inbound",
+		StatisticsID: "xpanel-intruder", UserKey: security.NewRedactedString(key)}); err == nil {
+		t.Fatal("panel mutated an inbound outside its namespace")
+	}
+	if _, err := client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "operator-inbound",
+		StatisticsID: "xpanel-intruder"}); err == nil {
+		t.Fatal("panel removed a client from an inbound outside its namespace")
+	}
+	if handler.last != before {
+		t.Fatal("a refused mutation still reached Xray")
+	}
+
 	// 面板命名空间前缀是区分受管与外部身份的唯一依据；bootstrap 概念已随共享入站模型退役。
-	users, err := client.ListUsers(context.Background(), ports.RuntimeInbound{InboundTag: "managed", Method: security.MethodAES256})
+	users, err := client.ListUsers(context.Background(), ports.RuntimeInbound{InboundTag: "xpanel-managed-inbound", Method: security.MethodAES256})
 	if err != nil || len(users) != 3 {
 		t.Fatalf("users = %#v, %v", users, err)
 	}
@@ -172,7 +186,7 @@ func TestHandlerStableErrorsDoNotLeakKeys(t *testing.T) {
 	key := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32)))
 	handler := &handlerStub{alterErr: status.Error(codes.AlreadyExists, "duplicate "+key)}
 	client := newBufClient(t, handler, &statsStub{}, time.Second)
-	_, err := client.AddUser(context.Background(), ports.AddUserCommand{InboundTag: "managed", StatisticsID: "xpanel-user",
+	_, err := client.AddUser(context.Background(), ports.AddUserCommand{InboundTag: "xpanel-managed-inbound", StatisticsID: "xpanel-user",
 		UserKey: security.NewRedactedString(key)})
 	adapterErr, ok := err.(*ports.AdapterError)
 	if !ok || adapterErr.Kind != ports.ErrorUserAlreadyExists || strings.Contains(err.Error(), key) {
@@ -180,7 +194,7 @@ func TestHandlerStableErrorsDoNotLeakKeys(t *testing.T) {
 	}
 
 	timeoutClient := newBufClient(t, &handlerStub{delay: 100 * time.Millisecond}, &statsStub{}, 5*time.Millisecond)
-	_, err = timeoutClient.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "managed", StatisticsID: "xpanel-user"})
+	_, err = timeoutClient.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "xpanel-managed-inbound", StatisticsID: "xpanel-user"})
 	adapterErr, ok = err.(*ports.AdapterError)
 	if !ok || adapterErr.Kind != ports.ErrorDeadlineExceeded || !adapterErr.Retryable {
 		t.Fatalf("deadline mapping = %T %v", err, err)

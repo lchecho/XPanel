@@ -2,50 +2,42 @@ package xray_test
 
 import (
 	"context"
-	"encoding/base64"
-	"strings"
+	"errors"
 	"testing"
 
 	"xpanel/internal/ports"
 	"xpanel/internal/security"
 )
 
-func TestLiveProfileAndUserMutationContract(t *testing.T) {
+// 契约门禁 3：在面板运行期创建的专属入站上，增删客户端的语义稳定——重复添加与移除缺失都有可识别的错误类别。
+func TestLiveUserMutationContractOnADedicatedInbound(t *testing.T) {
 	runtime := startRuntime(t)
-	profile := ports.RuntimeProfile{InboundTag: "managed", Method: security.MethodAES256, BootstrapStatisticsID: "bootstrap"}
-	capabilities, err := runtime.client.ValidateProfile(context.Background(), profile)
-	if err != nil || !capabilities.Compatible() {
-		t.Fatalf("fixed runtime profile contract = %#v, %v", capabilities, err)
+	tag, port := panelTag("users"), freePort(t)
+	createInbound(t, runtime, tag, port, testKey('u'))
+	inbound := ports.RuntimeInbound{InboundTag: tag, Method: security.MethodAES256}
+
+	users, err := runtime.client.ListUsers(context.Background(), inbound)
+	if err != nil || len(users) != 1 || users[0].Kind != "managed" {
+		t.Fatalf("initial users = %#v, %v", users, err)
 	}
-	key := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("u", 32)))
-	command := ports.AddUserCommand{ProfileTag: "managed", StatisticsID: "xpanel-550e8400-e29b-41d4-a716-446655440000",
-		CredentialVersion: 1, UserKey: security.NewRedactedString(key)}
+	command := ports.AddUserCommand{InboundTag: tag, StatisticsID: panelTag("550e8400-e29b-41d4-a716-446655440000"),
+		CredentialVersion: 1, UserKey: security.NewRedactedString(testKey('m'))}
 	if _, err := runtime.client.AddUser(context.Background(), command); err != nil {
 		t.Fatal(err)
 	}
-	users, err := runtime.client.ListUsers(context.Background(), profile)
-	if err != nil {
+	var adapterErr *ports.AdapterError
+	if _, err := runtime.client.AddUser(context.Background(), command); !errors.As(err, &adapterErr) || adapterErr.Kind != ports.ErrorUserAlreadyExists {
+		t.Fatalf("duplicate add = %v", err)
+	}
+	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag, StatisticsID: command.StatisticsID}); err != nil {
 		t.Fatal(err)
 	}
-	managed, bootstrap := 0, 0
-	for _, user := range users {
-		if user.Kind == "managed" {
-			managed++
-		}
-		if user.Kind == "bootstrap" {
-			bootstrap++
-		}
+	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag, StatisticsID: command.StatisticsID}); !errors.As(err, &adapterErr) || adapterErr.Kind != ports.ErrorUserNotFound {
+		t.Fatalf("missing-user removal = %v", err)
 	}
-	if managed != 1 || bootstrap != 1 {
-		t.Fatalf("unexpected runtime identities: %#v", users)
-	}
-	if _, err := runtime.client.AddUser(context.Background(), command); err == nil {
-		t.Fatal("duplicate add unexpectedly succeeded")
-	}
-	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{ProfileTag: "managed", StatisticsID: command.StatisticsID}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{ProfileTag: "managed", StatisticsID: command.StatisticsID}); err == nil {
-		t.Fatal("missing-user removal unexpectedly succeeded")
+	// 命名空间之外的入站不接受面板的客户端变更。
+	if _, err := runtime.client.AddUser(context.Background(), ports.AddUserCommand{InboundTag: operatorInboundTag,
+		StatisticsID: panelTag("intruder"), CredentialVersion: 1, UserKey: security.NewRedactedString(testKey('z'))}); err == nil {
+		t.Fatal("panel added a client to an inbound outside its namespace")
 	}
 }

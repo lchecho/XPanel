@@ -16,13 +16,13 @@ import (
 func TestRecoveryAfterXrayRestartAndUncertainMutations(t *testing.T) {
 	app := newHarness(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
+	templateID := app.RegisterCompatibleTemplate("Primary")
 	limit := int64(1 << 20)
-	active := app.CreateUser("Active", profileID, nil)
-	disabled := app.CreateUser("Disabled", profileID, nil)
-	exceeded := app.CreateUser("Exceeded", profileID, &limit)
-	deleted := app.CreateUser("Deleted", profileID, nil)
-	pending := app.CreateUser("Pending", profileID, nil)
+	active := app.CreateUser("Active", templateID, nil)
+	disabled := app.CreateUser("Disabled", templateID, nil)
+	exceeded := app.CreateUser("Exceeded", templateID, &limit)
+	deleted := app.CreateUser("Deleted", templateID, nil)
+	pending := app.CreateUser("Pending", templateID, nil)
 	app.Drain()
 	app.SetTraffic(active, 4096, 4096)
 	app.SetTraffic(exceeded, 1<<20, 1<<20)
@@ -44,13 +44,11 @@ func TestRecoveryAfterXrayRestartAndUncertainMutations(t *testing.T) {
 	if _, err := app.Reconcile.ReconcileOnce(context.Background()); err == nil {
 		t.Fatal("reconcile succeeded while Xray is unavailable")
 	}
-	// Xray 重启：动态用户丢失、bootstrap 与外部身份保留、boot epoch 变化。
+	// Xray 重启：面板入站全部丢失、boot epoch 变化；重启后运维自建入站与一条命名空间内的孤儿入站被重新注入。
 	app.Clock.Advance(time.Minute)
 	app.Adapter.Restart()
-	app.Adapter.Users["managed"] = map[string]ports.RemoteUser{
-		"bootstrap":       {StatisticsID: "bootstrap", Present: true, Kind: "bootstrap"},
-		"operator-static": {StatisticsID: "operator-static", Present: true, Kind: "external"},
-	}
+	app.Adapter.AddExternalInbound("operator-inbound", 45000)
+	app.Adapter.AddOrphanInbound(domain.NamespacePrefix+"orphan", 30090)
 	app.Adapter.Available = true
 	summary := app.ReconcileOnce()
 	if !summary.Reconnected || summary.Drift != 1 {
@@ -61,20 +59,40 @@ func TestRecoveryAfterXrayRestartAndUncertainMutations(t *testing.T) {
 		app.Clock.Set(next)
 	}
 	app.Drain()
+	// 存在 = 专属入站在监听且入站内含该用户的受管客户端。
 	present := func(record ports.UserRecord) bool {
-		_, ok := app.Adapter.Users["managed"][record.Identity.StatisticsID]
+		tag := record.Inbound.Inbound.InboundTag
+		if _, ok := app.Adapter.Inbounds[tag]; !ok {
+			return false
+		}
+		_, ok := app.Adapter.Users[tag][record.Identity.StatisticsID]
 		return ok
 	}
 	if !present(active) || present(disabled) || present(exceeded) || present(deleted) || !present(pending) {
 		t.Fatalf("presence after recovery active=%v disabled=%v exceeded=%v deleted=%v pending=%v", present(active), present(disabled), present(exceeded), present(deleted), present(pending))
 	}
-	for _, id := range []string{"bootstrap", "operator-static"} {
-		if _, ok := app.Adapter.Users["managed"][id]; !ok {
-			t.Fatalf("%s identity was touched", id)
-		}
+	// 面板只处理自己命名空间内的入站：运维入站保留，孤儿入站被清理。
+	if _, ok := app.Adapter.Inbounds["operator-inbound"]; !ok {
+		t.Fatal("operator inbound outside the panel namespace was removed")
 	}
-	if app.Adapter.Users["managed"][pending.Identity.StatisticsID].CredentialVersion != 2 {
+	if _, ok := app.Adapter.Inbounds[domain.NamespacePrefix+"orphan"]; ok {
+		t.Fatal("orphan inbound inside the panel namespace was not removed")
+	}
+	if app.Adapter.Users[pending.Inbound.Inbound.InboundTag][pending.Identity.StatisticsID].CredentialVersion != 2 {
 		t.Fatal("pending rotation did not complete with the new credential")
+	}
+	// 每个用户各自一条入站、各自一个端口，重启后按原端口重建。
+	assigned := map[int]string{}
+	for _, record := range []ports.UserRecord{active, pending} {
+		current := app.User(record.User.ID)
+		port := current.Inbound.Inbound.Port
+		if other, clash := assigned[port]; clash {
+			t.Fatalf("port %d shared by %s and %s", port, other, current.User.DisplayName)
+		}
+		assigned[port] = current.User.DisplayName
+		if !app.Listening(port) {
+			t.Fatalf("port %d is not listening after recovery", port)
+		}
 	}
 	// 重启后计数回落：无负流量、无重复计量，事件可见。
 	before := app.User(active.User.ID)
@@ -92,11 +110,12 @@ func TestRecoveryAfterXrayRestartAndUncertainMutations(t *testing.T) {
 	if _, err := app.Users.SetAdminEnabled(context.Background(), application.SetEnabledInput{ID: disabled.User.ID, Enabled: true, ExpectedRevision: 1, RequestID: testsupport.NewID(t), ActorID: actor}); err != nil {
 		t.Fatal(err)
 	}
-	adds := countCalls(app, "add_user")
-	app.Adapter.Failures["add_user"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorDeadlineExceeded, Operation: "add_user", Retryable: true, SafeSummary: "timed out"}, Applied: true}}
+	// 停用移除的是整条入站，因此重新启用走的是 create_inbound。
+	adds := countCalls(app, "create_inbound")
+	app.Adapter.Failures["create_inbound"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorDeadlineExceeded, Operation: "create_inbound", Retryable: true, SafeSummary: "timed out"}, Applied: true}}
 	app.Drain()
-	if countCalls(app, "add_user") != adds+1 || !present(disabled) || app.User(disabled.User.ID).Allocation.ProjectionState != domain.ProjectionPresent {
-		t.Fatalf("uncertain add: calls=%d present=%v", countCalls(app, "add_user")-adds, present(disabled))
+	if countCalls(app, "create_inbound") != adds+1 || !present(disabled) || app.User(disabled.User.ID).Allocation.ProjectionState != domain.ProjectionPresent {
+		t.Fatalf("uncertain create: calls=%d present=%v", countCalls(app, "create_inbound")-adds, present(disabled))
 	}
 	// 应用在提交后、确认前重启：租约到期后从同一操作恢复到相同结果。
 	if _, err := app.Users.SetAdminEnabled(context.Background(), application.SetEnabledInput{ID: disabled.User.ID, Enabled: false, ExpectedRevision: 2, RequestID: testsupport.NewID(t), ActorID: actor}); err != nil {

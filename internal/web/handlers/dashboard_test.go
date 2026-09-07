@@ -20,12 +20,12 @@ func TestDashboardShowsCountsHealthAndZeroState(t *testing.T) {
 		!regexp.MustCompile(`src="/static/htmx-2\.0\.10\.min\.[0-9a-f]{12}\.js"`).MatchString(body) || !regexp.MustCompile(`src="/static/app\.[0-9a-f]{12}\.js"`).MatchString(body) {
 		t.Fatalf("dashboard zero state status=%d body=%s", response.StatusCode, body)
 	}
-	profileID := app.RegisterCompatibleProfile("Primary")
+	templateID := app.RegisterCompatibleTemplate("Primary")
 	limit := int64(1 << 20)
-	active := app.CreateUser("Active", profileID, nil)
-	exceeded := app.CreateUser("Exceeded", profileID, &limit)
-	disabled := app.CreateUser("Disabled", profileID, nil)
-	pending := app.CreateUser("Pending", profileID, nil)
+	active := app.CreateUser("Active", templateID, nil)
+	exceeded := app.CreateUser("Exceeded", templateID, &limit)
+	disabled := app.CreateUser("Disabled", templateID, nil)
+	pending := app.CreateUser("Pending", templateID, nil)
 	app.Drain()
 	app.SetTraffic(active, 4096, 4096)
 	app.SetTraffic(exceeded, 1<<20, 1<<20)
@@ -60,8 +60,8 @@ func TestDashboardShowsCountsHealthAndZeroState(t *testing.T) {
 func TestFragmentsAreLayoutFreeStaleAwareAndNeverCallXray(t *testing.T) {
 	app := testsupport.New(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
-	record := app.CreateUser("Alice", profileID, nil)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	record := app.CreateUser("Alice", templateID, nil)
 	app.Drain()
 	app.SetTraffic(record, 100, 200)
 	app.Collect()

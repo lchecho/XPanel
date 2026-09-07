@@ -2,5 +2,5 @@
 <body>{{template "nav" .}}<main><h1>XPanel 仪表盘</h1>{{template "messages" .}}
 <p id="refresh-status" class="hint" aria-live="polite">每 5 秒自动刷新汇总；脚本未加载时请手动刷新页面。</p>
 <div id="dashboard-summary" hx-get="/fragments/dashboard-summary" hx-trigger="every 5s" hx-swap="innerHTML">{{template "dashboard_summary.html" .}}</div>
-<div class="actions"><a href="/users" class="button">用户列表</a><a href="/users/new" class="button">创建用户</a><a href="/profiles" class="button">访问配置</a></div>
+<div class="actions"><a href="/users" class="button">用户列表</a><a href="/users/new" class="button">创建用户</a><a href="/templates" class="button">入站模板</a></div>
 {{template "footer" .}}</main>{{template "scripts" .}}</body></html>{{end}}

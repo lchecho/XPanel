@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"xpanel/internal/application"
-	"xpanel/internal/domain"
 	"xpanel/internal/logging"
 	"xpanel/internal/security"
 	"xpanel/internal/testsupport"
@@ -24,25 +23,18 @@ func TestNoSecretLeaksAcrossPagesAuditAndLogs(t *testing.T) {
 
 	app := testsupport.New(t)
 	app.Login()
-	serverKey, err := security.GenerateUserKey(security.MethodAES256)
-	if err != nil {
-		t.Fatal(err)
-	}
-	profileID, err := app.Profiles.RegisterProfile(context.Background(), application.ProfileInput{Name: "Primary", InboundTag: "managed",
-		PublicHost: "vpn.example.com", PublicPort: 8388, Method: security.MethodAES256, Network: domain.NetworkTCPUDP, ServerKey: serverKey.Reveal(),
-		BootstrapStatisticsID: "bootstrap", RequestID: testsupport.NewID(t), ActorID: app.AdminID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := app.Validator.ValidateNow(context.Background(), profileID); err != nil {
-		t.Fatal(err)
-	}
-	record := app.CreateUser("Alice", profileID, nil)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	record := app.CreateUser("Alice", templateID, nil)
 	app.Drain()
 	app.SetTraffic(record, 1024, 2048)
 	app.Collect()
 	userKey, err := app.Keyring.Decrypt(record.Credential.KeyCiphertext, record.Credential.KeyNonce,
 		security.SecretAAD("access_credentials", record.Allocation.ID.String(), "user_key", record.Credential.KeyEncryptionVersion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 服务端密钥按入站生成并加密存储；轮换前取出组合密钥用于泄露扫描。
+	info, err := app.Connections.BuildConnectionInfo(context.Background(), record.User.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,10 +56,11 @@ func TestNoSecretLeaksAcrossPagesAuditAndLogs(t *testing.T) {
 	if sessionToken == "" {
 		t.Fatal("session cookie not found")
 	}
-	secrets := map[string]string{"password": app.Password, "server key": serverKey.Reveal(), "user key": string(userKey), "session token": sessionToken}
+	secrets := map[string]string{"password": app.Password, "combined key": info.Password.Reveal(),
+		"user key": string(userKey), "session token": sessionToken}
 	userPath := "/users/" + record.User.ID.String()
 	pages := []string{"/", "/users", "/users?q=ali&status=active", "/users/new", userPath, userPath + "/edit", userPath + "/reset-traffic",
-		userPath + "/rotate", userPath + "/delete", "/profiles", "/profiles/" + profileID.String(), "/profiles/" + profileID.String() + "/edit",
+		userPath + "/rotate", userPath + "/delete", "/templates", "/templates/" + templateID.String(), "/templates/" + templateID.String() + "/edit",
 		"/settings", "/audit", "/audit?user=" + record.User.ID.String(), "/fragments/dashboard-summary", "/fragments/users-table"}
 	for _, path := range pages {
 		response, body := app.Get(path)

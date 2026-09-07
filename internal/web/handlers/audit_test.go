@@ -14,8 +14,8 @@ import (
 func TestAuditListFiltersPaginatesAndHidesSecrets(t *testing.T) {
 	app := testsupport.New(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
-	record := app.CreateUser("Alice", profileID, nil)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	record := app.CreateUser("Alice", templateID, nil)
 	app.Drain()
 	action := func(label string) string { return `<td data-label="动作">` + label + `</td>` }
 	response, body := app.Get("/audit")

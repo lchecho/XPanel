@@ -10,12 +10,15 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	xrayadapter "xpanel/internal/adapter/xray"
+	"xpanel/internal/domain"
 	"xpanel/internal/ports"
+	"xpanel/internal/security"
 )
 
 const (
@@ -93,28 +96,24 @@ func sanitize(output []byte) string {
 
 var base64Key = regexp.MustCompile(`[A-Za-z0-9+/]{43}=`)
 
-// liveRuntime 是一个受控的真实 Xray 进程：主 inbound `managed`（bootstrap `bootstrap`）、
-// 第二 inbound `managed2`（bootstrap `bootstrap2`）用于多 profile 门禁，
-// 第三 inbound `managed3` 故意复用 bootstrap 邮箱 `bootstrap`（Xray 允许，但统计计数器按邮箱全局共享）。
+// liveRuntime 是一个受控的真实 Xray 进程。
+//
+// 配置里没有任何面板入站：面板入站全部由被测代码在运行期通过 HandlerService 创建（002 模型）。
+// 配置里保留一条运维自有入站 operator-inbound（面板命名空间之外），用于证明面板的只读边界。
 type liveRuntime struct {
-	client     *xrayadapter.Client
-	cancel     context.CancelFunc
-	command    *exec.Cmd
-	output     *bytes.Buffer
-	inbound    string
-	inbound2   string
-	inbound3   string
-	serverKey  string
-	serverKey2 string
-	serverKey3 string
-	api        string
-	config     string
+	client       *xrayadapter.Client
+	cancel       context.CancelFunc
+	command      *exec.Cmd
+	output       *bytes.Buffer
+	operator     string
+	operatorPort int
+	api          string
+	config       string
 }
 
 const (
-	secondInboundTag = "managed2"
-	secondBootstrap  = "bootstrap2"
-	thirdInboundTag  = "managed3"
+	operatorInboundTag = "operator-inbound"
+	listenAddress      = "127.0.0.1"
 )
 
 // diagnostics 返回脱敏后的进程输出尾部，用于失败时定位（不含密钥）。
@@ -122,7 +121,7 @@ func (r *liveRuntime) diagnostics() string { return sanitize(r.output.Bytes()) }
 
 func freeAddress(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", listenAddress+":0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,27 +132,76 @@ func freeAddress(t *testing.T) string {
 	return address
 }
 
+// freePort 返回一个当前空闲的端口号；面板入站将在其上创建。
+func freePort(t *testing.T) int {
+	t.Helper()
+	return portOf(t, freeAddress(t))
+}
+
+func portOf(t *testing.T, address string) int {
+	t.Helper()
+	_, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+// panelTag 生成一个面板命名空间内的入站标签。
+func panelTag(suffix string) string { return domain.NamespacePrefix + suffix }
+
 func testKey(fill byte) string {
 	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{fill}, 32))
 }
 
-func runtimeConfig(apiAddress, inboundAddress, method, serverKey string, clients []map[string]string) map[string]any {
-	host, portText, _ := net.SplitHostPort(inboundAddress)
+// createInbound 在运行期创建一条专属入站（一个端口、一个受管客户端），返回其服务端密钥。
+func createInbound(t *testing.T, runtime *liveRuntime, tag string, port int, userKey string) string {
+	t.Helper()
+	serverKey := testKey('s')
+	command := ports.CreateInboundCommand{InboundTag: tag, ListenAddress: listenAddress, Port: port,
+		Method: security.MethodAES256, Network: domain.NetworkTCPUDP, ServerKey: security.NewRedactedString(serverKey),
+		Client: ports.InboundClient{StatisticsID: panelTag(tag[len(domain.NamespacePrefix):] + "-client"), CredentialVersion: 1,
+			UserKey: security.NewRedactedString(userKey)}}
+	if _, err := runtime.client.CreateInbound(context.Background(), command); err != nil {
+		t.Fatalf("create inbound %s on port %d: %v\n%s", tag, port, err, runtime.diagnostics())
+	}
+	return serverKey
+}
+
+// listening 判定某端口当前是否可建立 TCP 连接。
+func listening(port int) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(listenAddress, strconv.Itoa(port)), 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// baseConfig 只包含 API、统计、策略与运维自有入站；面板入站在运行期创建。
+func baseConfig(apiAddress, operatorAddress string) map[string]any {
+	host, portText, _ := net.SplitHostPort(operatorAddress)
 	var port int
 	_, _ = fmt.Sscanf(portText, "%d", &port)
 	return map[string]any{
 		// Xray 要求 api.tag 非空（"API tag can't be empty"）；与 deploy/xray-v26.3.27.example.json 保持一致。
-		"api":    map[string]any{"tag": "api", "listen": apiAddress, "services": []string{"HandlerService", "StatsService"}},
-		"stats":  map[string]any{},
+		"api":   map[string]any{"tag": "api", "listen": apiAddress, "services": []string{"HandlerService", "StatsService"}},
+		"stats": map[string]any{},
+		// 用户级计数器依赖该策略段；面板无法经 API 设置，故为部署前置条件（research.md R-007）。
 		"policy": map[string]any{"levels": map[string]any{"0": map[string]any{"statsUserUplink": true, "statsUserDownlink": true}}},
-		"inbounds": []any{map[string]any{"tag": "managed", "listen": host, "port": port, "protocol": "shadowsocks",
-			"settings": map[string]any{"method": method, "password": serverKey, "network": "tcp,udp", "clients": clients}}},
+		"inbounds": []any{map[string]any{"tag": operatorInboundTag, "listen": host, "port": port, "protocol": "shadowsocks",
+			"settings": map[string]any{"method": "2022-blake3-aes-256-gcm", "password": testKey('o'), "network": "tcp,udp",
+				"clients": []map[string]string{{"email": "operator", "password": testKey('O')}}}}},
 		"outbounds": []any{map[string]any{"protocol": "freedom", "tag": "direct"}},
 	}
 }
 
-// withInbound 追加一个 SS2022 多用户 inbound，用于多 profile 场景。
-func withInbound(config map[string]any, tag, address, method, serverKey string, clients []map[string]string) map[string]any {
+// configWithInbound 在基础配置上追加一条配置文件入站，用于配置检查阶段的负例。
+func configWithInbound(config map[string]any, tag, address, method, serverKey string, clients []map[string]string) map[string]any {
 	host, portText, _ := net.SplitHostPort(address)
 	var port int
 	_, _ = fmt.Sscanf(portText, "%d", &port)
@@ -178,26 +226,9 @@ func writeRuntimeConfig(t *testing.T, config map[string]any) string {
 
 func startRuntime(t *testing.T) *liveRuntime {
 	t.Helper()
-	apiAddress, inboundAddress, secondAddress, thirdAddress := freeAddress(t), freeAddress(t), freeAddress(t), freeAddress(t)
-	config := runtimeConfig(apiAddress, inboundAddress, "2022-blake3-aes-256-gcm", testKey('s'),
-		[]map[string]string{{"email": "bootstrap", "password": testKey('b')}})
-	config = withInbound(config, secondInboundTag, secondAddress, "2022-blake3-aes-256-gcm", testKey('S'),
-		[]map[string]string{{"email": secondBootstrap, "password": testKey('B')}})
-	config = withInbound(config, thirdInboundTag, thirdAddress, "2022-blake3-aes-256-gcm", testKey('T'),
-		[]map[string]string{{"email": "bootstrap", "password": testKey('C')}})
-	runtime := launchRuntime(t, apiAddress, config)
-	runtime.inbound, runtime.inbound2, runtime.inbound3 = inboundAddress, secondAddress, thirdAddress
-	runtime.serverKey, runtime.serverKey2, runtime.serverKey3 = testKey('s'), testKey('S'), testKey('T')
-	return runtime
-}
-
-// startCustomRuntime 只启动主 inbound `managed`，clients 由调用方指定（用于运行期负例，如空 clients 的单用户模式）。
-func startCustomRuntime(t *testing.T, clients []map[string]string) *liveRuntime {
-	t.Helper()
-	apiAddress, inboundAddress := freeAddress(t), freeAddress(t)
-	config := runtimeConfig(apiAddress, inboundAddress, "2022-blake3-aes-256-gcm", testKey('s'), clients)
-	runtime := launchRuntime(t, apiAddress, config)
-	runtime.inbound, runtime.serverKey = inboundAddress, testKey('s')
+	apiAddress, operatorAddress := freeAddress(t), freeAddress(t)
+	runtime := launchRuntime(t, apiAddress, baseConfig(apiAddress, operatorAddress))
+	runtime.operator, runtime.operatorPort = operatorAddress, portOf(t, operatorAddress)
 	return runtime
 }
 

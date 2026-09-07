@@ -55,7 +55,10 @@ type DedicatedInbound struct {
 func (i DedicatedInbound) Assigned() bool { return i.ReleasedAt == nil }
 
 // InboundDesiredPresent 由用户生命周期、管理员意图和配额状态派生入站是否应当监听。
-// 与 AccessAllocation.DesiredPresent 保持同一真值表：三者全部成立才监听。
+//
+// 职责：这是「该端口是否应当在监听」的唯一真值表，用户、配额与协调三条路径都经
+// AccessAllocation.DesiredPresent 走到这里，任何一处新增判定都必须改在此函数内。
+// AI-LOCK：三者全部成立才监听；停止访问必须移除整条入站，不得只删客户端（FR-019）。
 func InboundDesiredPresent(lifecycle LifecycleState, adminEnabled bool, quota QuotaState) bool {
 	return lifecycle == LifecycleActive && adminEnabled && quota == QuotaWithinLimit
 }

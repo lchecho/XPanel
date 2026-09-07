@@ -13,30 +13,30 @@ func TestUserCreationFormAndConnectionVisibility(t *testing.T) {
 	app := testsupport.New(t)
 	app.Login()
 	response, body := app.Get("/users/new")
-	if response.StatusCode != http.StatusOK || !strings.Contains(body, "当前没有处于“兼容”状态的访问配置") {
+	if response.StatusCode != http.StatusOK || !strings.Contains(body, "当前没有处于“兼容”状态的入站模板") {
 		t.Fatalf("zero-state form status=%d body=%s", response.StatusCode, body)
 	}
 	_, body = app.Get("/users")
 	if !strings.Contains(body, "尚未创建用户") {
 		t.Fatalf("users list zero state missing: %s", body)
 	}
-	profileID := app.RegisterCompatibleProfile("Primary")
+	templateID := app.RegisterCompatibleTemplate("Primary")
 	_, body = app.Get("/users/new")
-	if !strings.Contains(body, `<option value="`+profileID.String()+`"`) || !strings.Contains(body, `name="reset_day" type="number" min="1" max="28" value="1"`) {
-		t.Fatalf("form lacks compatible profile option or reset day default: %s", body)
+	if !strings.Contains(body, `<option value="`+templateID.String()+`"`) || !strings.Contains(body, `name="reset_day" type="number" min="1" max="28" value="1"`) {
+		t.Fatalf("form lacks compatible template option or reset day default: %s", body)
 	}
 
-	invalid := url.Values{"display_name": {"Alice"}, "profile_id": {profileID.String()}, "quota_value": {"0"}, "quota_unit": {"GiB"}, "reset_day": {"1"}}
+	invalid := url.Values{"display_name": {"Alice"}, "template_id": {templateID.String()}, "quota_value": {"0"}, "quota_unit": {"GiB"}, "reset_day": {"1"}}
 	response, body = app.PostForm("/users", "/users/new", invalid)
 	if response.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(body, "配额必须为正整数") || !strings.Contains(body, `value="Alice"`) {
 		t.Fatalf("invalid quota status=%d body=%s", response.StatusCode, body)
 	}
-	missingQuota := url.Values{"display_name": {"Alice"}, "profile_id": {profileID.String()}, "quota_value": {""}, "quota_unit": {"GiB"}, "reset_day": {"1"}}
+	missingQuota := url.Values{"display_name": {"Alice"}, "template_id": {templateID.String()}, "quota_value": {""}, "quota_unit": {"GiB"}, "reset_day": {"1"}}
 	if response, _ = app.PostForm("/users", "/users/new", missingQuota); response.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("empty quota without unlimited status=%d", response.StatusCode)
 	}
 
-	valid := url.Values{"display_name": {"Alice"}, "profile_id": {profileID.String()}, "quota_value": {"2"}, "quota_unit": {"GiB"}, "reset_day": {"5"}}
+	valid := url.Values{"display_name": {"Alice"}, "template_id": {templateID.String()}, "quota_value": {"2"}, "quota_unit": {"GiB"}, "reset_day": {"5"}}
 	response, body = app.PostForm("/users", "/users/new", valid)
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("create status=%d body=%s", response.StatusCode, body)
@@ -63,7 +63,7 @@ func TestUserCreationFormAndConnectionVisibility(t *testing.T) {
 		t.Fatalf("connection page body=%s", body)
 	}
 
-	duplicate := url.Values{"display_name": {" alice "}, "profile_id": {profileID.String()}, "unlimited": {"on"}, "reset_day": {"1"}}
+	duplicate := url.Values{"display_name": {" alice "}, "template_id": {templateID.String()}, "unlimited": {"on"}, "reset_day": {"1"}}
 	response, body = app.PostForm("/users", "/users/new", duplicate)
 	if response.StatusCode != http.StatusConflict || !strings.Contains(body, "显示名称已被使用") {
 		t.Fatalf("duplicate name status=%d body=%s", response.StatusCode, body)

@@ -21,7 +21,7 @@ var (
 	tablePattern    = regexp.MustCompile(`(?s)<table>.*?</table>`)
 	requiredMediaQ  = "@media (max-width: 40rem)"
 	stylesheetPath  = "../static/app.css"
-	navigationLinks = []string{`<a href="/">`, `<a href="/users">`, `<a href="/profiles">`, `<a href="/audit">`, `<a href="/settings">`}
+	navigationLinks = []string{`<a href="/">`, `<a href="/users">`, `<a href="/templates">`, `<a href="/audit">`, `<a href="/settings">`}
 )
 
 // 所有页面：每个可见输入有程序化标签，错误提示通过 aria-describedby 关联，表格有 caption 与 scope，
@@ -30,8 +30,8 @@ func TestPagesMeetStructuralAccessibilityRules(t *testing.T) {
 	app := testsupport.New(t)
 	_, login := app.Get("/login")
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
-	record := app.CreateUser("Alice", profileID, nil)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	record := app.CreateUser("Alice", templateID, nil)
 	app.Drain()
 	app.SetTraffic(record, 512, 512)
 	app.Collect()
@@ -42,7 +42,7 @@ func TestPagesMeetStructuralAccessibilityRules(t *testing.T) {
 	userPath := "/users/" + record.User.ID.String()
 	pages := map[string]string{"/login": login}
 	for _, path := range []string{"/", "/users", "/users/new", userPath, userPath + "/edit", userPath + "/reset-traffic", userPath + "/rotate",
-		userPath + "/delete", userPath + "/connection", "/profiles", "/profiles/new", "/profiles/" + profileID.String(), "/profiles/" + profileID.String() + "/edit",
+		userPath + "/delete", userPath + "/connection", "/templates", "/templates/new", "/templates/" + templateID.String(), "/templates/" + templateID.String() + "/edit",
 		"/settings", "/audit"} {
 		response, body := app.Get(path)
 		if response.StatusCode != 200 {

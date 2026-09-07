@@ -13,8 +13,8 @@ import (
 func TestUserLifecycleActionsIdempotencyAndConflicts(t *testing.T) {
 	app := testsupport.New(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
-	record := app.CreateUser("Alice", profileID, nil)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	record := app.CreateUser("Alice", templateID, nil)
 	app.Drain()
 	path := "/users/" + record.User.ID.String()
 	_, body := app.Get(path)

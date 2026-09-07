@@ -117,6 +117,10 @@ var fieldMessages = map[string]string{
 	"inbound_tag":             "入站标签不能为空且不能包含控制字符",
 	"public_host":             "公开地址无效",
 	"public_port":             "端口必须在 1 到 65535 之间",
+	"listen_address":          "监听地址必须是 IP 字面量，例如 0.0.0.0",
+	"port_pool_start":         "端口池起始必须在 1024 到 65535 之间",
+	"port_pool_end":           "端口池结束必须在 1024 到 65535 之间，且不小于起始端口",
+	"port":                    "端口必须位于端口池内且未被其他用户占用",
 	"method":                  "加密方式只支持 2022-blake3-aes-128-gcm 与 2022-blake3-aes-256-gcm",
 	"network":                 "网络能力只能是 tcp、udp 或 tcp_udp",
 	"server_key":              "服务端密钥与所选加密方式不匹配（需为标准 Base64 的 16 或 32 字节）",
@@ -124,7 +128,7 @@ var fieldMessages = map[string]string{
 	"reset_day":               "重置日必须在 1 到 28 之间",
 	"limit_bytes":             "配额必须为正整数且不超过 2^62 字节，或勾选“无限制”",
 	"quota":                   "配额必须为正整数且不超过 2^62 字节，或勾选“无限制”",
-	"profile_id":              "请选择一个兼容的访问配置",
+	"template_id":             "请选择一个兼容的入站模板",
 	"_request_id":             "表单已过期，请刷新页面后重试",
 	"_version":                "资源版本无效，请刷新页面后重试",
 }
@@ -137,13 +141,17 @@ func fieldMessage(field, fallback string) string {
 }
 
 var conflictMessages = map[string]string{
-	"user name already exists":                                "显示名称已被使用，请更换后重试",
-	"profile already exists":                                  "访问配置名称或入站标签已存在",
-	"request identifier was reused with different input":      "该请求已提交过且内容不同，请刷新页面后重新操作",
-	"profile changed since the page was loaded":               "访问配置已被修改，页面显示的是最新状态，请核对后重新提交",
-	"profile changed or still has managed users":              "访问配置仍有受管用户或已被修改",
-	"profile is not compatible":                               "所选访问配置当前不兼容，不能创建用户",
+	"port is already assigned to another user":                        "该端口已分配给其他用户，请更换端口",
+	"port pool is exhausted; widen the range on the inbound template": "端口池已耗尽，请在入站模板中扩大端口范围",
+	"inbound template changed since the page was loaded":              "入站模板已被修改，页面显示的是最新状态，请核对后重新提交",
+	"user name already exists":                                        "显示名称已被使用，请更换后重试",
+	"inbound template already exists":                                 "入站模板名称已存在",
+	"request identifier was reused with different input":              "该请求已提交过且内容不同，请刷新页面后重新操作",
+
+	"inbound template changed or still has managed users":     "入站模板仍有受管用户或已被修改",
+	"inbound template is not compatible":                      "所选入站模板当前不兼容，不能创建用户",
 	"connection information is unavailable for deleted users": "已删除用户不再提供连接信息",
+	"template still has users, unconfirmed removals or pending synchronization; method and listen address cannot change until they are confirmed absent": "该模板下仍有用户、未确认的移除或待同步操作，加密方式与监听地址暂时不能修改",
 }
 
 func conflictMessage(message string) string {

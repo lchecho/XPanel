@@ -13,10 +13,10 @@ import (
 func TestPerformanceBudgetWithTwentyAllocations(t *testing.T) {
 	app := testsupport.New(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
+	templateID := app.RegisterCompatibleTemplate("Primary")
 	limit := int64(10 << 30)
 	for i := 0; i < 20; i++ {
-		record := app.CreateUser(fmt.Sprintf("User %02d", i), profileID, &limit)
+		record := app.CreateUser(fmt.Sprintf("User %02d", i), templateID, &limit)
 		app.SetTraffic(record, uint64(i+1)*1024, uint64(i+1)*4096)
 	}
 	app.Drain()

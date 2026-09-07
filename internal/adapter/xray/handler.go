@@ -32,6 +32,16 @@ func (c *Client) Probe(ctx context.Context, _ ports.InstanceTarget) (ports.Insta
 
 func timeDurationSeconds(seconds uint32) time.Duration { return time.Duration(seconds) * time.Second }
 
+// guardPanelInbound 拒绝对面板保留命名空间之外的入站执行任何变更。
+// AI-LOCK：面板只管理自己创建的入站，运维自有入站在全流程中必须保持不变（宪章 I/II）。
+func guardPanelInbound(operation, tag string) error {
+	if domain.IsPanelNamespace(tag) {
+		return nil
+	}
+	return &ports.AdapterError{Kind: ports.ErrorInvalidArgument, Operation: operation,
+		SafeSummary: "refusing to mutate an inbound outside the panel namespace"}
+}
+
 func (c *Client) ListUsers(ctx context.Context, inbound ports.RuntimeInbound) ([]ports.RemoteUser, error) {
 	callCtx, cancel := c.deadline(ctx)
 	defer cancel()
@@ -50,7 +60,12 @@ func (c *Client) ListUsers(ctx context.Context, inbound ports.RuntimeInbound) ([
 	return users, nil
 }
 
+// AddUser 在面板专属入站内添加受管客户端。
+// 约束：只作用于面板保留命名空间内的入站；运维自有入站对面板只读（宪章 I/II）。
 func (c *Client) AddUser(ctx context.Context, command ports.AddUserCommand) (ports.MutationReceipt, error) {
+	if err := guardPanelInbound("add_user", command.InboundTag); err != nil {
+		return ports.MutationReceipt{}, err
+	}
 	if err := security.ValidateUserKey(methodFromKey(command.UserKey.Reveal()), command.UserKey.Reveal()); err != nil {
 		return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorInvalidArgument, Operation: "add_user", SafeSummary: "invalid user key"}
 	}
@@ -73,7 +88,11 @@ func methodFromKey(encoded string) string {
 	return security.MethodAES256
 }
 
+// RemoveUser 移除面板专属入站内的一个客户端；同样限定在面板命名空间内。
 func (c *Client) RemoveUser(ctx context.Context, command ports.RemoveUserCommand) (ports.MutationReceipt, error) {
+	if err := guardPanelInbound("remove_user", command.InboundTag); err != nil {
+		return ports.MutationReceipt{}, err
+	}
 	operation := &handlercommand.RemoveUserOperation{Email: command.StatisticsID}
 	callCtx, cancel := c.deadline(ctx)
 	defer cancel()

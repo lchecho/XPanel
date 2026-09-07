@@ -1,8 +1,0 @@
-{{define "profiles_list.html"}}{{template "head" .}}
-<body>{{template "nav" .}}<main><h1>访问配置</h1>{{template "messages" .}}
-<p><a href="/profiles/new" class="button">登记访问配置</a></p>
-{{if not .Data}}<p class="empty">尚未登记访问配置。运维预配置好 Shadowsocks 2022 多用户入站后，在这里登记其公开地址与服务端身份信息。</p>{{else}}
-<table><caption>已登记的访问配置</caption><thead><tr><th scope="col">名称</th><th scope="col">入站标签</th><th scope="col">地址</th><th scope="col">加密方式</th><th scope="col">兼容状态</th><th scope="col">最后验证</th></tr></thead><tbody>
-{{range .Data}}<tr><td data-label="名称"><a href="/profiles/{{.ID}}">{{.Name}}</a></td><td data-label="入站标签">{{.InboundTag}}</td><td data-label="地址">{{.PublicHost}}:{{.PublicPort}}</td><td data-label="加密方式">{{.Method}}</td><td data-label="兼容状态"><span class="status status-{{.Compatibility}}">{{.CompatibilityLabel}}</span></td><td data-label="最后验证">{{.LastValidatedAt}}</td></tr>{{end}}
-</tbody></table>{{end}}
-{{template "footer" .}}</main></body></html>{{end}}

@@ -1,0 +1,8 @@
+{{define "templates_list.html"}}{{template "head" .}}
+<body>{{template "nav" .}}<main><h1>入站模板</h1>{{template "messages" .}}
+<p><a href="/templates/new" class="button">登记入站模板</a></p>
+{{if not .Data}}<p class="empty">尚未登记入站模板。登记公开地址、监听地址与端口池后，面板会为每个用户创建独立的入站与端口。</p>{{else}}
+<table><caption>已登记的入站模板</caption><thead><tr><th scope="col">名称</th><th scope="col">公开地址</th><th scope="col">监听地址</th><th scope="col">端口池</th><th scope="col">加密方式</th><th scope="col">兼容状态</th><th scope="col">最后验证</th></tr></thead><tbody>
+{{range .Data}}<tr><td data-label="名称"><a href="/templates/{{.ID}}">{{.Name}}</a></td><td data-label="公开地址">{{.PublicHost}}</td><td data-label="监听地址">{{.ListenAddress}}</td><td data-label="端口池">{{.PortPoolStart}}–{{.PortPoolEnd}}</td><td data-label="加密方式">{{.Method}}</td><td data-label="兼容状态"><span class="status status-{{.Compatibility}}">{{.CompatibilityLabel}}</span></td><td data-label="最后验证">{{.LastValidatedAt}}</td></tr>{{end}}
+</tbody></table>{{end}}
+{{template "footer" .}}</main></body></html>{{end}}

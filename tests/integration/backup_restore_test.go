@@ -20,11 +20,11 @@ import (
 // 备份（VACUUM INTO）→ 在新路径恢复 → 主密钥校验 → 对重启后的 Xray 协调：应启用用户恢复，封禁/删除用户不复活。
 func TestBackupRestoreAndReconcileAfterRestore(t *testing.T) {
 	app := testsupport.New(t)
-	profileID := app.RegisterCompatibleProfile("Primary")
+	templateID := app.RegisterCompatibleTemplate("Primary")
 	limit := int64(1 << 20)
-	active := app.CreateUser("Active", profileID, nil)
-	blocked := app.CreateUser("Blocked", profileID, &limit)
-	deleted := app.CreateUser("Deleted", profileID, nil)
+	active := app.CreateUser("Active", templateID, nil)
+	blocked := app.CreateUser("Blocked", templateID, &limit)
+	deleted := app.CreateUser("Deleted", templateID, nil)
 	app.Drain()
 	app.SetTraffic(blocked, 1<<20, 0)
 	app.Collect()
@@ -60,7 +60,8 @@ func TestBackupRestoreAndReconcileAfterRestore(t *testing.T) {
 
 	// 模拟恢复期间 Xray 已重启（动态用户丢失）。
 	app.Adapter.Restart()
-	app.Adapter.Users["managed"]["bootstrap"] = ports.RemoteUser{StatisticsID: "bootstrap", Present: true, Kind: "bootstrap"}
+	// 运维自有入站由运维配置恢复，面板不得触碰。
+	app.Adapter.AddExternalInbound("operator-inbound", 45000)
 	node := &sync.Mutex{}
 	synchronizer := worker.NewSynchronizer(store, app.Adapter, app.Keyring, app.Clock, nil, node, worker.SynchronizerOptions{RPCTimeout: app.Target.RPCTimeout, Random: func(n int64) int64 { return n - 1 }})
 	reconcile := application.NewReconciliationService(store, app.Adapter, app.Clock, app.Target, node, 15*time.Second, synchronizer.Wake, nil, nil)
@@ -72,7 +73,11 @@ func TestBackupRestoreAndReconcileAfterRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	present := func(record ports.UserRecord) bool {
-		_, ok := app.Adapter.Users["managed"][record.Identity.StatisticsID]
+		tag := record.Inbound.Inbound.InboundTag
+		if _, ok := app.Adapter.Inbounds[tag]; !ok {
+			return false
+		}
+		_, ok := app.Adapter.Users[tag][record.Identity.StatisticsID]
 		return ok
 	}
 	if !present(active) || present(blocked) || present(deleted) {

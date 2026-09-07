@@ -12,9 +12,9 @@ import (
 func TestUserEditFormValidationConflictAndReset(t *testing.T) {
 	app := testsupport.New(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
+	templateID := app.RegisterCompatibleTemplate("Primary")
 	limit := int64(2 << 30)
-	record := app.CreateUser("Alice", profileID, &limit)
+	record := app.CreateUser("Alice", templateID, &limit)
 	app.Drain()
 	path := "/users/" + record.User.ID.String()
 

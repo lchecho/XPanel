@@ -52,9 +52,9 @@ func secondSession(t *testing.T, app *testsupport.App) func(path, tokenPath stri
 func TestCommandFingerprintBindsSessionAndPayload(t *testing.T) {
 	app := testsupport.New(t)
 	app.Login()
-	form, _ := profileForm(t, "Fingerprinted", "managed")
+	form := templateForm(t, "Fingerprinted", 30000, 30099)
 	form.Set("_request_id", testsupport.NewID(t).String())
-	response, body := app.PostForm("/profiles", "/profiles/new", form)
+	response, body := app.PostForm("/templates", "/templates/new", form)
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("create status=%d body=%s", response.StatusCode, body)
 	}
@@ -66,13 +66,13 @@ func TestCommandFingerprintBindsSessionAndPayload(t *testing.T) {
 		replay[key] = values
 	}
 	replay.Del("_csrf")
-	response, body = app.PostForm("/profiles", "/profiles/new", replay)
+	response, body = app.PostForm("/templates", "/templates/new", replay)
 	if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != location {
 		t.Fatalf("replay status=%d location=%q body=%s", response.StatusCode, response.Header.Get("Location"), body)
 	}
-	profiles, err := app.Profiles.List(context.Background(), false)
-	if err != nil || len(profiles) != 1 {
-		t.Fatalf("profiles after replay = %d, %v", len(profiles), err)
+	templates, err := app.Templates.List(context.Background(), false)
+	if err != nil || len(templates) != 1 {
+		t.Fatalf("templates after replay = %d, %v", len(templates), err)
 	}
 
 	// 同请求 ID、不同载荷：拒绝为冲突。
@@ -81,7 +81,7 @@ func TestCommandFingerprintBindsSessionAndPayload(t *testing.T) {
 		altered[key] = values
 	}
 	altered.Set("name", "Fingerprinted Altered")
-	response, _ = app.PostForm("/profiles", "/profiles/new", altered)
+	response, _ = app.PostForm("/templates", "/templates/new", altered)
 	if response.StatusCode != http.StatusConflict {
 		t.Fatalf("altered payload status=%d", response.StatusCode)
 	}
@@ -92,12 +92,12 @@ func TestCommandFingerprintBindsSessionAndPayload(t *testing.T) {
 	for key, values := range replay {
 		other[key] = values
 	}
-	if response := post("/profiles", "/profiles/new", other); response.StatusCode != http.StatusConflict {
+	if response := post("/templates", "/templates/new", other); response.StatusCode != http.StatusConflict {
 		t.Fatalf("cross-session replay status=%d", response.StatusCode)
 	}
-	profiles, _ = app.Profiles.List(context.Background(), false)
-	if len(profiles) != 1 {
-		t.Fatalf("profiles after conflicts = %d", len(profiles))
+	templates, _ = app.Templates.List(context.Background(), false)
+	if len(templates) != 1 {
+		t.Fatalf("templates after conflicts = %d", len(templates))
 	}
 }
 
@@ -105,8 +105,8 @@ func TestCommandFingerprintBindsSessionAndPayload(t *testing.T) {
 func TestUserCommandsRejectCrossSessionReplay(t *testing.T) {
 	app := testsupport.New(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
-	user := app.CreateUser("Alice", profileID, nil)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	user := app.CreateUser("Alice", templateID, nil)
 	path := "/users/" + user.User.ID.String()
 	form := url.Values{"_request_id": {testsupport.NewID(t).String()}, "_version": {"0"}}
 	response, body := app.PostForm(path+"/disable", path, form)

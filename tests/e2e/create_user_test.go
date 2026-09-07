@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,33 +15,31 @@ import (
 	"xpanel/internal/testsupport"
 )
 
-func registerProfileViaBrowser(t *testing.T, app *testsupport.App, name, tag string) (domain.ID, string) {
+// registerTemplateViaBrowser 通过浏览器表单登记入站模板：只有监听地址与端口池，没有入站标签与服务端密钥（FR-004）。
+func registerTemplateViaBrowser(t *testing.T, app *testsupport.App, name string) (domain.ID, string) {
 	t.Helper()
-	key, err := security.GenerateUserKey(security.MethodAES256)
-	if err != nil {
-		t.Fatal(err)
-	}
-	form := url.Values{"name": {name}, "inbound_tag": {tag}, "public_host": {"vpn.example.com"}, "public_port": {"8388"},
-		"method": {security.MethodAES256}, "network": {"tcp_udp"}, "server_key": {key.Reveal()}, "bootstrap_statistics_id": {"bootstrap"}}
-	response, body := app.PostForm("/profiles", "/profiles/new", form)
+	form := url.Values{"name": {name}, "public_host": {"vpn.example.com"}, "listen_address": {testsupport.DefaultListenAddress},
+		"port_pool_start": {strconv.Itoa(testsupport.DefaultPoolStart)}, "port_pool_end": {strconv.Itoa(testsupport.DefaultPoolEnd)},
+		"method": {security.MethodAES256}, "network": {"tcp_udp"}}
+	response, body := app.PostForm("/templates", "/templates/new", form)
 	if response.StatusCode != http.StatusSeeOther {
-		t.Fatalf("register profile status=%d body=%s", response.StatusCode, body)
+		t.Fatalf("register template status=%d body=%s", response.StatusCode, body)
 	}
 	location := response.Header.Get("Location")
-	return domain.ID(strings.TrimPrefix(location, "/profiles/")), location
+	return domain.ID(strings.TrimPrefix(location, "/templates/")), location
 }
 
 func TestCreateUserEndToEnd(t *testing.T) {
 	app := newHarness(t)
 	app.Login()
-	profileID, profilePath := registerProfileViaBrowser(t, app, "Primary", "managed")
-	if err := app.Validator.ValidateNow(context.Background(), profileID); err != nil {
+	templateID, templatePath := registerTemplateViaBrowser(t, app, "Primary")
+	if err := app.Validator.ValidateNow(context.Background(), templateID); err != nil {
 		t.Fatal(err)
 	}
-	if _, body := app.Get(profilePath); !strings.Contains(body, "兼容") {
-		t.Fatalf("profile not compatible: %s", body)
+	if _, body := app.Get(templatePath); !strings.Contains(body, "兼容") {
+		t.Fatalf("template not compatible: %s", body)
 	}
-	response, body := app.PostForm("/users", "/users/new", url.Values{"display_name": {"Alice"}, "profile_id": {profileID.String()},
+	response, body := app.PostForm("/users", "/users/new", url.Values{"display_name": {"Alice"}, "template_id": {templateID.String()},
 		"quota_value": {"10"}, "quota_unit": {"GiB"}, "reset_day": {"1"}})
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("create user status=%d body=%s", response.StatusCode, body)
@@ -51,8 +50,19 @@ func TestCreateUserEndToEnd(t *testing.T) {
 		t.Fatal("synchronizer did not process the create operation")
 	}
 	record := app.User(userID)
-	if _, ok := app.Adapter.Users[testsupport.ProfileTag][record.Identity.StatisticsID]; !ok {
-		t.Fatal("fake Xray does not contain the new user")
+	// 用户拥有一条专属入站：标签在面板命名空间内、端口取自模板端口池、入站内仅此一个受管客户端。
+	tag := record.Inbound.Inbound.InboundTag
+	if _, ok := app.Adapter.Inbounds[tag]; !ok {
+		t.Fatalf("fake Xray does not contain the dedicated inbound %s", tag)
+	}
+	if _, ok := app.Adapter.Users[tag][record.Identity.StatisticsID]; !ok {
+		t.Fatal("dedicated inbound does not contain the managed client")
+	}
+	if got := record.Inbound.Inbound.Port; got != testsupport.DefaultPoolStart {
+		t.Fatalf("assigned port = %d want %d", got, testsupport.DefaultPoolStart)
+	}
+	if !app.Listening(record.Inbound.Inbound.Port) {
+		t.Fatalf("port %d is not listening", record.Inbound.Inbound.Port)
 	}
 	if record.Allocation.ProjectionState != domain.ProjectionPresent || record.Credential.State != domain.CredentialActive {
 		t.Fatalf("record after sync = %#v", record.Allocation)
@@ -68,26 +78,26 @@ func TestCreateUserEndToEnd(t *testing.T) {
 	}
 }
 
-func TestCreateUserRejectsIncompatibleProfile(t *testing.T) {
+func TestCreateUserRejectsIncompatibleTemplate(t *testing.T) {
 	app := newHarness(t)
 	app.Login()
-	app.Adapter.Profiles["single"] = ports.ProfileCapabilities{InboundPresent: true, ProtocolSupported: true, MethodSupported: true,
-		CompatibilityReason: "inbound has no bootstrap user; single-user mode"}
-	profileID, profilePath := registerProfileViaBrowser(t, app, "Single", "single")
-	if err := app.Validator.ValidateNow(context.Background(), profileID); err != nil {
+	templateID, templatePath := registerTemplateViaBrowser(t, app, "Single")
+	app.Adapter.Templates[templateID.String()] = ports.TemplateCapabilities{InboundCreatable: true, ProtocolSupported: true,
+		MethodSupported: true, MultiUserSupported: false, CompatibilityReason: "node does not satisfy the SS2022 multi-user contract"}
+	if err := app.Validator.ValidateNow(context.Background(), templateID); err != nil {
 		t.Fatal(err)
 	}
-	_, body := app.Get(profilePath)
+	_, body := app.Get(templatePath)
 	if !strings.Contains(body, "不兼容") || !strings.Contains(body, "等待运维修复") {
-		t.Fatalf("incompatible profile page body=%s", body)
+		t.Fatalf("incompatible template page body=%s", body)
 	}
 	_, body = app.Get("/users/new")
-	if !strings.Contains(body, "当前没有处于“兼容”状态的访问配置") {
-		t.Fatalf("incompatible profile offered for creation: %s", body)
+	if !strings.Contains(body, "当前没有处于“兼容”状态的入站模板") {
+		t.Fatalf("incompatible template offered for creation: %s", body)
 	}
-	response, body := app.PostForm("/users", "/profiles", url.Values{"display_name": {"Alice"}, "profile_id": {profileID.String()},
+	response, body := app.PostForm("/users", "/templates", url.Values{"display_name": {"Alice"}, "template_id": {templateID.String()},
 		"unlimited": {"on"}, "reset_day": {"1"}})
-	if response.StatusCode != http.StatusConflict || !strings.Contains(body, "所选访问配置当前不兼容") {
+	if response.StatusCode != http.StatusConflict || !strings.Contains(body, "所选入站模板当前不兼容") {
 		t.Fatalf("incompatible create status=%d body=%s", response.StatusCode, body)
 	}
 }
@@ -95,9 +105,9 @@ func TestCreateUserRejectsIncompatibleProfile(t *testing.T) {
 func TestCreateUserWhileXrayOfflineConvergesLater(t *testing.T) {
 	app := newHarness(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
+	templateID := app.RegisterCompatibleTemplate("Primary")
 	app.Adapter.Available = false
-	response, _ := app.PostForm("/users", "/users/new", url.Values{"display_name": {"Offline"}, "profile_id": {profileID.String()},
+	response, _ := app.PostForm("/users", "/users/new", url.Values{"display_name": {"Offline"}, "template_id": {templateID.String()},
 		"unlimited": {"on"}, "reset_day": {"1"}})
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("offline create status=%d", response.StatusCode)
@@ -131,11 +141,11 @@ func TestCreateUserWhileXrayOfflineConvergesLater(t *testing.T) {
 func TestUnauthenticatedAccessIsDeniedWithoutLeakingConnectionInfo(t *testing.T) {
 	app := newHarness(t)
 	app.Login()
-	profileID := app.RegisterCompatibleProfile("Primary")
-	record := app.CreateUser("Alice", profileID, nil)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	record := app.CreateUser("Alice", templateID, nil)
 	app.Drain()
 	anonymous := newHarness(t)
-	for _, path := range []string{"/users", "/users/" + record.User.ID.String(), "/users/" + record.User.ID.String() + "/connection", "/profiles"} {
+	for _, path := range []string{"/users", "/users/" + record.User.ID.String(), "/users/" + record.User.ID.String() + "/connection", "/templates"} {
 		response, body := anonymous.Get(path)
 		if response.StatusCode != http.StatusSeeOther || strings.Contains(body, "ss://") || strings.Contains(body, "Alice") {
 			t.Fatalf("%s status=%d body=%s", path, response.StatusCode, body)

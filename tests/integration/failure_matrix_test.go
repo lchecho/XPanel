@@ -41,10 +41,11 @@ func newMatrixApp(t *testing.T) *matrixApp {
 	m.traffic = application.NewTrafficService(fault, app.Adapter, app.Clock, app.Target, 5*time.Second, m.sync.Wake, nil)
 	m.quota = application.NewQuotaService(fault, app.Clock, m.sync.Wake, nil)
 	m.reconcile = application.NewReconciliationService(fault, app.Adapter, app.Clock, app.Target, app.Node, 15*time.Second, m.sync.Wake, nil, nil)
-	m.profile = app.RegisterCompatibleProfile("Primary")
+	m.profile = app.RegisterCompatibleTemplate("Primary")
 	m.record = app.CreateUser("Subject", m.profile, &m.limit)
 	m.drain()
-	m.Adapter.Users["managed"]["bootstrap"] = ports.RemoteUser{StatisticsID: "bootstrap", Present: true, Kind: "bootstrap"}
+	// 运维自有入站：面板全程不得触碰（宪章 I/II）。
+	m.Adapter.AddExternalInbound("operator-inbound", 45000)
 	m.requestID = testsupport.NewID(t)
 	return m
 }
@@ -55,8 +56,13 @@ func (m *matrixApp) drain() {
 	}
 }
 
+// present 判断当前受测用户的专属入站是否存在且包含其受管客户端。
 func (m *matrixApp) present() bool {
-	_, ok := m.Adapter.Users["managed"][m.record.Identity.StatisticsID]
+	tag := m.record.Inbound.Inbound.InboundTag
+	if _, ok := m.Adapter.Inbounds[tag]; !ok {
+		return false
+	}
+	_, ok := m.Adapter.Users[tag][m.record.Identity.StatisticsID]
 	return ok
 }
 
@@ -102,7 +108,7 @@ var changes = []change{
 			m.drain()
 		},
 		apply: func(m *matrixApp) error {
-			id, _, err := m.users.CreateUser(context.Background(), application.CreateUserInput{DisplayName: "Fresh", ProfileID: m.profile,
+			id, _, err := m.users.CreateUser(context.Background(), application.CreateUserInput{DisplayName: "Fresh", TemplateID: m.profile,
 				LimitBytes: &m.limit, ResetDay: 1, RequestID: m.requestID, ActorID: m.AdminID})
 			if err == nil {
 				m.record = m.User(id)
@@ -214,7 +220,7 @@ var failures = []failure{
 			t.Fatal(err)
 		}
 		m.Adapter.Restart()
-		m.Adapter.Users["managed"]["bootstrap"] = ports.RemoteUser{StatisticsID: "bootstrap", Present: true, Kind: "bootstrap"}
+		m.Adapter.AddExternalInbound("operator-inbound", 45000)
 		m.drain()
 		if _, err := m.reconcile.ReconcileOnce(context.Background()); err != nil {
 			t.Fatal(err)
@@ -272,13 +278,14 @@ func assertConverged(t *testing.T, m *matrixApp, c change) {
 		t.Fatalf("allocation still pending: %#v", record.Allocation)
 	}
 	if c.present {
-		remote := m.Adapter.Users["managed"][record.Identity.StatisticsID]
+		remote := m.Adapter.Users[record.Inbound.Inbound.InboundTag][record.Identity.StatisticsID]
 		if remote.CredentialVersion != record.Allocation.DesiredCredentialVersion || record.Credential.State != domain.CredentialActive {
 			t.Fatalf("credential mismatch remote=%d desired=%d state=%s", remote.CredentialVersion, record.Allocation.DesiredCredentialVersion, record.Credential.State)
 		}
 	}
+	// 该用户在 Xray 中至多一条专属入站，且入站内至多一个受管客户端。
 	managed := 0
-	for id, user := range m.Adapter.Users["managed"] {
+	for id, user := range m.Adapter.Users[record.Inbound.Inbound.InboundTag] {
 		if user.Kind == "managed" && id == record.Identity.StatisticsID {
 			managed++
 		}
@@ -286,8 +293,8 @@ func assertConverged(t *testing.T, m *matrixApp, c change) {
 	if managed > 1 {
 		t.Fatalf("duplicate identities in Xray: %d", managed)
 	}
-	if _, kept := m.Adapter.Users["managed"]["bootstrap"]; !kept {
-		t.Fatal("bootstrap identity was removed")
+	if _, kept := m.Adapter.Inbounds["operator-inbound"]; !kept {
+		t.Fatal("operator inbound outside the panel namespace was removed")
 	}
 	if record.Cycle.AccountedUplinkBytes < 0 || record.Cycle.AccountedDownlinkBytes < 0 {
 		t.Fatal("negative traffic recorded")

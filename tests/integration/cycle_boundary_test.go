@@ -28,9 +28,9 @@ func inspectCycles(t *testing.T, app *testsupport.App, allocationID domain.ID) c
 	return facts
 }
 
-func blockedUser(t *testing.T, app *testsupport.App, profileID domain.ID, name string, limit int64) ports.UserRecord {
+func blockedUser(t *testing.T, app *testsupport.App, templateID domain.ID, name string, limit int64) ports.UserRecord {
 	t.Helper()
-	user := app.CreateUser(name, profileID, &limit)
+	user := app.CreateUser(name, templateID, &limit)
 	app.Drain()
 	app.SetTraffic(user, uint64(limit), 0)
 	if summary := app.Collect(); summary.Blocked != 1 {
@@ -47,9 +47,9 @@ func blockedUser(t *testing.T, app *testsupport.App, profileID domain.ID, name s
 // T145 顺序 A：先由 scheduler 切换周期，再采集跨边界后的增量；恢复操作恰好一个，增量只进入新周期。
 func TestCycleBoundaryRolloverThenCollect(t *testing.T) {
 	app := testsupport.New(t)
-	profileID := app.RegisterCompatibleProfile("Primary")
+	templateID := app.RegisterCompatibleTemplate("Primary")
 	limit := int64(1 << 20)
-	record := blockedUser(t, app, profileID, "Blocked", limit)
+	record := blockedUser(t, app, templateID, "Blocked", limit)
 	boundary := record.Cycle.EndsAt
 	app.Clock.Set(boundary.Add(time.Second))
 	if app.Rollover() != 1 {
@@ -76,13 +76,13 @@ func TestCycleBoundaryRolloverThenCollect(t *testing.T) {
 // T145 顺序 B：样本完成时间已跨边界但 scheduler 尚未运行：采集提交在同一事务内结算周期，增量进入新周期，之后的切换无事可做。
 func TestCycleBoundaryCollectThenRollover(t *testing.T) {
 	app := testsupport.New(t)
-	profileID := app.RegisterCompatibleProfile("Primary")
+	templateID := app.RegisterCompatibleTemplate("Primary")
 	limit := int64(1 << 20)
-	active := app.CreateUser("Active", profileID, &limit)
+	active := app.CreateUser("Active", templateID, &limit)
 	app.Drain()
 	app.SetTraffic(active, 1000, 0)
 	app.Collect()
-	blocked := blockedUser(t, app, profileID, "Blocked", limit)
+	blocked := blockedUser(t, app, templateID, "Blocked", limit)
 	boundary := app.User(active.User.ID).Cycle.EndsAt
 	app.Clock.Set(boundary.Add(time.Second))
 	app.SetTraffic(active, 6000, 0) // 边界后增长 5000
@@ -118,8 +118,8 @@ func TestCycleBoundaryCollectThenRollover(t *testing.T) {
 // T145：边界前修改 reset_day 与面板时区，新周期按事务内读到的最新策略与时区计算。
 func TestCycleBoundaryUsesLatestPolicyAndTimezone(t *testing.T) {
 	app := testsupport.New(t)
-	profileID := app.RegisterCompatibleProfile("Primary")
-	user := app.CreateUser("Policy", profileID, nil)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	user := app.CreateUser("Policy", templateID, nil)
 	app.Drain()
 	if _, err := app.Users.UpdateUser(context.Background(), application.UpdateUserInput{ID: user.User.ID, DisplayName: "Policy", LimitBytes: nil, ResetDay: 15,
 		AdminEnabled: true, ExpectedRevision: 0, RequestID: testsupport.NewID(t), ActorID: app.AdminID}); err != nil {
@@ -149,9 +149,9 @@ func TestCycleBoundaryUsesLatestPolicyAndTimezone(t *testing.T) {
 // T145：禁用用户跨边界不得恢复；边界后对已关闭周期的手动重置返回冲突，对新周期的重置正常。
 func TestCycleBoundaryDisabledUserAndStaleReset(t *testing.T) {
 	app := testsupport.New(t)
-	profileID := app.RegisterCompatibleProfile("Primary")
+	templateID := app.RegisterCompatibleTemplate("Primary")
 	limit := int64(1 << 20)
-	record := blockedUser(t, app, profileID, "Disabled", limit)
+	record := blockedUser(t, app, templateID, "Disabled", limit)
 	if _, err := app.Users.SetAdminEnabled(context.Background(), application.SetEnabledInput{ID: record.User.ID, Enabled: false,
 		ExpectedRevision: app.User(record.User.ID).User.Revision, RequestID: testsupport.NewID(t), ActorID: app.AdminID}); err != nil {
 		t.Fatal(err)

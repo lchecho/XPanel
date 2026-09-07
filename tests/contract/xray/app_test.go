@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -39,11 +40,23 @@ func (s *switchableAdapter) current() ports.Adapter {
 func (s *switchableAdapter) Probe(ctx context.Context, target ports.InstanceTarget) (ports.InstanceObservation, error) {
 	return s.current().Probe(ctx, target)
 }
-func (s *switchableAdapter) ValidateProfile(ctx context.Context, profile ports.RuntimeProfile) (ports.ProfileCapabilities, error) {
-	return s.current().ValidateProfile(ctx, profile)
+func (s *switchableAdapter) ValidateTemplate(ctx context.Context, probe ports.TemplateProbe) (ports.TemplateCapabilities, error) {
+	return s.current().ValidateTemplate(ctx, probe)
 }
-func (s *switchableAdapter) ListUsers(ctx context.Context, profile ports.RuntimeProfile) ([]ports.RemoteUser, error) {
-	return s.current().ListUsers(ctx, profile)
+
+func (s *switchableAdapter) ListInbounds(ctx context.Context) ([]ports.RemoteInbound, error) {
+	return s.current().ListInbounds(ctx)
+}
+
+func (s *switchableAdapter) CreateInbound(ctx context.Context, command ports.CreateInboundCommand) (ports.MutationReceipt, error) {
+	return s.current().CreateInbound(ctx, command)
+}
+
+func (s *switchableAdapter) RemoveInbound(ctx context.Context, command ports.RemoveInboundCommand) (ports.MutationReceipt, error) {
+	return s.current().RemoveInbound(ctx, command)
+}
+func (s *switchableAdapter) ListUsers(ctx context.Context, inbound ports.RuntimeInbound) ([]ports.RemoteUser, error) {
+	return s.current().ListUsers(ctx, inbound)
 }
 func (s *switchableAdapter) AddUser(ctx context.Context, command ports.AddUserCommand) (ports.MutationReceipt, error) {
 	return s.current().AddUser(ctx, command)
@@ -65,33 +78,87 @@ func liveApp(t *testing.T, runtime *liveRuntime) (*testsupport.App, *switchableA
 	return app, adapter, target
 }
 
-func registerLiveProfile(t *testing.T, app *testsupport.App, name, tag, address, serverKey, bootstrap string) domain.ID {
+// freePortPool 找一段连续可用端口作为入站模板的端口池；面板会在其中为每个用户分配端口。
+func freePortPool(t *testing.T, size int) (int, int) {
 	t.Helper()
-	_, portText, _ := net.SplitHostPort(address)
-	var port int
-	_, _ = fmt.Sscanf(portText, "%d", &port)
-	id, err := app.Profiles.RegisterProfile(context.Background(), application.ProfileInput{Name: name, InboundTag: tag, PublicHost: "127.0.0.1",
-		PublicPort: port, Method: security.MethodAES256, Network: domain.NetworkTCPUDP, ServerKey: serverKey, BootstrapStatisticsID: bootstrap,
-		RequestID: testsupport.NewID(t), ActorID: app.AdminID})
+	for attempt := 0; attempt < 40; attempt++ {
+		base := portOf(t, freeAddress(t))
+		if base+size > domain.MaxAssignablePort {
+			continue
+		}
+		listeners := make([]net.Listener, 0, size)
+		ok := true
+		for offset := 0; offset < size; offset++ {
+			listener, err := net.Listen("tcp", net.JoinHostPort(listenAddress, strconv.Itoa(base+offset)))
+			if err != nil {
+				ok = false
+				break
+			}
+			listeners = append(listeners, listener)
+		}
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+		if ok {
+			return base, base + size - 1
+		}
+	}
+	t.Fatal("could not find a contiguous free port range for the template pool")
+	return 0, 0
+}
+
+// registerLiveTemplate 登记一个入站模板：只有监听地址与端口池，服务端密钥由面板为每条入站自行生成。
+func registerLiveTemplate(t *testing.T, app *testsupport.App, name string, poolSize int) domain.ID {
+	t.Helper()
+	start, end := freePortPool(t, poolSize)
+	id, err := app.Templates.RegisterTemplate(context.Background(), application.TemplateInput{Name: name,
+		PublicHost: listenAddress, ListenAddress: listenAddress, PortPoolStart: start, PortPoolEnd: end,
+		Method: security.MethodAES256, Network: domain.NetworkTCPUDP, RequestID: testsupport.NewID(t), ActorID: app.AdminID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Validator.ValidateNow(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
+	record, err := app.Store.Template(context.Background(), id)
+	if err != nil || record.Template.Compatibility != domain.CompatibilityCompatible {
+		t.Fatalf("template = %#v, %v", record.Template, err)
+	}
 	return id
 }
 
-func managedIDs(t *testing.T, runtime *liveRuntime, tag, bootstrap string) map[string]int {
+// panelInbounds 返回 Xray 中全部面板入站，按标签索引；命名空间之外的入站不在其中。
+func panelInbounds(t *testing.T, runtime *liveRuntime) map[string]ports.RemoteInbound {
 	t.Helper()
-	users, err := runtime.client.ListUsers(context.Background(), ports.RuntimeProfile{InboundTag: tag, Method: security.MethodAES256, BootstrapStatisticsID: bootstrap})
+	inbounds, err := runtime.client.ListInbounds(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	result := map[string]ports.RemoteInbound{}
+	for _, inbound := range inbounds {
+		if inbound.PanelManaged {
+			result[inbound.InboundTag] = inbound
+		}
+	}
+	if _, kept := result[operatorInboundTag]; kept {
+		t.Fatal("an inbound outside the panel namespace was reported as panel-managed")
+	}
+	return result
+}
+
+// managedIDs 汇总全部面板入站中的受管客户端统计标识及其出现次数。
+func managedIDs(t *testing.T, runtime *liveRuntime) map[string]int {
+	t.Helper()
 	ids := map[string]int{}
-	for _, user := range users {
-		if user.Kind == "managed" {
-			ids[user.StatisticsID]++
+	for tag := range panelInbounds(t, runtime) {
+		users, err := runtime.client.ListUsers(context.Background(), ports.RuntimeInbound{InboundTag: tag, Method: security.MethodAES256})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, user := range users {
+			if user.Kind == "managed" {
+				ids[user.StatisticsID]++
+			}
 		}
 	}
 	return ids
@@ -124,13 +191,18 @@ func TestLiveAppRestartReconcilesActiveUsersOnly(t *testing.T) {
 	runtime := startRuntime(t)
 	bin := contractBinary(t)
 	app, _, _ := liveApp(t, runtime)
-	profileID := registerLiveProfile(t, app, "Primary", "managed", runtime.inbound, runtime.serverKey, "bootstrap")
-	active := app.CreateUser("Active", profileID, nil)
-	disabled := app.CreateUser("Disabled", profileID, nil)
-	deleted := app.CreateUser("Deleted", profileID, nil)
+	templateID := registerLiveTemplate(t, app, "Primary", 8)
+	active := app.CreateUser("Active", templateID, nil)
+	disabled := app.CreateUser("Disabled", templateID, nil)
+	deleted := app.CreateUser("Deleted", templateID, nil)
 	app.Drain()
-	if ids := managedIDs(t, runtime, "managed", "bootstrap"); len(ids) != 3 {
+	if ids := managedIDs(t, runtime); len(ids) != 3 {
 		t.Fatalf("managed users before restart = %v", ids)
+	}
+	// 每个用户各自一条入站、各自一个端口。
+	activePort := app.User(active.User.ID).Inbound.Inbound.Port
+	if len(panelInbounds(t, runtime)) != 3 || !listening(activePort) {
+		t.Fatalf("dedicated inbounds before restart = %v", panelInbounds(t, runtime))
 	}
 	if _, err := app.Users.SetAdminEnabled(context.Background(), application.SetEnabledInput{ID: disabled.User.ID, Enabled: false,
 		ExpectedRevision: app.User(disabled.User.ID).User.Revision, RequestID: testsupport.NewID(t), ActorID: app.AdminID}); err != nil {
@@ -149,8 +221,11 @@ func TestLiveAppRestartReconcilesActiveUsersOnly(t *testing.T) {
 
 	time.Sleep(1100 * time.Millisecond)
 	runtime.restart(t, bin)
-	if ids := managedIDs(t, runtime, "managed", "bootstrap"); len(ids) != 0 {
-		t.Fatalf("dynamic users survived restart: %v", ids)
+	if inbounds := panelInbounds(t, runtime); len(inbounds) != 0 {
+		t.Fatalf("panel inbounds survived the restart: %v", inbounds)
+	}
+	if listening(activePort) {
+		t.Fatalf("port %d was not released by the restart", activePort)
 	}
 	summary := app.ReconcileOnce()
 	app.Drain()
@@ -163,9 +238,16 @@ func TestLiveAppRestartReconcilesActiveUsersOnly(t *testing.T) {
 	if summary.Drift != 1 {
 		t.Fatalf("reconciler drift = %d, want 1 (only the active user)", summary.Drift)
 	}
-	ids := managedIDs(t, runtime, "managed", "bootstrap")
+	ids := managedIDs(t, runtime)
 	if len(ids) != 1 || ids[active.Identity.StatisticsID] != 1 {
 		t.Fatalf("managed users after reconciliation = %v", ids)
+	}
+	// 门禁 7：按库中记录的原端口整体重建；运维自有入站全程不变。
+	if rebuilt := app.User(active.User.ID).Inbound.Inbound.Port; rebuilt != activePort || !listening(rebuilt) {
+		t.Fatalf("rebuilt port = %d want %d listening", rebuilt, activePort)
+	}
+	if !listening(runtime.operatorPort) {
+		t.Fatal("operator inbound was disturbed by reconciliation")
 	}
 	for _, record := range []ports.UserRecord{active, disabled, deleted} {
 		current := app.User(record.User.ID)
@@ -184,7 +266,7 @@ func TestLiveAppRestartReconcilesActiveUsersOnly(t *testing.T) {
 func TestLiveAppUncertainTimeoutConvergesThroughReadAfterWrite(t *testing.T) {
 	runtime := startRuntime(t)
 	app, adapter, target := liveApp(t, runtime)
-	profileID := registerLiveProfile(t, app, "Primary", "managed", runtime.inbound, runtime.serverKey, "bootstrap")
+	templateID := registerLiveTemplate(t, app, "Primary", 4)
 	impatientTarget := target
 	impatientTarget.RPCTimeout = 200 * time.Microsecond
 	impatient, err := xrayadapter.New(impatientTarget)
@@ -194,7 +276,7 @@ func TestLiveAppUncertainTimeoutConvergesThroughReadAfterWrite(t *testing.T) {
 	defer impatient.Close()
 
 	adapter.use(impatient)
-	user := app.CreateUser("Uncertain", profileID, nil)
+	user := app.CreateUser("Uncertain", templateID, nil)
 	_, _ = app.Sync.Drain(context.Background())
 	pending := app.User(user.User.ID)
 	if !pending.Allocation.PendingSync() {
@@ -208,9 +290,12 @@ func TestLiveAppUncertainTimeoutConvergesThroughReadAfterWrite(t *testing.T) {
 
 	adapter.use(runtime.client)
 	record := convergeWithRetries(t, app, user.User.ID)
-	ids := managedIDs(t, runtime, "managed", "bootstrap")
+	ids := managedIDs(t, runtime)
 	if len(ids) != 1 || ids[record.Identity.StatisticsID] != 1 {
 		t.Fatalf("uncertain mutation left %v in Xray", ids)
+	}
+	if inbounds := panelInbounds(t, runtime); len(inbounds) != 1 || inbounds[record.Inbound.Inbound.InboundTag].UserCount != 1 {
+		t.Fatalf("uncertain create left %v in Xray", inbounds)
 	}
 	var succeeded, open int
 	_ = app.Store.DB().Read.QueryRow(`SELECT count(*) FROM synchronization_operations WHERE allocation_id=? AND reason='create' AND state='succeeded'`, record.Allocation.ID.String()).Scan(&succeeded)
@@ -220,70 +305,93 @@ func TestLiveAppUncertainTimeoutConvergesThroughReadAfterWrite(t *testing.T) {
 	}
 }
 
-// 契约门禁 9：多个 profile 共享一个实例时统计 ID 全局唯一，bootstrap 身份不进入采集目标；跨 profile 复用 bootstrap ID 判为不兼容。
-func TestLiveAppMultipleProfilesKeepStatisticsIDsUniqueAndExcludeBootstrap(t *testing.T) {
+// 契约门禁 9–10：两个用户各得一条专属入站与互不相同的端口；对其中一个执行禁用、轮换与删除，
+// 另一个的端口保持监听、统计标识与计数目标不受影响；命名空间之外的入站全程不变。
+func TestLiveAppPerUserInboundsAreIsolated(t *testing.T) {
 	runtime := startRuntime(t)
 	app, _, _ := liveApp(t, runtime)
-	first := registerLiveProfile(t, app, "First", "managed", runtime.inbound, runtime.serverKey, "bootstrap")
-	second := registerLiveProfile(t, app, "Second", secondInboundTag, runtime.inbound2, runtime.serverKey2, secondBootstrap)
-	for _, id := range []domain.ID{first, second} {
-		record, err := app.Store.Profile(context.Background(), id)
-		if err != nil || record.Profile.Compatibility != domain.CompatibilityCompatible {
-			t.Fatalf("profile %s = %#v, %v", id, record.Profile, err)
-		}
-	}
-	records := []ports.UserRecord{app.CreateUser("A1", first, nil), app.CreateUser("A2", first, nil), app.CreateUser("B1", second, nil), app.CreateUser("B2", second, nil)}
+	templateID := registerLiveTemplate(t, app, "Primary", 8)
+	first := app.CreateUser("First", templateID, nil)
+	second := app.CreateUser("Second", templateID, nil)
 	app.Drain()
-	seen := map[string]int{}
-	for id, count := range managedIDs(t, runtime, "managed", "bootstrap") {
-		seen[id] += count
+
+	firstPort := app.User(first.User.ID).Inbound.Inbound.Port
+	secondPort := app.User(second.User.ID).Inbound.Inbound.Port
+	if firstPort == secondPort {
+		t.Fatalf("both users were assigned port %d", firstPort)
 	}
-	for id, count := range managedIDs(t, runtime, secondInboundTag, secondBootstrap) {
-		seen[id] += count
+	if !listening(firstPort) || !listening(secondPort) {
+		t.Fatalf("ports not listening: first=%v second=%v", listening(firstPort), listening(secondPort))
 	}
-	if len(seen) != 4 {
-		t.Fatalf("managed identities across profiles = %v", seen)
+	inbounds := panelInbounds(t, runtime)
+	if len(inbounds) != 2 {
+		t.Fatalf("dedicated inbounds = %v", inbounds)
 	}
-	for _, record := range records {
-		if seen[record.Identity.StatisticsID] != 1 || record.Identity.StatisticsID[:7] != "xpanel-" {
-			t.Fatalf("statistics id %q count=%d", record.Identity.StatisticsID, seen[record.Identity.StatisticsID])
+	for _, record := range []ports.UserRecord{first, second} {
+		tag := app.User(record.User.ID).Inbound.Inbound.InboundTag
+		if inbound, ok := inbounds[tag]; !ok || inbound.UserCount != 1 {
+			t.Fatalf("inbound %s = %#v", tag, inbound)
 		}
+	}
+	ids := managedIDs(t, runtime)
+	if len(ids) != 2 || ids[first.Identity.StatisticsID] != 1 || ids[second.Identity.StatisticsID] != 1 {
+		t.Fatalf("managed identities = %v", ids)
+	}
+
+	// 对第一个用户执行禁用 → 轮换 → 启用 → 删除；第二个用户的端口全程可连接。
+	steps := []struct {
+		name string
+		run  func(revision domain.Revision) error
+	}{
+		{name: "disable", run: func(revision domain.Revision) error {
+			_, err := app.Users.SetAdminEnabled(context.Background(), application.SetEnabledInput{ID: first.User.ID, Enabled: false,
+				ExpectedRevision: revision, RequestID: testsupport.NewID(t), ActorID: app.AdminID})
+			return err
+		}},
+		{name: "enable", run: func(revision domain.Revision) error {
+			_, err := app.Users.SetAdminEnabled(context.Background(), application.SetEnabledInput{ID: first.User.ID, Enabled: true,
+				ExpectedRevision: revision, RequestID: testsupport.NewID(t), ActorID: app.AdminID})
+			return err
+		}},
+		{name: "rotate", run: func(revision domain.Revision) error {
+			_, err := app.Users.RotateCredential(context.Background(), application.LifecycleInput{ID: first.User.ID,
+				ExpectedRevision: revision, RequestID: testsupport.NewID(t), ActorID: app.AdminID})
+			return err
+		}},
+		{name: "delete", run: func(revision domain.Revision) error {
+			_, err := app.Users.DeleteUser(context.Background(), application.LifecycleInput{ID: first.User.ID,
+				ExpectedRevision: revision, RequestID: testsupport.NewID(t), ActorID: app.AdminID})
+			return err
+		}},
+	}
+	for _, step := range steps {
+		if err := step.run(app.User(first.User.ID).User.Revision); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		app.Drain()
+		if !listening(secondPort) {
+			t.Fatalf("%s disturbed the other user's port %d", step.name, secondPort)
+		}
+		if current := app.User(second.User.ID); current.Allocation.PendingSync() || current.Inbound.Inbound.Port != secondPort {
+			t.Fatalf("%s disturbed the other allocation: %#v", step.name, current.Allocation)
+		}
+		if !listening(runtime.operatorPort) {
+			t.Fatalf("%s disturbed the operator inbound", step.name)
+		}
+	}
+	// 删除后第一个用户的入站消失、端口释放；第二个用户完好。
+	if listening(firstPort) {
+		t.Fatalf("port %d was not released after the user was deleted", firstPort)
+	}
+	if ids := managedIDs(t, runtime); len(ids) != 1 || ids[second.Identity.StatisticsID] != 1 {
+		t.Fatalf("managed identities after deletion = %v", ids)
 	}
 	targets, err := app.Store.CollectionTargets(context.Background())
-	if err != nil || len(targets) != 4 {
-		t.Fatalf("collection targets = %d, %v", len(targets), err)
+	if err != nil || len(targets) != 1 || targets[0].Identity.StatisticsID != second.Identity.StatisticsID {
+		t.Fatalf("collection targets = %#v, %v", targets, err)
 	}
-	for _, target := range targets {
-		if target.Identity.StatisticsID == "bootstrap" || target.Identity.StatisticsID == secondBootstrap {
-			t.Fatalf("bootstrap identity entered traffic collection: %#v", target)
-		}
-	}
-	if summary := app.Collect(); summary.Targets != 4 {
+	if summary := app.Collect(); summary.Targets != 1 {
 		t.Fatalf("collection summary = %#v", summary)
-	}
-	var samples int
-	_ = app.Store.DB().Read.QueryRow(`SELECT count(*) FROM xray_user_identities WHERE kind='bootstrap'`).Scan(&samples)
-	if samples != 2 {
-		t.Fatalf("bootstrap identities registered = %d", samples)
-	}
-	// 第三个 inbound 的 bootstrap 邮箱与第一个 profile 相同：Xray 接受该配置，但统计计数器按邮箱全局共享，
-	// 面板必须把它判为不兼容而不是让两个 profile 共用一个 bootstrap 身份。
-	conflict, err := app.Profiles.RegisterProfile(context.Background(), application.ProfileInput{Name: "Conflict", InboundTag: thirdInboundTag,
-		PublicHost: "127.0.0.1", PublicPort: 1, Method: security.MethodAES256, Network: domain.NetworkTCPUDP, ServerKey: runtime.serverKey3,
-		BootstrapStatisticsID: "bootstrap", RequestID: testsupport.NewID(t), ActorID: app.AdminID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := app.Validator.ValidateNow(context.Background(), conflict); err != nil {
-		t.Fatal(err)
-	}
-	record, _ := app.Store.Profile(context.Background(), conflict)
-	if record.Profile.Compatibility != domain.CompatibilityIncompatible {
-		t.Fatalf("conflicting bootstrap profile = %#v", record.Profile)
-	}
-	_ = app.Store.DB().Read.QueryRow(`SELECT count(*) FROM xray_user_identities WHERE kind='bootstrap'`).Scan(&samples)
-	if samples != 2 {
-		t.Fatalf("bootstrap identities after conflict = %d, want 2", samples)
 	}
 }
 
@@ -317,10 +425,10 @@ func TestLiveAppBatchedCollectionToleratesQuantizationButDetectsRestart(t *testi
 	hooked := &readHookAdapter{Adapter: runtime.client}
 	app := testsupport.NewWith(t, testsupport.Options{Adapter: hooked, Target: &target})
 	app.Clock.Set(time.Now().UTC())
-	profileID := registerLiveProfile(t, app, "Primary", "managed", runtime.inbound, runtime.serverKey, "bootstrap")
+	templateID := registerLiveTemplate(t, app, "Primary", 24)
 	var records []ports.UserRecord
 	for i := 0; i < 21; i++ {
-		records = append(records, app.CreateUser(fmt.Sprintf("Batch %02d", i), profileID, nil))
+		records = append(records, app.CreateUser(fmt.Sprintf("Batch %02d", i), templateID, nil))
 	}
 	app.Drain()
 	for round := 0; round < 3; round++ {

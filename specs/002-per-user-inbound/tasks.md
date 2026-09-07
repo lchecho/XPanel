@@ -411,3 +411,36 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
 - Phase 2 的 T014 迁移为破坏性变更，执行前 MUST 按 `docs/operations.md` 生成可验证备份
 - T024 的部分失败补偿是本功能最容易出错之处，实测已证明直接重试会因 `existing tag found` 永久卡住
   （research.md R-003），该路径 MUST 有专门的契约测试（T031）覆盖
+
+---
+
+## Phase 9: Convergence
+
+- [X] T078 **CRITICAL** 重构 `internal/worker/synchronizer.go` 的凭证轮换状态机并补充
+  `internal/worker/synchronizer_rotation_test.go` 与 `tests/contract/xray/` 真实故障契约，确保正常执行、
+  RPC 失败、进程崩溃、租约回收和协调器重放的每个持久阶段都不会保留零受管客户端的专属入站，
+  同时保持原端口监听、不可变统计身份和历史流量归属，并使旧凭证在成功后失效 per
+  Constitution II / FR-017 / FR-019 (contradicts)
+- [ ] T079 扩展 `internal/ports/xray.go`、`internal/adapter/xray/inbound.go` 与
+  `internal/application/template_service.go` 的入站模板能力门禁，显式验证探针入站能够成功移除且
+  用户级上下行统计可用；不得忽略探针清理失败，缺少 HandlerService 移除能力或
+  `statsUserUplink`/`statsUserDownlink` 时必须以安全中文原因标记模板不兼容，并增加固定 Xray 契约与
+  缺失 policy 的回归测试 per FR-005 / T021 / plan: Xray capability gate (partial)
+- [ ] T080 在 `internal/application/user_service.go`、`internal/ports/store.go`、
+  `internal/persistence/sqlite/` 和 `internal/web/` 增加外部端口占用后的管理员更换端口流程：在单个
+  SQLite 事务中校验池范围与唯一性、更新专属入站端口及同步意图、记录旧/新端口审计，并以 revision
+  和请求幂等键防止并发或重复提交产生部分状态；补充 Handler、集成及故障矩阵测试 per US1/AC4 /
+  FR-010 (missing)
+- [ ] T081 重构 `internal/application/reconciliation_service.go` 与漂移持久化归属，使面板命名空间内的
+  孤立入站在不存在兼容模板、所有模板均归档或模板记录为空时仍能持久化移除意图、完成有界重试、释放
+  运行时端口并写入审计；补充零模板和全归档模板场景测试，且保持命名空间外入站不变 per US5/AC4 /
+  FR-031 (partial)
+- [ ] T082 按 `specs/002-per-user-inbound/quickstart.md` §3 完成 T076 的人工验收，并在
+  `specs/002-per-user-inbound/validation-report.md` 回填 SC-001 首次交付计时、SC-002 各类操作至少
+  20 次的 P95，以及 SC-010 纯键盘和 360×640、390×844 视口的成功率与观察记录 per
+  SC-001 / SC-002 / SC-010 / T076 (missing)
+- [ ] T083 稳定 `tests/contract/xray/app_test.go` 的
+  `TestLiveAppBatchedCollectionToleratesQuantizationButDetectsRestart` 端口准备与同步等待逻辑，使合法的
+  临时 `port_unavailable` 不会令 21 用户批量采集断言偶发只看到 20 个目标；重复运行完整
+  `XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 make check` 并记录稳定通过证据 per
+  plan: Testing / T073-T074 (partial)

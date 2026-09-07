@@ -59,7 +59,8 @@ func TestRotateCredentialCreatesPendingVersionAndDestroysOldOnConfirm(t *testing
 	}
 	var reason, phase string
 	_ = fixture.store.DB().Read.QueryRow(`SELECT reason,phase FROM synchronization_operations WHERE allocation_id=? AND desired_revision=2`, record.Allocation.ID.String()).Scan(&reason, &phase)
-	if reason != string(domain.SyncRotate) || phase != string(domain.SyncRemoveOld) {
+	// 轮换是单阶段意图：不再先持久化 remove_old（那会留下没有受管客户端的入站，FR-019）。
+	if reason != string(domain.SyncRotate) || phase != string(domain.SyncAddDesired) {
 		t.Fatalf("rotation operation = %s/%s", reason, phase)
 	}
 	again := LifecycleInput{ID: record.User.ID, ExpectedRevision: 1, RequestID: appID(t), ActorID: appID(t)}

@@ -365,8 +365,14 @@ func (s *Synchronizer) createDedicatedInbound(ctx context.Context, work *ports.S
 						logging.FieldErrorKind, kind, logging.FieldResult, "compensating")
 					_, _ = s.adapter.RemoveInbound(ctx, ports.RemoveInboundCommand{OperationID: op.ID, InboundTag: inbound.InboundTag})
 				} else {
-					// 标签已存在且确实在监听：本意图已由此前的尝试达成，视为收敛。
-					return s.confirm(ctx, work, true, work.Credential.Version, logger, started)
+					// 标签已存在：只有当它确实带着期望的受管客户端时才算达成，否则它是一条
+					// 没有受管客户端（或密钥不对）的残留入站，必须移除后重建（FR-019）。
+					if healthy, checkErr := s.carriesClient(ctx, inbound, statisticsID); checkErr == nil && healthy {
+						return s.confirm(ctx, work, true, work.Credential.Version, logger, started)
+					}
+					logger.Warn("existing inbound does not carry the expected managed client; removing before retry",
+						logging.FieldErrorKind, kind, logging.FieldResult, "compensating")
+					_, _ = s.adapter.RemoveInbound(ctx, ports.RemoveInboundCommand{OperationID: op.ID, InboundTag: inbound.InboundTag})
 				}
 			}
 			if kind == ports.ErrorPortUnavailable {
@@ -383,48 +389,41 @@ func (s *Synchronizer) createDedicatedInbound(ctx context.Context, work *ports.S
 
 // rotateWithinInbound 在既有入站内完成凭证轮换。
 //
-// 统计标识在轮换中保持不变，只有密钥变化，因此必须「先删后加」同一 email：
-// remove_old → add_desired 两个持久化阶段，中途失败可从阶段恢复（宪章 IV）。
-// 端口与入站全程不变，监听不中断（FR-017）。
+// 职责：把该用户的受管客户端换成期望版本的密钥；不负责改变端口或入站标签。
+// 约束：统计标识与端口全程不变，历史流量归属不受影响（FR-017）。
+//
+// AI-LOCK：轮换 MUST NOT 持久化「入站存在但没有受管客户端」的中间阶段（FR-019）。
+// 因此这里不再分 remove_old / add_desired 两个持久阶段，而是在同一个租约步骤内完成
+// 「移除旧密钥 → 立即加回新密钥」，并且每次进入本函数都先读实际状态再决定做什么：
+//
+//	入站不在          → 按期望凭证重建整条入站（一步达成轮换目标）
+//	客户端不在        → 只补加期望凭证（上一次尝试在两次 RPC 之间中断）
+//	客户端已是期望版本 → 直接确认（重放幂等）
+//	客户端是旧版本    → 移除后立刻加回；加回失败则补偿移除整条入站，让重试从干净状态重建
 func (s *Synchronizer) rotateWithinInbound(ctx context.Context, work *ports.SyncWork, inbound ports.RuntimeInbound,
 	statisticsID string, logger *slog.Logger, started time.Time) error {
 	op := work.Operation
-	if op.Phase == domain.SyncRemoveOld {
-		if held, err := s.fence(ctx, work, logger); err != nil || !held {
-			return err
-		}
-		if _, err := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: op.ID, InboundTag: inbound.InboundTag, StatisticsID: statisticsID}); err != nil {
-			kind, retryable := describe(err)
-			switch {
-			case kind == ports.ErrorUserNotFound:
-				// 旧凭证已不在视为该阶段收敛。
-			case kind == ports.ErrorInboundNotFound:
-				// 入站整体不在（例如 Xray 刚重启）：轮换的目标是「入站在监听且密钥为期望版本」，
-				// 直接按期望凭证重建整条入站即可一步达成，无需等协调器（宪章 IV）。
-				return s.createDedicatedInbound(ctx, work, inbound, statisticsID, logger, started)
-			case retryable && kind != ports.ErrorInstanceUnavailable:
-				if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
-					return fenceErr
-				}
-				present, observeErr := s.observe(ctx, inbound, statisticsID)
-				if observeErr != nil || present {
-					return s.retry(ctx, work, err, logger, started)
-				}
-			default:
-				return s.retry(ctx, work, err, logger, started)
-			}
-		}
-		if err := s.store.AdvancePhase(ctx, op.ID, s.owner, domain.SyncAddDesired, s.clock.Now()); err != nil {
-			var invalid *domain.InvalidStateError
-			if errors.As(err, &invalid) {
-				logger.Warn("synchronization lease lost before rotation add phase; abandoned", logging.FieldResult, "abandoned")
-				return nil
-			}
-			return err
-		}
-		op.Phase = domain.SyncAddDesired
-		work.Operation = op
+	if held, err := s.fence(ctx, work, logger); err != nil || !held {
+		return err
 	}
+	// 读后写：先看 Xray 里的真实状态，避免按过时的持久阶段盲目动作。
+	remote, err := s.adapter.ListUsers(ctx, inbound)
+	if err != nil {
+		if kind, _ := describe(err); kind == ports.ErrorInboundNotFound {
+			return s.createDedicatedInbound(ctx, work, inbound, statisticsID, logger, started)
+		}
+		return s.retry(ctx, work, err, logger, started)
+	}
+	// 注意：Xray 不暴露客户端当前的密钥版本（ListUsers 只能给出「在不在」），
+	// 因此这里只按「在不在」决策；对已在的客户端重放一次「移除 + 加回期望密钥」是幂等的。
+	present := false
+	for _, user := range remote {
+		if user.StatisticsID == statisticsID && user.Present {
+			present = true
+			break
+		}
+	}
+
 	key, err := s.keyring.Decrypt(work.Credential.KeyCiphertext, work.Credential.KeyNonce,
 		security.SecretAAD("access_credentials", work.Allocation.ID.String(), "user_key", work.Credential.KeyEncryptionVersion))
 	if err != nil {
@@ -432,44 +431,99 @@ func (s *Synchronizer) rotateWithinInbound(ctx context.Context, work *ports.Sync
 	}
 	command := ports.AddUserCommand{OperationID: op.ID, InboundTag: inbound.InboundTag, AllocationID: work.Allocation.ID,
 		StatisticsID: statisticsID, CredentialVersion: work.Credential.Version, UserKey: security.NewRedactedString(string(key))}
+
+	if present {
+		// 旧凭证仍在：先移除。移除失败时入站里仍有旧客户端，不会产生空入站，按常规重试即可。
+		if _, err := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: op.ID,
+			InboundTag: inbound.InboundTag, StatisticsID: statisticsID}); err != nil {
+			kind, _ := describe(err)
+			switch kind {
+			case ports.ErrorInboundNotFound:
+				return s.createDedicatedInbound(ctx, work, inbound, statisticsID, logger, started)
+			case ports.ErrorUserNotFound:
+				// 已经不在，等同于移除成功。
+			default:
+				return s.retry(ctx, work, err, logger, started)
+			}
+		}
+	}
+	// 此刻入站里没有受管客户端：必须在本步骤内把期望凭证加回，或者补偿移除整条入站。
 	if held, err := s.fence(ctx, work, logger); err != nil || !held {
+		// 租约丢失时不能再调用 Xray，但入站已空：交由协调器按期望状态重建（它会看到客户端缺失）。
 		return err
 	}
 	if _, err := s.adapter.AddUser(ctx, command); err != nil {
 		kind, retryable := describe(err)
 		switch {
 		case kind == ports.ErrorUserAlreadyExists:
-			// 受控修复：先移除再添加，保证 Xray 中的密钥就是期望版本。
-			if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
-				return fenceErr
-			}
-			if _, removeErr := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: op.ID, InboundTag: inbound.InboundTag, StatisticsID: statisticsID}); removeErr != nil {
-				if removeKind, _ := describe(removeErr); removeKind != ports.ErrorUserNotFound {
-					return s.retry(ctx, work, removeErr, logger, started)
-				}
-			}
-			if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
-				return fenceErr
-			}
-			if _, addErr := s.adapter.AddUser(ctx, command); addErr != nil {
-				return s.retry(ctx, work, addErr, logger, started)
-			}
+			// 竞态：期望身份已被其他路径加入，视为达成。
 		case kind == ports.ErrorInboundNotFound:
-			// 同上：入站在两阶段之间消失，按期望凭证重建整条入站。
 			return s.createDedicatedInbound(ctx, work, inbound, statisticsID, logger, started)
 		case retryable && kind != ports.ErrorInstanceUnavailable:
+			// 结果不确定（例如超时）：变更可能已生效，读后写确认；确实已在则收敛，
+			// 只有确认「入站里没有受管客户端」才补偿移除整条入站。
 			if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
 				return fenceErr
 			}
-			present, observeErr := s.observe(ctx, inbound, statisticsID)
-			if observeErr != nil || !present {
-				return s.retry(ctx, work, err, logger, started)
+			healthy, observeErr := s.carriesClient(ctx, inbound, statisticsID)
+			if observeErr != nil || !healthy {
+				return s.abandonEmptyInbound(ctx, work, inbound, err, logger, started)
 			}
 		default:
-			return s.retry(ctx, work, err, logger, started)
+			return s.abandonEmptyInbound(ctx, work, inbound, err, logger, started)
 		}
 	}
 	return s.confirm(ctx, work, true, work.Credential.Version, logger, started)
+}
+
+// abandonEmptyInbound 在「旧客户端已移除、期望客户端未能加入」时移除整条入站。
+//
+// 宁可让端口暂时停止监听，也不留下没有受管客户端的入站（FR-019）：空入站既无法服务用户，
+// 又会让界面上的「监听中」名不副实。重试或协调器会按原端口重建整条入站。
+func (s *Synchronizer) abandonEmptyInbound(ctx context.Context, work *ports.SyncWork, inbound ports.RuntimeInbound,
+	cause error, logger *slog.Logger, started time.Time) error {
+	if held, err := s.fence(ctx, work, logger); err != nil || !held {
+		return err
+	}
+	if _, err := s.adapter.RemoveInbound(ctx, ports.RemoveInboundCommand{OperationID: work.Operation.ID,
+		InboundTag: inbound.InboundTag}); err != nil {
+		if kind, _ := describe(err); kind != ports.ErrorInboundNotFound {
+			// 补偿也失败：如实记录，协调器会在下一轮发现「入站在但客户端缺失」并重建。
+			logger.Error("rotation left an inbound without a managed client and the compensating removal failed",
+				logging.FieldResult, "compensation_failed", logging.FieldErrorKind, kind)
+			return s.retry(ctx, work, cause, logger, started)
+		}
+	}
+	logger.Warn("rotation compensated by removing the inbound; the port stops listening until it is rebuilt",
+		logging.FieldResult, "compensating", logging.FieldErrorKind, summaryOf(cause))
+	now := s.clock.Now()
+	if err := s.store.RecordObservation(ctx, work.Allocation.ID, false, now); err != nil {
+		return err
+	}
+	if err := s.store.ConfirmInboundPresence(ctx, work.Allocation.ID, false, now); err != nil {
+		return err
+	}
+	// 补偿已经改变了世界：入站整体不在了，下一次尝试走的是「重建整条入站」而不是「在既有入站里加客户端」，
+	// 因此即使本次失败不可重试，也 MUST 以有界退避再试一次这条不同的路径，而不是就地判永久失败（宪章 IV）。
+	kind, _ := describe(cause)
+	return s.retryLater(ctx, work, kind, summaryOf(cause), logger, started)
+}
+
+// carriesClient 判定某入站是否带着该用户的受管客户端。
+//
+// 只能判断「在不在」：Xray 不暴露客户端的密钥版本。这足以区分「上一次创建其实已经成功、
+// 只是确认丢失」与「残留了一条没有受管客户端的坏入站」，后者必须移除重建（FR-019）。
+func (s *Synchronizer) carriesClient(ctx context.Context, inbound ports.RuntimeInbound, statisticsID string) (bool, error) {
+	users, err := s.adapter.ListUsers(ctx, inbound)
+	if err != nil {
+		return false, err
+	}
+	for _, user := range users {
+		if user.StatisticsID == statisticsID && user.Present {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // retryLater 以有界退避重试外部条件导致的失败（例如端口暂时被占用）：

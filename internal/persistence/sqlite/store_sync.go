@@ -221,20 +221,6 @@ func (s *Store) ConfirmSync(ctx context.Context, operationID domain.ID, owner st
 	return true, tx.Commit()
 }
 
-// AdvancePhase 持久化轮换阶段推进（remove_old → add_desired）；只有当前租约持有者可以推进，租约续期由 RenewSyncLease 负责。
-func (s *Store) AdvancePhase(ctx context.Context, id domain.ID, owner string, phase domain.SyncPhase, now time.Time) error {
-	result, err := s.db.Write.ExecContext(ctx, `UPDATE synchronization_operations SET phase=? WHERE id=? AND state='leased' AND lease_owner=?`,
-		phase, id.String(), owner)
-	if err != nil {
-		return err
-	}
-	rows, _ := result.RowsAffected()
-	if rows != 1 {
-		return &domain.InvalidStateError{Message: "operation is no longer leased by this worker"}
-	}
-	return nil
-}
-
 // RenewSyncLease 在每次 Xray 调用前续租并重新确认：操作仍由 owner 租用，且其 desired revision 仍是分配的最新意图。
 // 返回 false 表示租约已被回收或意图已变化，worker 必须放弃本操作（不再调用或确认 Xray）。
 func (s *Store) RenewSyncLease(ctx context.Context, id domain.ID, owner string, now time.Time, lease time.Duration) (bool, error) {

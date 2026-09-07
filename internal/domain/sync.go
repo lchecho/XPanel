@@ -23,10 +23,12 @@ type SyncPhase string
 const (
 	SyncCreateInbound SyncPhase = "create_inbound"
 	SyncRemoveInbound SyncPhase = "remove_inbound"
-	SyncRemoveOld     SyncPhase = "remove_old"
-	SyncAddDesired    SyncPhase = "add_desired"
-	SyncConfirm       SyncPhase = "confirm"
-	SyncDone          SyncPhase = "done"
+	// SyncRemoveOld 是 001 两阶段轮换的遗留阶段名，002 起不再产生新的此类意图
+	// （轮换改为单阶段，见 Synchronizer.rotateWithinInbound）；保留常量只为读取历史行。
+	SyncRemoveOld  SyncPhase = "remove_old"
+	SyncAddDesired SyncPhase = "add_desired"
+	SyncConfirm    SyncPhase = "confirm"
+	SyncDone       SyncPhase = "done"
 )
 
 type SyncState string

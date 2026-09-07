@@ -46,7 +46,6 @@ type Store interface {
 	RenewSyncLease(context.Context, domain.ID, string, time.Time, time.Duration) (bool, error)
 	RescheduleSync(context.Context, domain.ID, string, int, time.Time, string, string) error
 	FailSync(context.Context, domain.ID, string, string, string, time.Time) error
-	AdvancePhase(context.Context, domain.ID, string, domain.SyncPhase, time.Time) error
 	MarkInstanceHealthy(context.Context, string, time.Time) error
 	MarkInstanceUnreachable(context.Context, string, string, time.Time) error
 	CollectionTargets(context.Context) ([]CollectionTarget, error)

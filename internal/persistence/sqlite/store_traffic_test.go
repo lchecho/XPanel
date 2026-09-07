@@ -268,7 +268,12 @@ func TestSyncFailureWritesAreConditional(t *testing.T) {
 	if state != string(domain.SyncSuperseded) || loaded.Allocation.ProjectionState != domain.ProjectionPending || loaded.Allocation.LastSyncErrorCode != "" {
 		t.Fatalf("superseded failure changed allocation: op=%s allocation=%#v", state, loaded.Allocation)
 	}
-	if err := store.AdvancePhase(ctx, record.Operation.ID, "worker-a", domain.SyncAddDesired, now); err == nil {
-		t.Fatal("advance on a non-leased operation succeeded")
+	// 已被取代的操作不再接受任何条件写：重排不得把它拉回 retry_wait。
+	if err := store.RescheduleSync(ctx, record.Operation.ID, "worker-a", 1, now, "internal", "no longer leased"); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.db.Read.QueryRow(`SELECT state FROM synchronization_operations WHERE id=?`, record.Operation.ID.String()).Scan(&state)
+	if state != string(domain.SyncSuperseded) {
+		t.Fatalf("reschedule revived a superseded operation: %s", state)
 	}
 }

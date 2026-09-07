@@ -454,7 +454,7 @@ func (s *UserService) RotateCredential(ctx context.Context, input LifecycleInput
 		Credential: domain.AccessCredential{ID: credentialID, AllocationID: record.Allocation.ID, Version: version, State: domain.CredentialPending,
 			KeyCiphertext: ciphertext, KeyNonce: nonce, KeyEncryptionVersion: 1, CreatedAt: now},
 		Operation: domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1, present, &version,
-			domain.SyncRotate, domain.SyncRemoveOld, now),
+			domain.SyncRotate, domain.SyncAddDesired, now),
 		Command: domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor, CommandType: domain.ActionCredentialRotated,
 			TargetType: "user", TargetID: record.User.ID,
 			RequestFingerprint: fingerprint,

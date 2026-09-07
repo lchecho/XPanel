@@ -303,7 +303,7 @@ func TestSynchronizerSupersedesOlderRevision(t *testing.T) {
 	if _, err := f.store.DB().Write.Exec(`UPDATE access_allocations SET desired_revision=2,admin_enabled=0 WHERE id=?`, record.Allocation.ID.String()); err != nil {
 		t.Fatal(err)
 	}
-	disable := domain.NewSynchronizationOperation(fixtureID(t), record.Allocation.ID, 2, false, nil, domain.SyncDisable, domain.SyncRemoveOld, f.clock.Now())
+	disable := domain.NewSynchronizationOperation(fixtureID(t), record.Allocation.ID, 2, false, nil, domain.SyncDisable, domain.InboundPhaseFor(false), f.clock.Now())
 	if err := f.store.Enqueue(ctx, disable); err != nil {
 		t.Fatal(err)
 	}

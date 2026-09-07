@@ -26,7 +26,7 @@ var auditActionLabels = []Option{
 	{domain.ActionUserEnabled, "启用用户"}, {domain.ActionUserDisabled, "禁用用户"}, {domain.ActionCredentialRotated, "轮换凭证"},
 	{domain.ActionUserDeleted, "删除用户"}, {domain.ActionQuotaExceeded, "配额超限"}, {domain.ActionTrafficReset, "手动重置流量"},
 	{domain.ActionCycleRestored, "周期恢复"}, {domain.ActionSyncSucceeded, "同步确认"}, {domain.ActionSyncFailed, "同步失败"},
-	{domain.ActionTemplateRegistered, "登记访问配置"}, {domain.ActionTemplateUpdated, "修改访问配置"}, {domain.ActionTemplateValidated, "验证访问配置"},
+	{domain.ActionTemplateRegistered, "登记入站模板"}, {domain.ActionTemplateUpdated, "修改入站模板"}, {domain.ActionTemplateValidated, "验证入站模板"},
 	{domain.ActionSettingsUpdated, "修改设置"}, {domain.ActionReconcileRemovedUnknown, "协调移除未知身份"},
 }
 
@@ -100,9 +100,9 @@ func NewAuditRows(events []domain.AuditEvent, users []ports.UserRecord, location
 				row.TargetLabel = "用户 " + event.TargetID.String()
 			}
 			row.TargetLink = "/users/" + event.TargetID.String()
-		case "profile":
-			row.TargetLabel = "访问配置"
-			row.TargetLink = "/profiles/" + event.TargetID.String()
+		case "template":
+			row.TargetLabel = "入站模板"
+			row.TargetLink = "/templates/" + event.TargetID.String()
 		case "settings":
 			row.TargetLabel = "面板设置"
 			row.TargetLink = "/settings"

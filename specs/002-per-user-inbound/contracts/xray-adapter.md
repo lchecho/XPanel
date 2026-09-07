@@ -36,9 +36,9 @@ Xray 会接受空用户列表并使该入站退化为“服务端密钥可直连
 
 | 观察到的 Xray 行为 | 稳定错误类别 | Retryable | 同步流程处置 |
 |---|---|---|---|
-| `bind: address already in use` | `port_unavailable` | 否 | **入站仍被注册**，MUST 先补偿移除再交由管理员改端口 |
+| `bind: address already in use` | `port_unavailable` | 否（对单次 RPC） | **入站仍被注册**，MUST 先补偿移除；补偿后 MUST 以有界退避继续重试（占用是外部条件，不是本意图的永久错误），分配保持「待同步」并显示可理解原因，管理员可另行改端口 |
 | `existing tag found: <tag>` | `inbound_already_exists` | 否 | 读后写确认；确属本意图则视为已收敛 |
-| `handler not found: <tag>`（查询已移除入站） | `inbound_not_found` | 否 | 视为已收敛 |
+| `handler not found: <tag>`（查询已移除入站，或在缺失入站上增删客户端） | `inbound_not_found` | 否 | 移除意图视为已收敛；轮换途中遇到 MUST 按期望凭证重建整条入站 |
 | `common: not enough information for making a decision`（移除不存在入站） | `inbound_not_found` | 否 | 视为已收敛，MUST NOT 记为故障 |
 | 连接不可达 / 超时 | 沿用 001 的 `instance_unavailable` / `deadline_exceeded` | 是 | 有界退避重试 |
 
@@ -56,8 +56,12 @@ Xray 会接受空用户列表并使该入站退化为“服务端密钥可直连
 4. **移除释放端口**：当某端口只有一条入站时，`RemoveInbound` 会释放端口；面板 MUST 以读后写
    确认实际状态，不得仅凭 RPC 成功即认定已释放。
 5. **重启清空**：Xray 重启后全部运行时入站消失且端口释放，协调器 MUST 按库中端口分配整体重建。
-6. **命名空间隔离**：`ListInbounds` 返回全部入站；面板 MUST 只对带面板保留前缀的标签执行移除，
-   其余入站 MUST 只读且不计入面板统计。
+6. **命名空间隔离**：`ListInbounds` 返回全部入站；面板 MUST 只对带面板保留前缀的标签执行**任何变更**，
+   其余入站 MUST 只读且不计入面板统计。该守卫覆盖 `RemoveInbound` 与 `AddUser`/`RemoveUser` 三个入口，
+   在发起 RPC 之前拒绝，越界请求不得到达 Xray。
+7. **轮换与入站解耦**：凭证轮换只在既有入站内 `remove_old → add_desired`，端口与入站标签全程不变。
+   若轮换途中发现入站整体消失（例如 Xray 刚重启），MUST 直接按期望凭证重建整条入站一步收敛，
+   MUST NOT 记为永久失败，也不必等待下一轮对账。
 
 ## 兼容性门禁
 

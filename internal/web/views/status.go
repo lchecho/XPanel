@@ -61,7 +61,7 @@ func ErrorSentence(kind string) string {
 	case ports.ErrorInstanceUnavailable, ports.ErrorDeadlineExceeded:
 		return "节点暂时不可达，系统会自动重试"
 	case ports.ErrorIncompatibleProfile, ports.ErrorUnsupportedProtocol, ports.ErrorProfileNotFound, ports.ErrorVersionMismatch:
-		return "访问配置与节点不兼容，需要运维检查 Xray 配置"
+		return "入站模板与节点不兼容，需要运维检查 Xray 配置"
 	case ports.ErrorUserAlreadyExists, ports.ErrorUserNotFound:
 		return "节点状态与面板不一致，系统正在自动修复"
 	default:

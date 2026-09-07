@@ -315,22 +315,22 @@ v1.2.0 追加「面板管理入站时 MUST 追加覆盖端口冲突与端口被�
 
 **Purpose**: 文档、证据与发布门禁
 
-- [ ] T069 [P] 更新 `specs/002-per-user-inbound/contracts/xray-adapter.md`：如实现中发现与实测结论不符
+- [X] T069 [P] 更新 `specs/002-per-user-inbound/contracts/xray-adapter.md`：如实现中发现与实测结论不符
   之处，同步修订契约并在 research.md 追加更正记录
-- [ ] T070 [P] 更新 `docs/operations.md`：迁移 00004 的破坏性说明与可验证备份/恢复步骤、端口池扩容
+- [X] T070 [P] 更新 `docs/operations.md`：迁移 00004 的破坏性说明与可验证备份/恢复步骤、端口池扩容
   流程、Xray 重启窗口的运维预期 【迁移】
-- [ ] T071 [P] 更新 `README.md`：入站模板与端口池的最小上手路径，移除预配置入站的前置说明
-- [ ] T072 清理 001 遗留概念：移除 `internal/domain/identity.go`、`internal/application/template_service.go`、
+- [X] T071 [P] 更新 `README.md`：入站模板与端口池的最小上手路径，移除预配置入站的前置说明
+- [X] T072 清理 001 遗留概念：移除 `internal/domain/identity.go`、`internal/application/template_service.go`、
   `internal/testsupport/app.go` 与 `tests/` 下 bootstrap 用户相关的死代码、文案与夹具，
   并以 `grep -rn "bootstrap" internal tests` 确认无残留业务语义
-- [ ] T073 运行 `make fmt`、`make vet`、`make test`、`make test-race` 并修复全部问题
-- [ ] T074 以 `XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 make check` 运行完整发布门禁，
+- [X] T073 运行 `make fmt`、`make vet`、`make test`、`make test-race` 并修复全部问题
+- [X] T074 以 `XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 make check` 运行完整发布门禁，
   确认 contracts/xray-adapter.md 的 10 项兼容性门禁全部通过 【Xray 契约】
-- [ ] T075 新建 `specs/002-per-user-inbound/validation-report.md`：记录自动化证据、门禁结果与
+- [X] T075 新建 `specs/002-per-user-inbound/validation-report.md`：记录自动化证据、门禁结果与
   SC-012/013/014 的验收数据，格式参照 001 的同名文件
 - [ ] T076 按 `specs/002-per-user-inbound/quickstart.md` §3 执行人工验收并回填
   SC-001、SC-002、SC-010 的计时与成功率
-- [ ] T077 在 `tests/contract/xray/main_test.go` 与新增的契约测试文件中复核进程清理：清理闭包 MUST
+- [X] T077 在 `tests/contract/xray/main_test.go` 与新增的契约测试文件中复核进程清理：清理闭包 MUST
   引用 `liveRuntime` 的当前字段而非启动时的局部变量；运行整套契约测试后以 `ps` 确认无残留 Xray 进程
 
 ---

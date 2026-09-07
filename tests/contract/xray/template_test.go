@@ -20,8 +20,8 @@ func TestKnownSS2022ConfigurationFailuresAndEmptyClientRejection(t *testing.T) {
 		clients []map[string]string
 		key     string
 	}{
-		{name: "invalid service key", clients: []map[string]string{{"email": "bootstrap", "password": testKey('b')}}, key: "invalid"},
-		{name: "invalid user key", clients: []map[string]string{{"email": "bootstrap", "password": "invalid"}}, key: testKey('s')},
+		{name: "invalid service key", clients: []map[string]string{{"email": "operator", "password": testKey('b')}}, key: "invalid"},
+		{name: "invalid user key", clients: []map[string]string{{"email": "operator", "password": "invalid"}}, key: testKey('s')},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

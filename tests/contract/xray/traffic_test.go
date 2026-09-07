@@ -181,6 +181,8 @@ func startClientRuntime(t *testing.T, bin, serverAddress, password string) strin
 		cancel()
 		t.Fatal("start Xray client runtime")
 	}
+	// 客户端进程从不重启，因此捕获局部的 cancel/command 是安全的；
+	// 会重启的服务端进程必须通过 liveRuntime 的字段停止（见 launchRuntime）。
 	t.Cleanup(func() { cancel(); _ = command.Wait() })
 	deadline := time.Now().Add(5 * time.Second)
 	for {

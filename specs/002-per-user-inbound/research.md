@@ -124,3 +124,21 @@ MUST 将其映射为稳定的 `inbound_not_found` 错误类别并按“已收敛
 无。规格中的三个方向性决策已在 `spec.md` 的 Clarifications 记录，本轮研究未产生新的
 NEEDS CLARIFICATION。唯一需要外部动作的是宪章条款更新，见 plan.md 的 Constitution Check
 与 Complexity Tracking。
+
+## 更正与补充记录（实现阶段）
+
+以下三条在实现与真实 Xray 契约套件中发现，已同步修订 contracts/xray-adapter.md：
+
+**C-001（对 R-003 的补充）：`port_unavailable` 不是永久失败。** 契约初稿把它写作「补偿移除后交由
+管理员改端口」，实现时按此把操作判为 `permanent_failed`，结果是占用解除后分配也不会自行恢复，
+与 contracts/http.md「端口被面板外进程占用 → 保存成功但待同步」相矛盾。修正为：补偿移除之后以
+有界退避持续重试，分配保持「待同步」并显示可理解原因，管理员可以改端口但不是唯一出路（宪章 IV）。
+故障矩阵新增 `external_port_occupied` 与 `port_conflict` 两列覆盖该路径。
+
+**C-002（对 R-002 的补充）：命名空间守卫要覆盖客户端变更。** 契约初稿只要求 `RemoveInbound` 限定在
+面板命名空间内。实测确认 `AlterInbound` 同样能修改运维在配置文件中自建的入站（面板不该有这个能力），
+因此 `AddUser`/`RemoveUser` 也加了同一守卫，在发起 RPC 之前拒绝。
+
+**C-003：在缺失的入站上增删客户端返回的是 `inbound_not_found`。** 这影响凭证轮换：Xray 重启后
+轮换的两阶段都会撞上它。原实现按不可重试处理导致永久失败；修正为直接按期望凭证重建整条入站，
+一步达成「入站在监听且密钥为期望版本」这一轮换目标。

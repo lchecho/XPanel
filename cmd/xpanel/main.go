@@ -151,7 +151,7 @@ func runServe(args []string, stderr io.Writer) int {
 	target.InstanceID = instance.ID
 	clock := ports.SystemClock{}
 	node := &sync.Mutex{}
-	var validator *worker.ProfileValidator
+	var validator *worker.TemplateValidator
 	requestValidation := func(id domain.ID) {
 		if validator != nil {
 			validator.Enqueue(id)
@@ -165,7 +165,7 @@ func runServe(args []string, stderr io.Writer) int {
 	settings := application.NewSettingsService(store).WithClock(clock)
 	dashboard := application.NewDashboardService(store, clock, cfg.Workers.TrafficInterval.Duration, cfg.Workers.ReconcileInterval.Duration)
 	auditService := application.NewAuditService(store)
-	validator = worker.NewProfileValidator(templates, store, logger, node, cfg.Workers.ReconcileInterval.Duration)
+	validator = worker.NewTemplateValidator(templates, store, logger, node, cfg.Workers.ReconcileInterval.Duration)
 	traffic := application.NewTrafficService(store, xrayClient, clock, target, cfg.Workers.TrafficInterval.Duration, synchronizer.Wake, logger)
 	quota := application.NewQuotaService(store, clock, synchronizer.Wake, logger)
 	collector := worker.NewCollector(traffic, cfg.Workers.TrafficInterval.Duration, logger)

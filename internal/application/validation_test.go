@@ -34,8 +34,9 @@ func TestStaleValidationResultIsDiscarded(t *testing.T) {
 		t.Fatalf("stale result applied: %#v", record.Template)
 	}
 	var identities int
-	if err := fixture.store.DB().Read.QueryRow(`SELECT COUNT(*) FROM xray_user_identities WHERE kind='bootstrap'`).Scan(&identities); err != nil || identities != 0 {
-		t.Fatalf("bootstrap identities after stale validation = %d, %v", identities, err)
+	// 模板校验只探测节点能力，不得副作用地登记任何身份（身份只在创建用户时产生）。
+	if err := fixture.store.DB().Read.QueryRow(`SELECT COUNT(*) FROM xray_user_identities`).Scan(&identities); err != nil || identities != 0 {
+		t.Fatalf("identities registered by template validation = %d, %v", identities, err)
 	}
 	events, _, _ := fixture.store.AuditEvents(context.Background(), ports.AuditFilter{Action: domain.ActionTemplateValidated, Limit: 10})
 	if len(events) != 0 {

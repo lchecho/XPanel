@@ -49,7 +49,7 @@ type App struct {
 	Reconcile   *application.ReconciliationService
 	Audit       *application.AuditService
 	Sync        *worker.Synchronizer
-	Validator   *worker.ProfileValidator
+	Validator   *worker.TemplateValidator
 	Node        *sync.Mutex
 	Sessions    *scs.SessionManager
 	Handler     http.Handler
@@ -149,7 +149,7 @@ func NewWith(t *testing.T, options Options) *App {
 	app.Users = application.NewUserService(store, keyring, clock, app.Sync.Wake)
 	app.Connections = application.NewConnectionService(store, keyring)
 	app.Settings = application.NewSettingsService(store).WithClock(clock)
-	app.Validator = worker.NewProfileValidator(app.Templates, store, nil, node, 15*time.Second)
+	app.Validator = worker.NewTemplateValidator(app.Templates, store, nil, node, 15*time.Second)
 	app.Traffic = application.NewTrafficService(store, adapter, clock, target, 5*time.Second, app.Sync.Wake, nil)
 	app.Quota = application.NewQuotaService(store, clock, app.Sync.Wake, nil)
 	app.Dashboard = application.NewDashboardService(store, clock, 5*time.Second, 15*time.Second)

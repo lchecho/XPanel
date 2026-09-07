@@ -12,23 +12,23 @@ import (
 	"xpanel/internal/ports"
 )
 
-// 核心函数：ProfileValidator 在事务外异步验证访问配置的兼容性。
+// 核心函数：TemplateValidator 在事务外异步验证入站模板的兼容性。
 //
 // 职责：处理登记/编辑/手动重新验证排队的 profile，并周期性重试 unverified 与 unreachable 的 profile；
 //
 //	不负责变更 Xray 用户。
 //
 // 约束：验证与用户变更共用 node 锁，避免并发打到同一 Xray 实例。
-type ProfileValidator struct {
-	profiles *application.TemplateService
-	store    ports.Store
-	logger   *slog.Logger
-	node     *sync.Mutex
-	interval time.Duration
-	queue    chan domain.ID
+type TemplateValidator struct {
+	templates *application.TemplateService
+	store     ports.Store
+	logger    *slog.Logger
+	node      *sync.Mutex
+	interval  time.Duration
+	queue     chan domain.ID
 }
 
-func NewProfileValidator(profiles *application.TemplateService, store ports.Store, logger *slog.Logger, node *sync.Mutex, interval time.Duration) *ProfileValidator {
+func NewTemplateValidator(templates *application.TemplateService, store ports.Store, logger *slog.Logger, node *sync.Mutex, interval time.Duration) *TemplateValidator {
 	if node == nil {
 		node = &sync.Mutex{}
 	}
@@ -38,12 +38,12 @@ func NewProfileValidator(profiles *application.TemplateService, store ports.Stor
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
-	return &ProfileValidator{profiles: profiles, store: store, logger: logger.With(logging.FieldComponent, "profile_validator"),
+	return &TemplateValidator{templates: templates, store: store, logger: logger.With(logging.FieldComponent, "template_validator"),
 		node: node, interval: interval, queue: make(chan domain.ID, 64)}
 }
 
 // Enqueue 非阻塞地请求验证；队列满时由周期扫描兜底。
-func (v *ProfileValidator) Enqueue(id domain.ID) {
+func (v *TemplateValidator) Enqueue(id domain.ID) {
 	select {
 	case v.queue <- id:
 	default:
@@ -51,7 +51,7 @@ func (v *ProfileValidator) Enqueue(id domain.ID) {
 	}
 }
 
-func (v *ProfileValidator) Run(ctx context.Context) {
+func (v *TemplateValidator) Run(ctx context.Context) {
 	ticker := time.NewTicker(v.interval)
 	defer ticker.Stop()
 	_ = v.SweepOnce(ctx)
@@ -68,12 +68,12 @@ func (v *ProfileValidator) Run(ctx context.Context) {
 }
 
 // SweepOnce 重新验证所有 unverified 与 unreachable 的 profile。
-func (v *ProfileValidator) SweepOnce(ctx context.Context) error {
-	profiles, err := v.store.Templates(ctx, false)
+func (v *TemplateValidator) SweepOnce(ctx context.Context) error {
+	templates, err := v.store.Templates(ctx, false)
 	if err != nil {
 		return err
 	}
-	for _, record := range profiles {
+	for _, record := range templates {
 		state := record.Template.Compatibility
 		if state == domain.CompatibilityUnverified || state == domain.CompatibilityUnreachable {
 			v.validate(ctx, record.Template.ID)
@@ -83,13 +83,13 @@ func (v *ProfileValidator) SweepOnce(ctx context.Context) error {
 }
 
 // ValidateNow 同步验证一个 profile，供测试与启动流程使用。
-func (v *ProfileValidator) ValidateNow(ctx context.Context, id domain.ID) error {
+func (v *TemplateValidator) ValidateNow(ctx context.Context, id domain.ID) error {
 	v.node.Lock()
 	defer v.node.Unlock()
-	return v.profiles.RunValidation(ctx, id)
+	return v.templates.RunValidation(ctx, id)
 }
 
-func (v *ProfileValidator) validate(ctx context.Context, id domain.ID) {
+func (v *TemplateValidator) validate(ctx context.Context, id domain.ID) {
 	started := time.Now()
 	err := v.ValidateNow(ctx, id)
 	if err != nil {

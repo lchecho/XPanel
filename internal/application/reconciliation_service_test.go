@@ -42,21 +42,20 @@ func TestReconcileRestoresOnlyDesiredUsersAndRemovesUnknownNamespaceIdentities(t
 		t.Fatal(err)
 	}
 	confirmLatest(t, fixture, disabled.Allocation.ID, false)
-	delete(fixture.adapter.Users["managed"], disabled.Identity.StatisticsID)
+	absentInbound(fixture, disabled)
 	fixture.adapter.SetCounter(exceeded.Identity.StatisticsID, ports.Uplink, 100)
 	fixture.adapter.SetCounter(exceeded.Identity.StatisticsID, ports.Downlink, 0)
 	if _, err := newTrafficService(fixture, nil).CollectOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	confirmLatest(t, fixture, exceeded.Allocation.ID, false)
-	delete(fixture.adapter.Users["managed"], exceeded.Identity.StatisticsID)
+	absentInbound(fixture, exceeded)
 	if _, err := users.DeleteUser(context.Background(), LifecycleInput{ID: deleted.User.ID, ExpectedRevision: 0, RequestID: appID(t), ActorID: appID(t)}); err != nil {
 		t.Fatal(err)
 	}
 	confirmLatest(t, fixture, deleted.Allocation.ID, false)
-	delete(fixture.adapter.Users["managed"], deleted.Identity.StatisticsID)
-	fixture.adapter.Users["managed"]["bootstrap"] = ports.RemoteUser{StatisticsID: "bootstrap", Present: true, Kind: "bootstrap"}
-	fixture.adapter.Users["managed"]["operator-static"] = ports.RemoteUser{StatisticsID: "operator-static", Present: true, Kind: "external"}
+	absentInbound(fixture, deleted)
+	fixture.adapter.AddExternalInbound("operator-inbound", 45000)
 
 	woken := 0
 	service := newReconciliation(fixture, func() { woken++ })
@@ -65,11 +64,10 @@ func TestReconcileRestoresOnlyDesiredUsersAndRemovesUnknownNamespaceIdentities(t
 		t.Fatalf("steady-state summary = %#v, %v woken=%d", summary, err, woken)
 	}
 
-	// 重启丢失动态用户：只有 Active 需要恢复。
+	// 重启清空全部面板入站：只有 Active 需要重建；命名空间内的孤立入站与运维自有入站分别处理。
 	fixture.adapter.Restart()
-	fixture.adapter.Users["managed"]["bootstrap"] = ports.RemoteUser{StatisticsID: "bootstrap", Present: true, Kind: "bootstrap"}
-	fixture.adapter.Users["managed"]["operator-static"] = ports.RemoteUser{StatisticsID: "operator-static", Present: true, Kind: "external"}
-	fixture.adapter.Users["managed"]["xpanel-00000000-0000-4000-8000-00000000dead"] = ports.RemoteUser{StatisticsID: "xpanel-00000000-0000-4000-8000-00000000dead", Present: true, Kind: "managed"}
+	fixture.adapter.AddExternalInbound("operator-inbound", 45000)
+	fixture.adapter.AddOrphanInbound("xpanel-00000000-0000-4000-8000-00000000dead", 45001)
 	summary, err = service.ReconcileOnce(context.Background())
 	if err != nil || summary.Drift != 1 || summary.RemovedUnknown != 1 || woken != 1 {
 		t.Fatalf("restart summary = %#v, %v woken=%d", summary, err, woken)
@@ -82,19 +80,16 @@ func TestReconcileRestoresOnlyDesiredUsersAndRemovesUnknownNamespaceIdentities(t
 			t.Fatalf("%s received a reconcile operation", record.User.DisplayName)
 		}
 	}
-	if _, stillThere := fixture.adapter.Users["managed"]["xpanel-00000000-0000-4000-8000-00000000dead"]; !stillThere {
-		t.Fatal("reconciler removed the identity synchronously instead of persisting an intent")
+	if _, stillThere := fixture.adapter.Inbounds["xpanel-00000000-0000-4000-8000-00000000dead"]; !stillThere {
+		t.Fatal("reconciler removed the orphan inbound synchronously instead of persisting an intent")
 	}
 	var queued int
 	_ = fixture.store.DB().Read.QueryRow(`SELECT count(*) FROM drift_removals WHERE state='pending'`).Scan(&queued)
 	if queued != 1 {
 		t.Fatalf("queued drift removals = %d", queued)
 	}
-	if _, kept := fixture.adapter.Users["managed"]["operator-static"]; !kept {
-		t.Fatal("external identity was removed")
-	}
-	if _, kept := fixture.adapter.Users["managed"]["bootstrap"]; !kept {
-		t.Fatal("bootstrap identity was removed")
+	if _, kept := fixture.adapter.Inbounds["operator-inbound"]; !kept {
+		t.Fatal("operator inbound outside the panel namespace was removed")
 	}
 	// 第二轮：已有待处理操作与移除意图，不重复入队。
 	summary, err = service.ReconcileOnce(context.Background())
@@ -127,8 +122,8 @@ func TestReconcileTracksUnavailabilityAndReconnect(t *testing.T) {
 	if instance.HealthState != "unreachable" {
 		t.Fatalf("instance health = %s", instance.HealthState)
 	}
-	profiles, _ := fixture.store.Profiles(context.Background(), false)
-	if err := fixture.store.SetProfileCompatibility(context.Background(), profiles[0].Profile.ID, domain.CompatibilityUnreachable, "down", fixture.clock.Now()); err != nil {
+	profiles, _ := fixture.store.Templates(context.Background(), false)
+	if err := fixture.store.SetTemplateCompatibility(context.Background(), profiles[0].Template.ID, domain.CompatibilityUnreachable, "down", fixture.clock.Now()); err != nil {
 		t.Fatal(err)
 	}
 	fixture.adapter.Available = true

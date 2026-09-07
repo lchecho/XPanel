@@ -39,9 +39,15 @@ func TestSynchronizerRotatesThroughRemoveAddConfirm(t *testing.T) {
 	if _, err := f.sync.Drain(ctx); err != nil {
 		t.Fatal(err)
 	}
-	remote := f.adapter.Users[f.tag][record.Identity.StatisticsID]
-	if remote.CredentialVersion != 2 || f.calls("remove_user") != 1 || f.calls("add_user") != 2 {
-		t.Fatalf("rotation calls remote=%#v remove=%d add=%d", remote, f.calls("remove_user"), f.calls("add_user"))
+	remote := f.adapter.Users[f.tagOf(record)][record.Identity.StatisticsID]
+	// 轮换在既有入站内先删后加同一统计标识；入站只在创建时建立一次，端口不中断（FR-017）。
+	if remote.CredentialVersion != 2 || f.calls("remove_user") != 1 || f.calls("add_user") != 1 ||
+		f.calls("create_inbound") != 1 || f.calls("remove_inbound") != 0 {
+		t.Fatalf("rotation calls remote=%#v remove_user=%d add_user=%d create_inbound=%d remove_inbound=%d",
+			remote, f.calls("remove_user"), f.calls("add_user"), f.calls("create_inbound"), f.calls("remove_inbound"))
+	}
+	if !f.adapter.Listening(record.Inbound.Inbound.Port) {
+		t.Fatal("rotation interrupted the dedicated port")
 	}
 	after, _ := f.store.User(ctx, record.User.ID)
 	if after.Credential.Version != 2 || after.Credential.State != domain.CredentialActive || after.Allocation.SyncedRevision != 2 || after.Allocation.PendingSync() {
@@ -74,7 +80,7 @@ func TestSynchronizerResumesRotationFromPersistedPhase(t *testing.T) {
 	if phase != string(domain.SyncAddDesired) || state != string(domain.SyncRetryWait) {
 		t.Fatalf("after failed add phase=%s state=%s", phase, state)
 	}
-	if _, present := f.adapter.Users[f.tag][record.Identity.StatisticsID]; present {
+	if present := f.userPresent(record); present {
 		t.Fatal("old credential still present after remove_old phase")
 	}
 	_, _, next := f.operationState(t, record.Allocation.ID)
@@ -86,7 +92,7 @@ func TestSynchronizerResumesRotationFromPersistedPhase(t *testing.T) {
 		t.Fatalf("remove_old was repeated after phase advanced: %d", f.calls("remove_user"))
 	}
 	after, _ := f.store.User(ctx, record.User.ID)
-	if after.Credential.State != domain.CredentialActive || after.Credential.Version != 2 || f.adapter.Users[f.tag][record.Identity.StatisticsID].CredentialVersion != 2 {
+	if after.Credential.State != domain.CredentialActive || after.Credential.Version != 2 || f.adapter.Users[f.tagOf(record)][record.Identity.StatisticsID].CredentialVersion != 2 {
 		t.Fatalf("resumed rotation = credential v%d %s", after.Credential.Version, after.Credential.State)
 	}
 }
@@ -121,7 +127,7 @@ func TestSynchronizerDisableMidRotationSupersedesAndLaterEnableActivatesNewKey(t
 		t.Fatal(err)
 	}
 	after, _ = f.store.User(ctx, record.User.ID)
-	if after.Credential.State != domain.CredentialActive || f.adapter.Users[f.tag][record.Identity.StatisticsID].CredentialVersion != 2 {
+	if after.Credential.State != domain.CredentialActive || f.adapter.Users[f.tagOf(record)][record.Identity.StatisticsID].CredentialVersion != 2 {
 		t.Fatalf("re-enable did not activate the pending credential: %s", after.Credential.State)
 	}
 	_ = time.Second

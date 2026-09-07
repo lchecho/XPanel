@@ -18,14 +18,13 @@ import (
 )
 
 type syncFixture struct {
-	store   *sqlite.Store
-	keyring *security.Keyring
-	clock   *ports.FixedClock
-	adapter *xrayfake.Adapter
-	sync    *Synchronizer
-	users   *application.UserService
-	profile domain.ID
-	tag     string
+	store    *sqlite.Store
+	keyring  *security.Keyring
+	clock    *ports.FixedClock
+	adapter  *xrayfake.Adapter
+	sync     *Synchronizer
+	users    *application.UserService
+	template domain.ID
 }
 
 func fixtureID(t *testing.T) domain.ID {
@@ -64,18 +63,14 @@ func newSyncFixture(t *testing.T) *syncFixture {
 	adapter := xrayfake.New()
 	adapter.Now = clock.Now
 	target := ports.InstanceTarget{APIEndpoint: "127.0.0.1:10085", ExpectedVersion: "v26.3.27", RPCTimeout: time.Second}
-	profiles := application.NewProfileService(store, adapter, keyring, clock, target, nil)
-	key, err := security.GenerateUserKey(security.MethodAES256)
+	templates := application.NewTemplateService(store, adapter, keyring, clock, target, nil)
+	templateID, err := templates.RegisterTemplate(ctx, application.TemplateInput{Name: "Primary",
+		PublicHost: "vpn.example.com", ListenAddress: "127.0.0.1", PortPoolStart: 30000, PortPoolEnd: 30099,
+		Method: security.MethodAES256, Network: domain.NetworkTCPUDP, RequestID: fixtureID(t), ActorID: fixtureID(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profileID, err := profiles.RegisterProfile(ctx, application.ProfileInput{Name: "Primary", InboundTag: "managed",
-		PublicHost: "vpn.example.com", PublicPort: 8388, Method: security.MethodAES256, Network: domain.NetworkTCPUDP,
-		ServerKey: key.Reveal(), BootstrapStatisticsID: "bootstrap", RequestID: fixtureID(t), ActorID: fixtureID(t)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := profiles.RunValidation(ctx, profileID); err != nil {
+	if err := templates.RunValidation(ctx, templateID); err != nil {
 		t.Fatal(err)
 	}
 	node := &sync.Mutex{}
@@ -83,12 +78,25 @@ func newSyncFixture(t *testing.T) *syncFixture {
 		MaxRetryInterval: 30 * time.Second, LeaseDuration: 10 * time.Second, RPCTimeout: target.RPCTimeout, Random: func(n int64) int64 { return n - 1 }})
 	users := application.NewUserService(store, keyring, clock, synchronizer.Wake)
 	return &syncFixture{store: store, keyring: keyring, clock: clock, adapter: adapter, sync: synchronizer, users: users,
-		profile: profileID, tag: "managed"}
+		template: templateID}
 }
+
+// userPresent 判断该用户的专属入站是否存在且包含其受管客户端。
+func (f *syncFixture) userPresent(record ports.UserRecord) bool {
+	tag := record.Inbound.Inbound.InboundTag
+	if _, ok := f.adapter.Inbounds[tag]; !ok {
+		return false
+	}
+	_, present := f.adapter.Users[tag][record.Identity.StatisticsID]
+	return present
+}
+
+// tagOf 返回该用户专属入站的标签。
+func (f *syncFixture) tagOf(record ports.UserRecord) string { return record.Inbound.Inbound.InboundTag }
 
 func (f *syncFixture) createUser(t *testing.T, name string) ports.UserRecord {
 	t.Helper()
-	id, _, err := f.users.CreateUser(context.Background(), application.CreateUserInput{DisplayName: name, ProfileID: f.profile,
+	id, _, err := f.users.CreateUser(context.Background(), application.CreateUserInput{DisplayName: name, TemplateID: f.template,
 		ResetDay: 1, RequestID: fixtureID(t), ActorID: fixtureID(t)})
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +148,7 @@ func TestSynchronizerConfirmsCreate(t *testing.T) {
 		after.Credential.State != domain.CredentialActive || after.Allocation.PendingSync() {
 		t.Fatalf("allocation after sync = %#v credential=%s", after.Allocation, after.Credential.State)
 	}
-	if _, ok := f.adapter.Users[f.tag][record.Identity.StatisticsID]; !ok {
+	if _, ok := f.adapter.Users[f.tagOf(record)][record.Identity.StatisticsID]; !ok {
 		t.Fatal("fake Xray does not contain the user")
 	}
 	state, _, _ := f.operationState(t, record.Allocation.ID)
@@ -157,20 +165,22 @@ func TestSynchronizerConfirmsCreate(t *testing.T) {
 func TestSynchronizerTimeoutThenPresentConfirmsWithoutDuplicate(t *testing.T) {
 	f := newSyncFixture(t)
 	record := f.createUser(t, "Alice")
-	f.adapter.Failures["add_user"] = []xrayfake.Failure{{Err: deadline("add_user"), Applied: true}}
+	f.adapter.Failures["create_inbound"] = []xrayfake.Failure{{Err: deadline("create_inbound"), Applied: true}}
 	if _, err := f.sync.Drain(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := f.store.User(context.Background(), record.User.ID)
-	if after.Allocation.ProjectionState != domain.ProjectionPresent || f.calls("add_user") != 1 || f.calls("list_users") != 1 {
-		t.Fatalf("read-after-write did not confirm: %s add=%d list=%d", after.Allocation.ProjectionState, f.calls("add_user"), f.calls("list_users"))
+	// 创建超时但已生效：读后写通过 list_inbounds 判定入站已注册且在监听，视为已收敛。
+	if after.Allocation.ProjectionState != domain.ProjectionPresent || f.calls("create_inbound") != 1 || f.calls("list_inbounds") != 1 {
+		t.Fatalf("read-after-write did not confirm: %s create=%d list_inbounds=%d", after.Allocation.ProjectionState,
+			f.calls("create_inbound"), f.calls("list_inbounds"))
 	}
 }
 
 func TestSynchronizerTimeoutThenAbsentRetriesWithBackoff(t *testing.T) {
 	f := newSyncFixture(t)
 	record := f.createUser(t, "Alice")
-	f.adapter.Failures["add_user"] = []xrayfake.Failure{{Err: deadline("add_user")}}
+	f.adapter.Failures["create_inbound"] = []xrayfake.Failure{{Err: deadline("create_inbound")}}
 	if _, err := f.sync.Drain(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -219,9 +229,9 @@ func TestSynchronizerBackoffIsBoundedAndInstanceMarkedUnreachable(t *testing.T) 
 	if err != nil || instance.HealthState != "unreachable" {
 		t.Fatalf("instance = %#v, %v", instance, err)
 	}
-	profile, _ := f.store.Profile(context.Background(), f.profile)
-	if profile.Profile.Compatibility != domain.CompatibilityUnreachable {
-		t.Fatalf("profile compatibility = %s", profile.Profile.Compatibility)
+	template, _ := f.store.Template(context.Background(), f.template)
+	if template.Template.Compatibility != domain.CompatibilityUnreachable {
+		t.Fatalf("template compatibility = %s", template.Template.Compatibility)
 	}
 	f.adapter.Available = true
 	recovered := 0
@@ -238,18 +248,27 @@ func TestSynchronizerBackoffIsBoundedAndInstanceMarkedUnreachable(t *testing.T) 
 	}
 }
 
-func TestSynchronizerRepairsAlreadyExists(t *testing.T) {
+// 入站标签已存在且确实在监听：说明此前的尝试已经达成意图，读后写确认为已收敛而不是重复创建。
+func TestSynchronizerTreatsExistingListeningInboundAsConverged(t *testing.T) {
 	f := newSyncFixture(t)
 	record := f.createUser(t, "Alice")
-	f.adapter.Users[f.tag] = map[string]ports.RemoteUser{record.Identity.StatisticsID: {StatisticsID: record.Identity.StatisticsID, Present: true, Kind: "managed", CredentialVersion: 99}}
-	f.adapter.Failures["add_user"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorUserAlreadyExists, Operation: "add_user", SafeSummary: "Xray user already exists"}}}
+	// 模拟上一次尝试已创建入站但未能写回确认。
+	if _, err := f.adapter.CreateInbound(context.Background(), ports.CreateInboundCommand{
+		InboundTag: record.Inbound.Inbound.InboundTag, ListenAddress: record.Inbound.Inbound.ListenAddress,
+		Port: record.Inbound.Inbound.Port, Method: record.Template.Template.Method, Network: domain.NetworkTCPUDP,
+		ServerKey: security.NewRedactedString(validKey(t)),
+		Client: ports.InboundClient{StatisticsID: record.Identity.StatisticsID, CredentialVersion: 1,
+			UserKey: security.NewRedactedString(validKey(t))}}); err != nil {
+		t.Fatal(err)
+	}
+	before := f.calls("create_inbound")
 	if _, err := f.sync.Drain(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if f.calls("remove_user") != 1 || f.calls("add_user") != 2 {
-		t.Fatalf("repair calls remove=%d add=%d", f.calls("remove_user"), f.calls("add_user"))
+	if f.calls("create_inbound") != before+1 || f.calls("remove_inbound") != 0 {
+		t.Fatalf("repair calls create=%d remove=%d", f.calls("create_inbound"), f.calls("remove_inbound"))
 	}
-	remote := f.adapter.Users[f.tag][record.Identity.StatisticsID]
+	remote := f.adapter.Users[f.tagOf(record)][record.Identity.StatisticsID]
 	after, _ := f.store.User(context.Background(), record.User.ID)
 	if remote.CredentialVersion != 1 || after.Allocation.ProjectionState != domain.ProjectionPresent {
 		t.Fatalf("repair result remote=%#v projection=%s", remote, after.Allocation.ProjectionState)
@@ -259,16 +278,16 @@ func TestSynchronizerRepairsAlreadyExists(t *testing.T) {
 func TestSynchronizerNonRetryableFailsPermanentlyAndMarksProfile(t *testing.T) {
 	f := newSyncFixture(t)
 	record := f.createUser(t, "Alice")
-	f.adapter.Failures["add_user"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorIncompatibleProfile, Operation: "add_user", SafeSummary: "inbound does not support dynamic users"}}}
+	f.adapter.Failures["create_inbound"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorIncompatibleProfile, Operation: "add_user", SafeSummary: "inbound does not support dynamic users"}}}
 	if _, err := f.sync.Drain(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	state, _, _ := f.operationState(t, record.Allocation.ID)
-	profile, _ := f.store.Profile(context.Background(), f.profile)
+	template, _ := f.store.Template(context.Background(), f.template)
 	after, _ := f.store.User(context.Background(), record.User.ID)
-	if state != string(domain.SyncPermanentFailed) || profile.Profile.Compatibility != domain.CompatibilityIncompatible ||
+	if state != string(domain.SyncPermanentFailed) || template.Template.Compatibility != domain.CompatibilityIncompatible ||
 		after.Allocation.ProjectionState != domain.ProjectionError {
-		t.Fatalf("state=%s profile=%s projection=%s", state, profile.Profile.Compatibility, after.Allocation.ProjectionState)
+		t.Fatalf("state=%s template=%s projection=%s", state, template.Template.Compatibility, after.Allocation.ProjectionState)
 	}
 	var audits int
 	_ = f.store.DB().Read.QueryRow(`SELECT count(*) FROM audit_events WHERE action=?`, domain.ActionSyncFailed).Scan(&audits)
@@ -296,8 +315,8 @@ func TestSynchronizerSupersedesOlderRevision(t *testing.T) {
 	if processed, err := f.sync.Drain(ctx); err != nil || processed != 1 {
 		t.Fatalf("drain = %d, %v", processed, err)
 	}
-	if f.calls("add_user") != 0 || f.calls("remove_user") != 1 {
-		t.Fatalf("superseded add ran: add=%d remove=%d", f.calls("add_user"), f.calls("remove_user"))
+	if f.calls("create_inbound") != 0 || f.calls("remove_inbound") != 1 {
+		t.Fatalf("superseded add ran: add=%d remove=%d", f.calls("create_inbound"), f.calls("remove_inbound"))
 	}
 	after, _ := f.store.User(ctx, record.User.ID)
 	if after.Allocation.ProjectionState != domain.ProjectionAbsent || after.Allocation.SyncedRevision != 2 {
@@ -356,4 +375,14 @@ func TestDescribeFallsBackToInternal(t *testing.T) {
 	if kind != ports.ErrorInternal || !retryable {
 		t.Fatalf("describe = %s %v", kind, retryable)
 	}
+}
+
+// validKey 生成一个符合 AES-256 长度要求的密钥，供 fake 层的直接调用使用。
+func validKey(t *testing.T) string {
+	t.Helper()
+	key, err := security.GenerateUserKey(security.MethodAES256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key.Reveal()
 }

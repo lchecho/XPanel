@@ -5,24 +5,26 @@ import (
 	"testing"
 	"time"
 
+	xrayfake "xpanel/internal/adapter/xray/fake"
 	"xpanel/internal/domain"
 	"xpanel/internal/ports"
 )
 
+// presentUser 创建一个用户并模拟其专属入站已在 Xray 中创建并确认。
 func presentUser(t *testing.T, fixture *featureFixture, name string, limit *int64) ports.UserRecord {
 	t.Helper()
-	profiles, err := fixture.store.Profiles(context.Background(), true)
+	templates, err := fixture.store.Templates(context.Background(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var profileID domain.ID
-	if len(profiles) == 0 {
-		profileID = registerCompatibleProfile(t, fixture)
+	var templateID domain.ID
+	if len(templates) == 0 {
+		templateID = registerCompatibleTemplate(t, fixture)
 	} else {
-		profileID = profiles[0].Profile.ID
+		templateID = templates[0].Template.ID
 	}
 	users := NewUserService(fixture.store, fixture.keyring, fixture.clock, nil)
-	id, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: name, ProfileID: profileID, LimitBytes: limit,
+	id, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: name, TemplateID: templateID, LimitBytes: limit,
 		ResetDay: 1, RequestID: appID(t), ActorID: appID(t)})
 	if err != nil {
 		t.Fatal(err)
@@ -39,11 +41,24 @@ func presentUser(t *testing.T, fixture *featureFixture, name string, limit *int6
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fixture.adapter.Users["managed"] == nil {
-		fixture.adapter.Users["managed"] = map[string]ports.RemoteUser{}
-	}
-	fixture.adapter.Users["managed"][record.Identity.StatisticsID] = ports.RemoteUser{StatisticsID: record.Identity.StatisticsID, Present: true, Kind: "managed", CredentialVersion: 1}
+	presentInbound(fixture, record)
 	return record
+}
+
+// presentInbound 在 fake 中登记该用户的专属入站与唯一客户端。
+func presentInbound(fixture *featureFixture, record ports.UserRecord) {
+	tag := record.Inbound.Inbound.InboundTag
+	fixture.adapter.Inbounds[tag] = &xrayfake.Inbound{Tag: tag, ListenAddress: record.Inbound.Inbound.ListenAddress,
+		Port: record.Inbound.Inbound.Port, Method: record.Template.Template.Method}
+	fixture.adapter.Users[tag] = map[string]ports.RemoteUser{record.Identity.StatisticsID: {
+		StatisticsID: record.Identity.StatisticsID, Present: true, Kind: "managed", CredentialVersion: 1}}
+}
+
+// absentInbound 模拟该用户的专属入站已被移除。
+func absentInbound(fixture *featureFixture, record ports.UserRecord) {
+	tag := record.Inbound.Inbound.InboundTag
+	delete(fixture.adapter.Inbounds, tag)
+	delete(fixture.adapter.Users, tag)
 }
 
 func newTrafficService(fixture *featureFixture, notify func()) *TrafficService {
@@ -143,7 +158,7 @@ func TestCollectOnceHandlesDecreaseRestartMissingAndFailure(t *testing.T) {
 	// 已确认重启：重启后的绝对值计入新纪元。
 	fixture.clock.Advance(5 * time.Second)
 	fixture.adapter.Restart()
-	fixture.adapter.Users["managed"] = map[string]ports.RemoteUser{id: {StatisticsID: id, Present: true, Kind: "managed"}}
+	fixture.adapter.Users[record.Inbound.Inbound.InboundTag] = map[string]ports.RemoteUser{id: {StatisticsID: id, Present: true, Kind: "managed"}}
 	fixture.adapter.SetCounter(id, ports.Uplink, 50)
 	fixture.adapter.SetCounter(id, ports.Downlink, 60)
 	if _, err := service.CollectOnce(context.Background()); err != nil {

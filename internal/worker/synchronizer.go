@@ -330,7 +330,17 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 		return err
 	}
 	if _, err := s.adapter.CreateInbound(ctx, command); err != nil {
-		kind, _ := describe(err)
+		kind, retryable := describe(err)
+		// 可重试错误（如超时）下变更可能已经生效：读后写确认入站是否已注册，已注册则视为收敛。
+		if retryable && kind != ports.ErrorInstanceUnavailable {
+			if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
+				return fenceErr
+			}
+			if present, observeErr := s.inboundPresent(ctx, inbound.InboundTag); observeErr == nil && present {
+				return s.confirm(ctx, work, true, work.Credential.Version, logger, started)
+			}
+			return s.retry(ctx, work, err, logger, started)
+		}
 		// AddInbound 非原子：监听失败时入站仍可能被注册。必须读后写确认并补偿移除，
 		// 否则重试会一直得到 inbound_already_exists 而永久卡住（research.md R-003）。
 		if kind == ports.ErrorPortUnavailable || kind == ports.ErrorInboundAlreadyExists {
@@ -354,10 +364,49 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 	return s.confirm(ctx, work, true, work.Credential.Version, logger, started)
 }
 
-// rotateWithinInbound 在既有入站内完成凭证轮换：先加新客户端，确认后移除旧客户端，端口与监听全程不中断（FR-017）。
+// rotateWithinInbound 在既有入站内完成凭证轮换。
+//
+// 统计标识在轮换中保持不变，只有密钥变化，因此必须「先删后加」同一 email：
+// remove_old → add_desired 两个持久化阶段，中途失败可从阶段恢复（宪章 IV）。
+// 端口与入站全程不变，监听不中断（FR-017）。
 func (s *Synchronizer) rotateWithinInbound(ctx context.Context, work *ports.SyncWork, inbound ports.RuntimeInbound,
 	statisticsID string, logger *slog.Logger, started time.Time) error {
 	op := work.Operation
+	if op.Phase == domain.SyncRemoveOld {
+		if held, err := s.fence(ctx, work, logger); err != nil || !held {
+			return err
+		}
+		if _, err := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: op.ID, InboundTag: inbound.InboundTag, StatisticsID: statisticsID}); err != nil {
+			kind, retryable := describe(err)
+			switch {
+			case kind == ports.ErrorUserNotFound:
+				// 旧凭证已不在视为该阶段收敛。
+			case kind == ports.ErrorInboundNotFound:
+				// 入站不在（例如刚重启）：交由协调器重建，本轮按可重试处理。
+				return s.retry(ctx, work, err, logger, started)
+			case retryable && kind != ports.ErrorInstanceUnavailable:
+				if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
+					return fenceErr
+				}
+				present, observeErr := s.observe(ctx, inbound, statisticsID)
+				if observeErr != nil || present {
+					return s.retry(ctx, work, err, logger, started)
+				}
+			default:
+				return s.retry(ctx, work, err, logger, started)
+			}
+		}
+		if err := s.store.AdvancePhase(ctx, op.ID, s.owner, domain.SyncAddDesired, s.clock.Now()); err != nil {
+			var invalid *domain.InvalidStateError
+			if errors.As(err, &invalid) {
+				logger.Warn("synchronization lease lost before rotation add phase; abandoned", logging.FieldResult, "abandoned")
+				return nil
+			}
+			return err
+		}
+		op.Phase = domain.SyncAddDesired
+		work.Operation = op
+	}
 	key, err := s.keyring.Decrypt(work.Credential.KeyCiphertext, work.Credential.KeyNonce,
 		security.SecretAAD("access_credentials", work.Allocation.ID.String(), "user_key", work.Credential.KeyEncryptionVersion))
 	if err != nil {
@@ -388,7 +437,6 @@ func (s *Synchronizer) rotateWithinInbound(ctx context.Context, work *ports.Sync
 				return s.retry(ctx, work, addErr, logger, started)
 			}
 		case kind == ports.ErrorInboundNotFound:
-			// 入站不在（例如刚重启）：交由协调器重建，本轮按可重试处理。
 			return s.retry(ctx, work, err, logger, started)
 		case retryable && kind != ports.ErrorInstanceUnavailable:
 			if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
@@ -402,8 +450,6 @@ func (s *Synchronizer) rotateWithinInbound(ctx context.Context, work *ports.Sync
 			return s.retry(ctx, work, err, logger, started)
 		}
 	}
-	// 新客户端已在：移除旧版本客户端由 ConfirmSync 的凭证销毁与下一轮对账保证；
-	// 这里只需确认本次意图。轮换不改变端口，因此不触碰入站本身。
 	return s.confirm(ctx, work, true, work.Credential.Version, logger, started)
 }
 

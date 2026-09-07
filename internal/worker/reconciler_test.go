@@ -26,7 +26,8 @@ func TestReconcilerRestoresActiveUsersAfterXrayRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.adapter.Restart()
-	f.adapter.Users[f.tag] = map[string]ports.RemoteUser{"bootstrap": {StatisticsID: "bootstrap", Present: true, Kind: "bootstrap"}}
+	// 重启清空全部面板入站；运维自有入站由运维配置恢复，面板不得触碰。
+	f.adapter.AddExternalInbound("operator-inbound", 45000)
 	target := ports.InstanceTarget{APIEndpoint: "127.0.0.1:10085", ExpectedVersion: "v26.3.27", RPCTimeout: time.Second}
 	service := application.NewReconciliationService(f.store, f.adapter, f.clock, target, f.sync.node, 15*time.Second, f.sync.Wake, nil, nil)
 	reconciler := NewReconciler(service, 15*time.Second, nil)
@@ -34,14 +35,14 @@ func TestReconcilerRestoresActiveUsersAfterXrayRestart(t *testing.T) {
 	if _, err := f.sync.Drain(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, present := f.adapter.Users[f.tag][active.Identity.StatisticsID]; !present {
+	if present := f.userPresent(active); !present {
 		t.Fatal("active user was not restored")
 	}
-	if _, present := f.adapter.Users[f.tag][disabled.Identity.StatisticsID]; present {
+	if present := f.userPresent(disabled); present {
 		t.Fatal("disabled user was restored")
 	}
-	if _, present := f.adapter.Users[f.tag]["bootstrap"]; !present {
-		t.Fatal("bootstrap identity was touched")
+	if _, present := f.adapter.Inbounds["operator-inbound"]; !present {
+		t.Fatal("operator inbound outside the panel namespace was touched")
 	}
 	after, _ := f.store.User(ctx, active.User.ID)
 	if after.Allocation.ProjectionState != domain.ProjectionPresent || after.Allocation.PendingSync() {

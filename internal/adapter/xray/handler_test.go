@@ -38,6 +38,14 @@ func (s *handlerStub) ListInbounds(context.Context, *handlercommand.ListInbounds
 	return &handlercommand.ListInboundsResponse{Inbounds: []*core.InboundHandlerConfig{{Tag: "managed", ProxySettings: serial.ToTypedMessage(config)}}}, nil
 }
 
+func (s *handlerStub) AddInbound(context.Context, *handlercommand.AddInboundRequest) (*handlercommand.AddInboundResponse, error) {
+	return &handlercommand.AddInboundResponse{}, nil
+}
+
+func (s *handlerStub) RemoveInbound(context.Context, *handlercommand.RemoveInboundRequest) (*handlercommand.RemoveInboundResponse, error) {
+	return &handlercommand.RemoveInboundResponse{}, nil
+}
+
 func (s *handlerStub) GetInboundUsersCount(context.Context, *handlercommand.GetInboundUserRequest) (*handlercommand.GetInboundUsersCountResponse, error) {
 	return &handlercommand.GetInboundUsersCountResponse{Count: 2}, nil
 }
@@ -108,17 +116,15 @@ func TestHandlerContractEncodingAndCapabilities(t *testing.T) {
 	if err != nil || observation.UptimeSeconds != 42 || !observation.BootEpoch.Equal(fixed.Add(-42*time.Second)) {
 		t.Fatalf("probe = %#v, %v", observation, err)
 	}
-	profile := ports.RuntimeProfile{InboundTag: "managed", Method: security.MethodAES256, BootstrapStatisticsID: "bootstrap"}
-	capabilities, err := client.ValidateProfile(context.Background(), profile)
+	// ValidateTemplate 通过一次性探针入站证明能力；这里的 stub 直接接受创建与计数查询。
+	capabilities, err := client.ValidateTemplate(context.Background(), ports.TemplateProbe{ListenAddress: "127.0.0.1",
+		ProbePort: 39999, Method: security.MethodAES256})
 	if err != nil || !capabilities.Compatible() {
 		t.Fatalf("capabilities = %#v, %v", capabilities, err)
 	}
-	if len(stats.requests) != 2 || stats.requests[0].GetReset_() || stats.requests[1].GetReset_() {
-		t.Fatalf("validation statistics requests = %#v", stats.requests)
-	}
 
 	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	command := ports.AddUserCommand{ProfileTag: "managed", StatisticsID: "xpanel-managed", CredentialVersion: 7,
+	command := ports.AddUserCommand{InboundTag: "managed", StatisticsID: "xpanel-managed", CredentialVersion: 7,
 		UserKey: security.NewRedactedString(key)}
 	if _, err := client.AddUser(context.Background(), command); err != nil {
 		t.Fatal(err)
@@ -139,7 +145,7 @@ func TestHandlerContractEncodingAndCapabilities(t *testing.T) {
 	if !ok || account.GetKey() != key {
 		t.Fatalf("account type/value = %T", accountMessage)
 	}
-	if _, err := client.RemoveUser(context.Background(), ports.RemoveUserCommand{ProfileTag: "managed", StatisticsID: "xpanel-managed"}); err != nil {
+	if _, err := client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "managed", StatisticsID: "xpanel-managed"}); err != nil {
 		t.Fatal(err)
 	}
 	instance, err = handler.last.GetOperation().GetInstance()
@@ -148,9 +154,17 @@ func TestHandlerContractEncodingAndCapabilities(t *testing.T) {
 		t.Fatalf("remove operation = %#v, %v", instance, err)
 	}
 
-	users, err := client.ListUsers(context.Background(), profile)
-	if err != nil || len(users) != 3 || users[0].Kind != "bootstrap" || users[1].Kind != "managed" || users[2].Kind != "external" {
+	// 面板命名空间前缀是区分受管与外部身份的唯一依据；bootstrap 概念已随共享入站模型退役。
+	users, err := client.ListUsers(context.Background(), ports.RuntimeInbound{InboundTag: "managed", Method: security.MethodAES256})
+	if err != nil || len(users) != 3 {
 		t.Fatalf("users = %#v, %v", users, err)
+	}
+	kinds := map[string]string{}
+	for _, user := range users {
+		kinds[user.StatisticsID] = user.Kind
+	}
+	if kinds["xpanel-managed"] != "managed" || kinds["bootstrap"] != "external" || kinds["foreign"] != "external" {
+		t.Fatalf("identity kinds = %#v", kinds)
 	}
 }
 
@@ -158,7 +172,7 @@ func TestHandlerStableErrorsDoNotLeakKeys(t *testing.T) {
 	key := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32)))
 	handler := &handlerStub{alterErr: status.Error(codes.AlreadyExists, "duplicate "+key)}
 	client := newBufClient(t, handler, &statsStub{}, time.Second)
-	_, err := client.AddUser(context.Background(), ports.AddUserCommand{ProfileTag: "managed", StatisticsID: "xpanel-user",
+	_, err := client.AddUser(context.Background(), ports.AddUserCommand{InboundTag: "managed", StatisticsID: "xpanel-user",
 		UserKey: security.NewRedactedString(key)})
 	adapterErr, ok := err.(*ports.AdapterError)
 	if !ok || adapterErr.Kind != ports.ErrorUserAlreadyExists || strings.Contains(err.Error(), key) {
@@ -166,7 +180,7 @@ func TestHandlerStableErrorsDoNotLeakKeys(t *testing.T) {
 	}
 
 	timeoutClient := newBufClient(t, &handlerStub{delay: 100 * time.Millisecond}, &statsStub{}, 5*time.Millisecond)
-	_, err = timeoutClient.RemoveUser(context.Background(), ports.RemoveUserCommand{ProfileTag: "managed", StatisticsID: "xpanel-user"})
+	_, err = timeoutClient.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: "managed", StatisticsID: "xpanel-user"})
 	adapterErr, ok = err.(*ports.AdapterError)
 	if !ok || adapterErr.Kind != ports.ErrorDeadlineExceeded || !adapterErr.Retryable {
 		t.Fatalf("deadline mapping = %T %v", err, err)

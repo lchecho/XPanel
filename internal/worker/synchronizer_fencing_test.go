@@ -66,9 +66,9 @@ func TestLostLeaseWorkerNeitherCallsNorConfirmsAfterReclaim(t *testing.T) {
 	if reclaimed != 1 {
 		t.Fatalf("second worker processed %d operations, want 1", reclaimed)
 	}
-	// 只有 B 添加过新凭证：创建 1 次 + B 的轮换 1 次；A 丢失租约后没有进入 add 阶段。
-	if f.calls("add_user") != 2 {
-		t.Fatalf("add_user calls = %d, want 2", f.calls("add_user"))
+	// 入站只在创建时建立 1 次；轮换的 add_user 只由回收者 B 执行 1 次，A 丢失租约后没有进入 add 阶段。
+	if f.calls("create_inbound") != 1 || f.calls("add_user") != 1 {
+		t.Fatalf("create_inbound=%d add_user=%d, want 1/1", f.calls("create_inbound"), f.calls("add_user"))
 	}
 	if n := countAudits(t, f, domain.ActionSyncSucceeded, rotateOp); n != 1 {
 		t.Fatalf("rotation confirmed %d times, want exactly once (by the reclaiming worker)", n)
@@ -77,7 +77,7 @@ func TestLostLeaseWorkerNeitherCallsNorConfirmsAfterReclaim(t *testing.T) {
 	if after.Allocation.ProjectionState != domain.ProjectionAbsent || after.Allocation.SyncedRevision != 3 || after.Allocation.PendingSync() {
 		t.Fatalf("newest intent not converged: %#v", after.Allocation)
 	}
-	if _, present := f.adapter.Users[f.tag][record.Identity.StatisticsID]; present {
+	if present := f.userPresent(record); present {
 		t.Fatal("user present in Xray although the newest intent is disabled")
 	}
 	var open int
@@ -141,11 +141,14 @@ func TestReclaimedDriftRemovalIsNotExecutedTwice(t *testing.T) {
 	f := newSyncFixture(t)
 	ctx := context.Background()
 	const unknown = "xpanel-ffffffff-1111-4111-8111-ffffffffffff"
-	if f.adapter.Users[f.tag] == nil {
-		f.adapter.Users[f.tag] = map[string]ports.RemoteUser{}
+	// 未知客户端出现在某个已存在用户的专属入站内。
+	host := f.createUser(t, "Host")
+	if _, err := f.sync.Drain(ctx); err != nil {
+		t.Fatal(err)
 	}
-	f.adapter.Users[f.tag][unknown] = ports.RemoteUser{StatisticsID: unknown, Present: true, Kind: "managed"}
-	if _, err := f.store.EnqueueDriftRemoval(ctx, f.profile, unknown, f.clock.Now()); err != nil {
+	tag := f.tagOf(host)
+	f.adapter.Users[tag][unknown] = ports.RemoteUser{StatisticsID: unknown, Present: true, Kind: "managed"}
+	if _, err := f.store.EnqueueDriftRemoval(ctx, f.template, tag, "identity", unknown, f.clock.Now()); err != nil {
 		t.Fatal(err)
 	}
 	crashing := NewSynchronizer(&crashingStore{Store: f.store}, f.adapter, f.keyring, f.clock, nil, &sync.Mutex{}, SynchronizerOptions{Owner: "crashing",
@@ -153,7 +156,7 @@ func TestReclaimedDriftRemovalIsNotExecutedTwice(t *testing.T) {
 	if _, err := crashing.Drain(ctx); !errors.Is(err, errCrash) {
 		t.Fatalf("crash drain err = %v", err)
 	}
-	if _, present := f.adapter.Users[f.tag][unknown]; present {
+	if _, present := f.adapter.Users[tag][unknown]; present {
 		t.Fatal("external removal did not take effect before the crash")
 	}
 	if state, _ := f.driftState(t); state != string(domain.SyncLeased) {

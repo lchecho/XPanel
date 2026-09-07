@@ -31,18 +31,20 @@ func (f *syncFixture) driftState(t *testing.T) (string, int) {
 func TestDriftRemovalIsPersistentRetryableAndAudited(t *testing.T) {
 	f := newSyncFixture(t)
 	ctx := context.Background()
-	f.createUser(t, "Known")
+	known := f.createUser(t, "Known")
 	if _, err := f.sync.Drain(ctx); err != nil {
 		t.Fatal(err)
 	}
-	f.adapter.Users[f.tag][unknownIdentity] = ports.RemoteUser{StatisticsID: unknownIdentity, Present: true, Kind: "managed"}
-	f.adapter.Users[f.tag]["bootstrap"] = ports.RemoteUser{StatisticsID: "bootstrap", Present: true, Kind: "bootstrap"}
+	tag := f.tagOf(known)
+	// 未知客户端出现在该用户的专属入站内；另有一条运维自有入站，面板不得触碰。
+	f.adapter.Users[tag][unknownIdentity] = ports.RemoteUser{StatisticsID: unknownIdentity, Present: true, Kind: "managed"}
+	f.adapter.AddExternalInbound("operator-inbound", 45000)
 	reconcile := f.reconciliation()
 	summary, err := reconcile.ReconcileOnce(ctx)
 	if err != nil || summary.RemovedUnknown != 1 {
 		t.Fatalf("summary = %#v, %v", summary, err)
 	}
-	if _, present := f.adapter.Users[f.tag][unknownIdentity]; !present {
+	if _, present := f.adapter.Users[tag][unknownIdentity]; !present {
 		t.Fatal("identity removed before the intent was executed by the worker")
 	}
 	// 重放协调：不重复入队。
@@ -58,7 +60,7 @@ func TestDriftRemovalIsPersistentRetryableAndAudited(t *testing.T) {
 	if state != string(domain.SyncRetryWait) || count != 1 {
 		t.Fatalf("after timeout state=%s count=%d", state, count)
 	}
-	if _, present := f.adapter.Users[f.tag][unknownIdentity]; !present {
+	if _, present := f.adapter.Users[tag][unknownIdentity]; !present {
 		t.Fatal("identity vanished although the RPC failed")
 	}
 	// 崩溃模拟：另一实例领取后失联，租约过期由本实例恢复。
@@ -75,11 +77,11 @@ func TestDriftRemovalIsPersistentRetryableAndAudited(t *testing.T) {
 	if processed, err := f.sync.Drain(ctx); err != nil || processed != 1 {
 		t.Fatalf("resume processed=%d, %v", processed, err)
 	}
-	if _, present := f.adapter.Users[f.tag][unknownIdentity]; present {
+	if _, present := f.adapter.Users[tag][unknownIdentity]; present {
 		t.Fatal("unknown identity still present after removal")
 	}
-	if _, kept := f.adapter.Users[f.tag]["bootstrap"]; !kept {
-		t.Fatal("bootstrap identity was removed")
+	if _, kept := f.adapter.Inbounds["operator-inbound"]; !kept {
+		t.Fatal("operator inbound outside the panel namespace was removed")
 	}
 	state, count = f.driftState(t)
 	if state != string(domain.SyncSucceeded) || count != 1 {
@@ -94,7 +96,7 @@ func TestDriftRemovalIsPersistentRetryableAndAudited(t *testing.T) {
 	if summary, _ = reconcile.ReconcileOnce(ctx); summary.RemovedUnknown != 0 {
 		t.Fatalf("post-convergence reconcile queued again: %#v", summary)
 	}
-	f.adapter.Users[f.tag][unknownIdentity] = ports.RemoteUser{StatisticsID: unknownIdentity, Present: true, Kind: "managed"}
+	f.adapter.Users[tag][unknownIdentity] = ports.RemoteUser{StatisticsID: unknownIdentity, Present: true, Kind: "managed"}
 	f.adapter.Failures["remove_user"] = []xrayfake.Failure{{Err: deadline("remove_user"), Applied: true}}
 	if _, err := reconcile.ReconcileOnce(ctx); err != nil {
 		t.Fatal(err)

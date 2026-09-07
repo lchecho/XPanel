@@ -10,11 +10,11 @@ import (
 
 func TestCreateUserValidationReplayAndOfflineAcceptance(t *testing.T) {
 	fixture := newFeatureFixture(t)
-	profileID := registerCompatibleProfile(t, fixture)
+	templateID := registerCompatibleTemplate(t, fixture)
 	wakes := 0
 	service := NewUserService(fixture.store, fixture.keyring, fixture.clock, func() { wakes++ })
 	limit := int64(1024)
-	input := CreateUserInput{DisplayName: "Alice", ProfileID: profileID, LimitBytes: &limit, ResetDay: 1,
+	input := CreateUserInput{DisplayName: "Alice", TemplateID: templateID, LimitBytes: &limit, ResetDay: 1,
 		RequestID: appID(t), ActorID: appID(t)}
 	id, replay, err := service.CreateUser(context.Background(), input)
 	if err != nil || replay || wakes != 1 {
@@ -51,13 +51,13 @@ func TestCreateUserValidationReplayAndOfflineAcceptance(t *testing.T) {
 
 func TestCreateUserRejectsIncompatibleProfile(t *testing.T) {
 	fixture := newFeatureFixture(t)
-	input := validProfileInput(t)
-	profileID, err := fixture.profiles.RegisterProfile(context.Background(), input)
+	input := validTemplateInput(t)
+	templateID, err := fixture.templates.RegisterTemplate(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	service := NewUserService(fixture.store, fixture.keyring, fixture.clock, nil)
-	_, _, err = service.CreateUser(context.Background(), CreateUserInput{DisplayName: "Alice", ProfileID: profileID,
+	_, _, err = service.CreateUser(context.Background(), CreateUserInput{DisplayName: "Alice", TemplateID: templateID,
 		ResetDay: 1, RequestID: appID(t), ActorID: appID(t)})
 	var stateErr *domain.InvalidStateError
 	if !errors.As(err, &stateErr) {

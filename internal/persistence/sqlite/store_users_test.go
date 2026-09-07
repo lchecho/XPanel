@@ -12,17 +12,17 @@ import (
 
 func userFixture(t *testing.T, store *Store, now time.Time, name string) ports.UserCreateRecord {
 	t.Helper()
-	profiles, err := store.Profiles(context.Background(), false)
+	templates, err := store.Templates(context.Background(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var profile ports.ProfileRecord
-	if len(profiles) == 0 {
-		profile = seedProfile(t, store, now)
+	var template ports.TemplateRecord
+	if len(templates) == 0 {
+		template = seedTemplate(t, store, now)
 	} else {
-		profile = profiles[0]
+		template = templates[0]
 	}
-	if err := store.SetProfileCompatibility(context.Background(), profile.Profile.ID, domain.CompatibilityCompatible, "", now); err != nil {
+	if err := store.SetTemplateCompatibility(context.Background(), template.Template.ID, domain.CompatibilityCompatible, "", now); err != nil {
 		t.Fatal(err)
 	}
 	user, err := domain.NewManagedUser(fixtureID(t), name, now)
@@ -30,10 +30,10 @@ func userFixture(t *testing.T, store *Store, now time.Time, name string) ports.U
 		t.Fatal(err)
 	}
 	allocationID := fixtureID(t)
-	identity := domain.XrayUserIdentity{ID: fixtureID(t), InstanceID: profile.Profile.InstanceID, ProfileID: profile.Profile.ID,
+	identity := domain.XrayUserIdentity{ID: fixtureID(t), InstanceID: template.Template.InstanceID, TemplateID: template.Template.ID,
 		StatisticsID: "xpanel-" + allocationID.String(), Kind: domain.IdentityManaged, CreatedAt: now}
 	version := int64(1)
-	allocation := domain.AccessAllocation{ID: allocationID, UserID: user.ID, ProfileID: profile.Profile.ID, IdentityID: identity.ID,
+	allocation := domain.AccessAllocation{ID: allocationID, UserID: user.ID, TemplateID: template.Template.ID, IdentityID: identity.ID,
 		AdminEnabled: true, QuotaState: domain.QuotaWithinLimit, ProjectionState: domain.ProjectionPending,
 		DesiredRevision: 1, DesiredCredentialVersion: version, CreatedAt: now, UpdatedAt: now}
 	credential := domain.AccessCredential{ID: fixtureID(t), AllocationID: allocationID, Version: version,
@@ -42,7 +42,11 @@ func userFixture(t *testing.T, store *Store, now time.Time, name string) ports.U
 	policy := ports.QuotaPolicyRecord{AllocationID: allocationID, ResetDay: 1, CreatedAt: now, UpdatedAt: now}
 	cycle := ports.QuotaCycleRecord{ID: fixtureID(t), AllocationID: allocationID, StartsAt: now.Add(-time.Hour),
 		EndsAt: now.AddDate(0, 1, 0), Timezone: "UTC", ResetDay: 1, Status: "open", OpenedAt: now}
-	operation := domain.NewSynchronizationOperation(fixtureID(t), allocationID, 1, true, &version, domain.SyncCreate, domain.SyncAddDesired, now)
+	inbound := ports.InboundRecord{Inbound: domain.DedicatedInbound{AllocationID: allocationID, TemplateID: template.Template.ID,
+		InboundTag: domain.InboundTag(allocationID), ListenAddress: template.Template.ListenAddress,
+		Port: nextFixturePort(t, store, template.Template.ID), DesiredPresent: true, CreatedAt: now, UpdatedAt: now},
+		ServerKeyCiphertext: []byte("server-cipher"), ServerKeyNonce: []byte("server-nonce"), KeyEncryptionVersion: 1}
+	operation := domain.NewSynchronizationOperation(fixtureID(t), allocationID, 1, true, &version, domain.SyncCreate, domain.SyncCreateInbound, now)
 	commandID, auditID, actor := fixtureID(t), fixtureID(t), fixtureID(t)
 	command := domain.DomainCommand{ID: commandID, ActorType: domain.ActorAdministrator, ActorID: &actor,
 		CommandType: domain.ActionUserCreated, TargetType: "user", TargetID: user.ID,
@@ -51,7 +55,7 @@ func userFixture(t *testing.T, store *Store, now time.Time, name string) ports.U
 	audit := domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor,
 		TargetType: "user", TargetID: user.ID, Action: domain.ActionUserCreated, Result: domain.AuditSucceeded,
 		CommandID: &commandID, OperationID: &operation.ID, SafeSummary: "user created"}
-	return ports.UserCreateRecord{User: user, Identity: identity, Allocation: allocation, Credential: credential,
+	return ports.UserCreateRecord{User: user, Identity: identity, Allocation: allocation, Inbound: inbound, Credential: credential,
 		Policy: policy, Cycle: cycle, Operation: operation, Command: command, Audit: audit}
 }
 
@@ -89,4 +93,22 @@ func TestCreateUserIsAtomicAndReplayable(t *testing.T) {
 			t.Fatalf("lookup after rollback = %v", err)
 		}
 	}
+}
+
+// nextFixturePort 为夹具在模板端口池内取一个未占用端口，保证多用户夹具不会撞端口。
+func nextFixturePort(t *testing.T, store *Store, templateID domain.ID) int {
+	t.Helper()
+	assigned, err := store.AssignedPorts(context.Background(), templateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := store.Template(context.Background(), templateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := domain.NextAvailablePort(template.Template.Pool, assigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
 }

@@ -18,7 +18,7 @@ func TestLateFailureOfSupersededOperationDoesNotOverwriteNewerIntent(t *testing.
 	ctx := context.Background()
 	record := f.createUser(t, "Racy")
 	f.adapter.Delay = 300 * time.Millisecond
-	f.adapter.Failures["add_user"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorUpstreamRejected, Operation: "add_user", SafeSummary: "rejected"}}}
+	f.adapter.Failures["create_inbound"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorUpstreamRejected, Operation: "add_user", SafeSummary: "rejected"}}}
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -69,8 +69,8 @@ func TestTwoWorkersOnOneDatabaseDoNotDoubleApply(t *testing.T) {
 		}(i, worker)
 	}
 	wg.Wait()
-	if results[0]+results[1] != 1 || f.calls("add_user") != 1 {
-		t.Fatalf("processed=%v add_user calls=%d", results, f.calls("add_user"))
+	if results[0]+results[1] != 1 || f.calls("create_inbound") != 1 {
+		t.Fatalf("processed=%v add_user calls=%d", results, f.calls("create_inbound"))
 	}
 	after, _ := f.store.User(ctx, record.User.ID)
 	if after.Allocation.ProjectionState != domain.ProjectionPresent || after.Allocation.SyncedRevision != 1 {

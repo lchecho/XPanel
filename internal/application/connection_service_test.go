@@ -11,9 +11,9 @@ import (
 
 func TestConnectionInfoRequiresConfirmedCredential(t *testing.T) {
 	fixture := newFeatureFixture(t)
-	profileID := registerCompatibleProfile(t, fixture)
+	templateID := registerCompatibleTemplate(t, fixture)
 	users := NewUserService(fixture.store, fixture.keyring, fixture.clock, nil)
-	userID, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: "Alice Example", ProfileID: profileID,
+	userID, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: "Alice Example", TemplateID: templateID,
 		ResetDay: 1, RequestID: appID(t), ActorID: appID(t)})
 	if err != nil {
 		t.Fatal(err)

@@ -14,9 +14,9 @@ import (
 // T142：显示名称去除首尾空白后保存；NFKC/大小写不敏感的规范化名称保持唯一。
 func TestDisplayNameIsTrimmedAndNormalizedUniquenessHolds(t *testing.T) {
 	fixture := newFeatureFixture(t)
-	profileID := registerCompatibleProfile(t, fixture)
+	templateID := registerCompatibleTemplate(t, fixture)
 	users := NewUserService(fixture.store, fixture.keyring, fixture.clock, nil)
-	id, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: "  Alice Ｅxample  ", ProfileID: profileID, ResetDay: 1, RequestID: appID(t), ActorID: appID(t)})
+	id, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: "  Alice Ｅxample  ", TemplateID: templateID, ResetDay: 1, RequestID: appID(t), ActorID: appID(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestDisplayNameIsTrimmedAndNormalizedUniquenessHolds(t *testing.T) {
 	if record.User.DisplayName != "Alice Ｅxample" || record.User.NormalizedName != "alice example" {
 		t.Fatalf("stored name = %q normalized = %q", record.User.DisplayName, record.User.NormalizedName)
 	}
-	if _, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: "ALICE   EXAMPLE", ProfileID: profileID, ResetDay: 1, RequestID: appID(t), ActorID: appID(t)}); err == nil {
+	if _, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: "ALICE   EXAMPLE", TemplateID: templateID, ResetDay: 1, RequestID: appID(t), ActorID: appID(t)}); err == nil {
 		t.Fatal("case/width-insensitive duplicate accepted")
 	}
 	if _, err := users.UpdateUser(context.Background(), UpdateUserInput{ID: id, DisplayName: "\tRenamed \n", LimitBytes: nil, ResetDay: 1, AdminEnabled: true, ExpectedRevision: 0, RequestID: appID(t), ActorID: appID(t)}); err != nil {
@@ -65,70 +65,90 @@ func TestCollectOnceBatchesBeyondTwentyAllocations(t *testing.T) {
 	}
 }
 
-// T134：跨 profile 复用同一 bootstrap 统计标识时第二个 profile 必须不兼容；同 profile 重放幂等。
-func TestBootstrapIdentityConflictAcrossProfiles(t *testing.T) {
+// 端口唯一性以监听地址为界：两个模板共用同一监听地址时，端口不得重复分配（FR-008）。
+func TestPortUniquenessSpansTemplatesOnSameListenAddress(t *testing.T) {
 	fixture := newFeatureFixture(t)
-	first := registerCompatibleProfile(t, fixture)
-	if err := fixture.profiles.RunValidation(context.Background(), first); err != nil {
-		t.Fatal(err)
-	}
-	input := validProfileInput(t)
-	input.Name, input.InboundTag = "Secondary", "other"
-	second, err := fixture.profiles.RegisterProfile(context.Background(), input)
+	first := registerCompatibleTemplate(t, fixture)
+	input := validTemplateInput(t)
+	input.Name = "Secondary"
+	input.RequestID = appID(t)
+	second, err := fixture.templates.RegisterTemplate(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.profiles.RunValidation(context.Background(), second); err != nil {
+	if err := fixture.templates.RunValidation(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
-	record, _ := fixture.store.Profile(context.Background(), second)
-	if record.Profile.Compatibility != domain.CompatibilityIncompatible || record.Profile.CompatibilityReason == "" {
-		t.Fatalf("second profile = %s %q", record.Profile.Compatibility, record.Profile.CompatibilityReason)
+	users := NewUserService(fixture.store, fixture.keyring, fixture.clock, nil)
+	firstID, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: "A", TemplateID: first,
+		ResetDay: 1, RequestID: appID(t), ActorID: appID(t)})
+	if err != nil {
+		t.Fatal(err)
 	}
-	var identities int
-	_ = fixture.store.DB().Read.QueryRow(`SELECT count(*) FROM xray_user_identities WHERE kind='bootstrap'`).Scan(&identities)
-	if identities != 1 {
-		t.Fatalf("bootstrap identities = %d", identities)
+	record, _ := fixture.store.User(context.Background(), firstID)
+	port := record.Inbound.Inbound.Port
+	// 在第二个模板上指定同一端口：两模板监听地址相同，必须被拒绝。
+	var conflict *domain.ConflictError
+	if _, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: "B", TemplateID: second,
+		Port: &port, ResetDay: 1, RequestID: appID(t), ActorID: appID(t)}); !errors.As(err, &conflict) {
+		t.Fatalf("duplicate port across templates err = %v, want conflict", err)
+	}
+	// 自动分配会跳过已占用端口。
+	secondID, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: "B", TemplateID: second,
+		ResetDay: 1, RequestID: appID(t), ActorID: appID(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _ := fixture.store.User(context.Background(), secondID)
+	if other.Inbound.Inbound.Port == port {
+		t.Fatalf("auto allocation reused an assigned port: %d", port)
 	}
 }
 
-// T133：已有受管用户的 profile 不得修改入站标签、加密方式或 bootstrap 标识；公开地址仍可修改。
-func TestProfileContractFieldsFrozenWhileUsersExist(t *testing.T) {
+// 已有受管用户的模板不得修改加密方式或监听地址；公开地址与端口池仍可修改（FR-006）。
+func TestTemplateContractFieldsFrozenWhileUsersExist(t *testing.T) {
 	fixture := newFeatureFixture(t)
 	record := presentUser(t, fixture, "Pinned", nil)
-	current, _ := fixture.store.Profile(context.Background(), record.Profile.Profile.ID)
-	base := ProfileInput{Name: current.Profile.Name, InboundTag: current.Profile.InboundTag, PublicHost: "edge.example.com", PublicPort: 8388,
-		Method: current.Profile.Method, Network: current.Profile.Network, BootstrapStatisticsID: current.Profile.BootstrapStatisticsID,
-		RequestID: appID(t), ExpectedRevision: current.Profile.Revision, ActorID: appID(t)}
-	if err := fixture.profiles.UpdateProfile(context.Background(), current.Profile.ID, base); err != nil {
+	current, _ := fixture.store.Template(context.Background(), record.Allocation.TemplateID)
+	base := TemplateInput{Name: current.Template.Name, PublicHost: "edge.example.com",
+		ListenAddress: current.Template.ListenAddress, PortPoolStart: current.Template.Pool.Start,
+		PortPoolEnd: current.Template.Pool.End, Method: current.Template.Method, Network: current.Template.Network,
+		RequestID: appID(t), ExpectedRevision: current.Template.Revision, ActorID: appID(t)}
+	if err := fixture.templates.UpdateTemplate(context.Background(), current.Template.ID, base); err != nil {
 		t.Fatalf("public host edit rejected: %v", err)
 	}
-	current, _ = fixture.store.Profile(context.Background(), record.Profile.Profile.ID)
-	for name, mutate := range map[string]func(*ProfileInput){
-		"inbound tag": func(in *ProfileInput) { in.InboundTag = "moved" },
-		"method":      func(in *ProfileInput) { in.Method = security.MethodAES128 },
-		"bootstrap":   func(in *ProfileInput) { in.BootstrapStatisticsID = "other-bootstrap" },
+	current, _ = fixture.store.Template(context.Background(), record.Allocation.TemplateID)
+	for name, mutate := range map[string]func(*TemplateInput){
+		"method":         func(in *TemplateInput) { in.Method = security.MethodAES128 },
+		"listen address": func(in *TemplateInput) { in.ListenAddress = "0.0.0.0" },
 	} {
 		input := base
-		input.RequestID, input.ExpectedRevision = appID(t), current.Profile.Revision
+		input.RequestID, input.ExpectedRevision = appID(t), current.Template.Revision
 		mutate(&input)
 		var conflict *domain.ConflictError
-		if err := fixture.profiles.UpdateProfile(context.Background(), current.Profile.ID, input); !errors.As(err, &conflict) {
+		if err := fixture.templates.UpdateTemplate(context.Background(), current.Template.ID, input); !errors.As(err, &conflict) {
 			t.Fatalf("%s change with users error = %v", name, err)
 		}
 	}
-	after, _ := fixture.store.Profile(context.Background(), record.Profile.Profile.ID)
-	if after.Profile.InboundTag != current.Profile.InboundTag || after.Profile.Compatibility != domain.CompatibilityCompatible {
-		t.Fatalf("profile mutated despite rejection: %#v", after.Profile)
+	// 端口池调整不受契约字段冻结影响。
+	widened := base
+	widened.RequestID, widened.ExpectedRevision = appID(t), current.Template.Revision
+	widened.PortPoolEnd = current.Template.Pool.End + 10
+	if err := fixture.templates.UpdateTemplate(context.Background(), current.Template.ID, widened); err != nil {
+		t.Fatalf("port pool widening rejected: %v", err)
+	}
+	after, _ := fixture.store.Template(context.Background(), record.Allocation.TemplateID)
+	if after.Template.Method != current.Template.Method || after.Template.Compatibility != domain.CompatibilityCompatible {
+		t.Fatalf("template mutated despite rejection: %#v", after.Template)
 	}
 }
 
 // T139：启用中的用户同时命中“启用”业务筛选与“待同步”筛选。
 func TestStatusFiltersAreOrthogonal(t *testing.T) {
 	fixture := newFeatureFixture(t)
-	profileID := registerCompatibleProfile(t, fixture)
+	templateID := registerCompatibleTemplate(t, fixture)
 	users := NewUserService(fixture.store, fixture.keyring, fixture.clock, nil)
-	if _, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: "Enabling", ProfileID: profileID, ResetDay: 1, RequestID: appID(t), ActorID: appID(t)}); err != nil {
+	if _, _, err := users.CreateUser(context.Background(), CreateUserInput{DisplayName: "Enabling", TemplateID: templateID, ResetDay: 1, RequestID: appID(t), ActorID: appID(t)}); err != nil {
 		t.Fatal(err)
 	}
 	presentUser(t, fixture, "Active", nil)

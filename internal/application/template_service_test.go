@@ -15,11 +15,11 @@ import (
 )
 
 type featureFixture struct {
-	store    *sqlite.Store
-	keyring  *security.Keyring
-	clock    *ports.FixedClock
-	adapter  *xrayfake.Adapter
-	profiles *ProfileService
+	store     *sqlite.Store
+	keyring   *security.Keyring
+	clock     *ports.FixedClock
+	adapter   *xrayfake.Adapter
+	templates *TemplateService
 }
 
 func appID(t *testing.T) domain.ID {
@@ -59,88 +59,30 @@ func newFeatureFixture(t *testing.T) *featureFixture {
 	adapter.Now = clock.Now
 	target := ports.InstanceTarget{APIEndpoint: "127.0.0.1:10085", ExpectedVersion: "v26.3.27", RPCTimeout: time.Second}
 	return &featureFixture{store: store, keyring: keyring, clock: clock, adapter: adapter,
-		profiles: NewProfileService(store, adapter, keyring, clock, target, nil)}
+		templates: NewTemplateService(store, adapter, keyring, clock, target, nil)}
 }
 
-func validProfileInput(t *testing.T) ProfileInput {
+func validTemplateInput(t *testing.T) TemplateInput {
 	t.Helper()
-	key, err := security.GenerateUserKey(security.MethodAES256)
+	return TemplateInput{Name: "Primary", PublicHost: "vpn.example.com", ListenAddress: "127.0.0.1",
+		PortPoolStart: 30000, PortPoolEnd: 30099, Method: security.MethodAES256, Network: domain.NetworkTCPUDP,
+		RequestID: appID(t), ActorID: appID(t)}
+}
+
+func registerCompatibleTemplate(t *testing.T, fixture *featureFixture) domain.ID {
+	t.Helper()
+	id, err := fixture.templates.RegisterTemplate(context.Background(), validTemplateInput(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ProfileInput{Name: "Primary", InboundTag: "managed", PublicHost: "vpn.example.com", PublicPort: 8388,
-		Method: security.MethodAES256, Network: domain.NetworkTCPUDP, ServerKey: key.Reveal(),
-		BootstrapStatisticsID: "bootstrap", RequestID: appID(t), ActorID: appID(t)}
-}
-
-func registerCompatibleProfile(t *testing.T, fixture *featureFixture) domain.ID {
-	t.Helper()
-	input := validProfileInput(t)
-	id, err := fixture.profiles.RegisterProfile(context.Background(), input)
-	if err != nil {
+	if err := fixture.templates.RunValidation(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.profiles.RunValidation(context.Background(), id); err != nil {
-		t.Fatal(err)
-	}
-	record, err := fixture.store.Profile(context.Background(), id)
-	if err != nil || record.Profile.Compatibility != domain.CompatibilityCompatible {
-		t.Fatalf("profile = %#v, %v", record, err)
+	record, err := fixture.store.Template(context.Background(), id)
+	if err != nil || record.Template.Compatibility != domain.CompatibilityCompatible {
+		t.Fatalf("template = %#v, %v", record, err)
 	}
 	return id
-}
-
-func TestProfileRegistrationValidationAndBlankKeyUpdate(t *testing.T) {
-	fixture := newFeatureFixture(t)
-	input := validProfileInput(t)
-	id, err := fixture.profiles.RegisterProfile(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before, err := fixture.store.Profile(context.Background(), id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fixture.profiles.RunValidation(context.Background(), id); err != nil {
-		t.Fatal(err)
-	}
-	input.PublicHost = "new.example.com"
-	input.ServerKey = ""
-	input.RequestID = appID(t)
-	input.ExpectedRevision = 0
-	if err := fixture.profiles.UpdateProfile(context.Background(), id, input); err != nil {
-		t.Fatal(err)
-	}
-	after, err := fixture.store.Profile(context.Background(), id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(before.ServerKeyCiphertext, after.ServerKeyCiphertext) || !bytes.Equal(before.ServerKeyNonce, after.ServerKeyNonce) {
-		t.Fatal("blank key input changed encrypted service key")
-	}
-	if after.Profile.Compatibility != domain.CompatibilityCompatible {
-		t.Fatalf("public metadata edit reset compatibility: %s", after.Profile.Compatibility)
-	}
-}
-
-func TestProfileIncompatibilityReasonIsSafe(t *testing.T) {
-	fixture := newFeatureFixture(t)
-	input := validProfileInput(t)
-	fixture.adapter.Profiles[input.InboundTag] = ports.ProfileCapabilities{CompatibilityReason: "inbound is not multi-user"}
-	id, err := fixture.profiles.RegisterProfile(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fixture.profiles.RunValidation(context.Background(), id); err != nil {
-		t.Fatal(err)
-	}
-	record, err := fixture.store.Profile(context.Background(), id)
-	if err != nil || record.Profile.Compatibility != domain.CompatibilityIncompatible || record.Profile.CompatibilityReason == "" {
-		t.Fatalf("profile = %#v, %v", record, err)
-	}
-	if bytes.Contains([]byte(record.Profile.CompatibilityReason), []byte(input.ServerKey)) {
-		t.Fatal("compatibility reason leaked the server key")
-	}
 }
 
 // leaseForTest 把操作直接置为 "test" 持有的租约，供不经 worker 的确认测试使用（ConfirmSync 要求租约 owner 匹配）。
@@ -149,5 +91,36 @@ func leaseForTest(t *testing.T, fixture *featureFixture, id domain.ID) {
 	if _, err := fixture.store.DB().Write.Exec(`UPDATE synchronization_operations SET state='leased',lease_owner='test',lease_expires_at=? WHERE id=?`,
 		fixture.clock.Now().Add(time.Minute).UnixMilli(), id.String()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 入站模板的登记、能力验证与端口池。
+func TestTemplateRegistrationAndValidation(t *testing.T) {
+	fixture := newFeatureFixture(t)
+	id := registerCompatibleTemplate(t, fixture)
+	record, err := fixture.store.Template(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Template.Pool.Capacity() != 100 || record.Template.ListenAddress != "127.0.0.1" {
+		t.Fatalf("template = %#v", record.Template)
+	}
+	usage, err := fixture.templates.PortUsage(context.Background(), id)
+	if err != nil || usage.Remaining != 100 {
+		t.Fatalf("usage = %#v, %v", usage, err)
+	}
+	// 节点不兼容时模板被标记为 incompatible 并附可理解原因。
+	fixture.adapter.Templates[id.String()] = ports.TemplateCapabilities{InboundCreatable: true, ProtocolSupported: true,
+		MethodSupported: true, MultiUserSupported: false, CompatibilityReason: "node does not support multi-user"}
+	if _, err := fixture.templates.Revalidate(context.Background(), RevalidateInput{ID: id,
+		ExpectedRevision: record.Template.Revision, RequestID: appID(t), ActorID: appID(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.templates.RunValidation(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := fixture.store.Template(context.Background(), id)
+	if after.Template.Compatibility != domain.CompatibilityIncompatible || after.Template.CompatibilityReason == "" {
+		t.Fatalf("incompatible template = %#v", after.Template)
 	}
 }

@@ -19,7 +19,7 @@ func TestCollectorBlocksCrossingWithinOneRoundAndSynchronizerRemoves(t *testing.
 	f := newSyncFixture(t)
 	ctx := context.Background()
 	limit := int64(500)
-	id, _, err := f.users.CreateUser(ctx, application.CreateUserInput{DisplayName: "Quota", ProfileID: f.profile, LimitBytes: &limit,
+	id, _, err := f.users.CreateUser(ctx, application.CreateUserInput{DisplayName: "Quota", TemplateID: f.template, LimitBytes: &limit,
 		ResetDay: 1, RequestID: fixtureID(t), ActorID: fixtureID(t)})
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestCollectorBlocksCrossingWithinOneRoundAndSynchronizerRemoves(t *testing.
 	if after.Allocation.ProjectionState != domain.ProjectionAbsent || after.Allocation.DisplayState(after.User) != domain.DisplayQuotaExceeded {
 		t.Fatalf("allocation after removal = %#v", after.Allocation)
 	}
-	if _, present := f.adapter.Users[f.tag][record.Identity.StatisticsID]; present {
+	if present := f.userPresent(record); present {
 		t.Fatal("blocked user is still present in fake Xray")
 	}
 	// 移除后不再采集该用户，历史保留。
@@ -59,12 +59,12 @@ func TestSchedulerRestoresQuotaBlockedUserAtBoundary(t *testing.T) {
 	f := newSyncFixture(t)
 	ctx := context.Background()
 	limit := int64(100)
-	blockedID, _, err := f.users.CreateUser(ctx, application.CreateUserInput{DisplayName: "Blocked", ProfileID: f.profile, LimitBytes: &limit,
+	blockedID, _, err := f.users.CreateUser(ctx, application.CreateUserInput{DisplayName: "Blocked", TemplateID: f.template, LimitBytes: &limit,
 		ResetDay: 1, RequestID: fixtureID(t), ActorID: fixtureID(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	disabledID, _, err := f.users.CreateUser(ctx, application.CreateUserInput{DisplayName: "Disabled", ProfileID: f.profile, LimitBytes: &limit,
+	disabledID, _, err := f.users.CreateUser(ctx, application.CreateUserInput{DisplayName: "Disabled", TemplateID: f.template, LimitBytes: &limit,
 		ResetDay: 1, RequestID: fixtureID(t), ActorID: fixtureID(t)})
 	if err != nil {
 		t.Fatal(err)
@@ -105,10 +105,10 @@ func TestSchedulerRestoresQuotaBlockedUserAtBoundary(t *testing.T) {
 	if disabled.Allocation.ProjectionState != domain.ProjectionAbsent || disabled.Allocation.DisplayState(disabled.User) != domain.DisplayDisabled {
 		t.Fatalf("manually disabled user after rollover = %#v", disabled.Allocation)
 	}
-	if _, present := f.adapter.Users[f.tag][disabled.Identity.StatisticsID]; present {
+	if present := f.userPresent(disabled); present {
 		t.Fatal("manually disabled user was re-added")
 	}
-	if _, present := f.adapter.Users[f.tag][blocked.Identity.StatisticsID]; !present {
+	if present := f.userPresent(blocked); !present {
 		t.Fatal("quota-blocked user was not restored")
 	}
 }

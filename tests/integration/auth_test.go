@@ -111,8 +111,25 @@ func TestAuthenticationCSRFAndSecurityHeaders(t *testing.T) {
 	token = regexp.MustCompile(`name="_csrf" value="([^"]+)"`).FindSubmatch(body)
 	form := url.Values{"_csrf": {string(token[1])}, "_request_id": {"550e8400-e29b-41d4-a716-446655440000"},
 		"username": {"admin"}, "password": {"correct horse battery staple"}}
+	crossSiteRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/login", strings.NewReader(form.Encode()))
+	crossSiteRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	crossSiteRequest.Header.Set("Origin", "null")
+	crossSiteRequest.Header.Set("Sec-Fetch-Site", "cross-site")
+	crossSiteResponse, err := client.Do(crossSiteRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crossSiteResponse.Body.Close()
+	if crossSiteResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-site null-origin login status = %d", crossSiteResponse.StatusCode)
+	}
+
 	request, _ := http.NewRequest(http.MethodPost, server.URL+"/login", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Referrer-Policy: no-referrer makes Chrome serialize Origin as "null" for
+	// a normal form POST. Fetch Metadata still proves this navigation is same-origin.
+	request.Header.Set("Origin", "null")
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
 	response, err = client.Do(request)
 	if err != nil {
 		t.Fatal(err)

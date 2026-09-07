@@ -65,60 +65,60 @@ v1.2.0 追加「面板管理入站时 MUST 追加覆盖端口冲突与端口被�
 
 ### 领域模型
 
-- [ ] T004 [P] 新建 `internal/domain/inbound.go`：面板保留命名空间前缀常量与标签生成/判定函数、
+- [X] T004 [P] 新建 `internal/domain/inbound.go`：面板保留命名空间前缀常量与标签生成/判定函数、
   专属入站期望状态由 `lifecycle == active && admin_enabled && quota_state == within_limit` 派生的
   纯函数、入站必须携带恰好一个受管客户端的不变量校验
-- [ ] T005 [P] 新建 `internal/domain/port.go`：端口池区间类型（`1024 ≤ start ≤ end ≤ 65535`）、
+- [X] T005 [P] 新建 `internal/domain/port.go`：端口池区间类型（`1024 ≤ start ≤ end ≤ 65535`）、
   容量计算、池内判定、下一个可用端口的确定性选择策略（升序取最小空闲），全部为纯函数
-- [ ] T006 [P] 新建 `internal/domain/inbound_test.go` 与 `internal/domain/port_test.go`：表驱动覆盖
+- [X] T006 [P] 新建 `internal/domain/inbound_test.go` 与 `internal/domain/port_test.go`：表驱动覆盖
   命名空间判定、期望状态派生真值表、端口池边界值（下界、上界、单端口池、空洞复用、耗尽）
-- [ ] T007 改写 `internal/domain/profile.go` 为入站模板：移除服务端密钥与 bootstrap 统计标识字段，
+- [X] T007 改写 `internal/domain/profile.go` 为入站模板：移除服务端密钥与 bootstrap 统计标识字段，
   新增监听地址与端口池区间及其校验；同步更新 `internal/domain/profile_test.go`
-- [ ] T008 更新 `internal/domain/identity.go`：移除 `IdentityBootstrap` 的使用路径，新增入站创建/
+- [X] T008 更新 `internal/domain/identity.go`：移除 `IdentityBootstrap` 的使用路径，新增入站创建/
   移除、端口分配/释放对应的审计动作常量
 
 ### 端口接口与 Adapter
 
-- [ ] T009 更新 `internal/ports/xray.go`：`Adapter` 接口新增 `CreateInbound`、`RemoveInbound`、
+- [X] T009 更新 `internal/ports/xray.go`：`Adapter` 接口新增 `CreateInbound`、`RemoveInbound`、
   `ListInbounds`，定义 `InboundSpec`（标签、监听地址、端口、方法、服务端密钥、唯一客户端）与
   `RemoteInbound`；新增稳定错误类别 `port_unavailable`、`inbound_already_exists`、`inbound_not_found`
-- [ ] T010 新建 `internal/adapter/xray/inbound.go`：按 contracts/xray-adapter.md 用定向 protobuf
+- [X] T010 新建 `internal/adapter/xray/inbound.go`：按 contracts/xray-adapter.md 用定向 protobuf
   （`core.InboundHandlerConfig` + `proxyman.ReceiverConfig` + `shadowsocks_2022.MultiUserServerConfig`）
   实现三个操作，MUST NOT 引入 `infra/conf`；构建期拒绝空客户端列表 【Xray 契约】【安全】
-- [ ] T011 更新 `internal/adapter/xray/errors.go`：把 `bind: address already in use`、
+- [X] T011 更新 `internal/adapter/xray/errors.go`：把 `bind: address already in use`、
   `existing tag found`、`handler not found`、`common: not enough information for making a decision`
   映射为 T009 定义的稳定类别，保持脱敏且不含原始错误串 【可观测性】
-- [ ] T012 在 `internal/adapter/xray/inbound.go` 增加创建前端口预绑定探测（`net.Listen` 后立即释放），
+- [X] T012 在 `internal/adapter/xray/inbound.go` 增加创建前端口预绑定探测（`net.Listen` 后立即释放），
   失败即返回 `port_unavailable`，并在注释中说明其 TOCTOU 局限不作为唯一保证（research.md R-002）
-- [ ] T013 更新 `internal/adapter/xray/fake/fake.go`：支持入站生命周期与端口语义——按标签维护入站表、
+- [X] T013 更新 `internal/adapter/xray/fake/fake.go`：支持入站生命周期与端口语义——按标签维护入站表、
   记录端口占用、可注入 `port_unavailable` 并模拟「返回错误但入站仍注册」的部分失败、`Restart()` 清空
   全部运行时入站与端口
 
 ### 持久化
 
-- [ ] T014 新建迁移 `internal/persistence/sqlite/migrations/00004_per_user_inbound.sql` 【迁移】：
+- [X] T014 新建迁移 `internal/persistence/sqlite/migrations/00004_per_user_inbound.sql` 【迁移】：
   `access_profiles` 改造为 `inbound_templates`（新增 `listen_address`/`port_pool_start`/`port_pool_end`，
   删除服务端密钥列、`bootstrap_statistics_id`、`public_port`）；新建 `dedicated_inbounds` 表；
   建立 `UNIQUE(inbound_tag)` 与部分唯一索引 `(listen_address, port) WHERE released_at IS NULL`；
   清理 `kind='bootstrap'` 身份；提供可回滚的 `-- +goose Down`
 - [ ] T015 更新 `internal/persistence/sqlite/migrations_test.go`：覆盖 00004 的 up/down、部分唯一索引
   确实拒绝重复 `(listen_address, port)`、`released_at` 非空后同端口可再次分配
-- [ ] T016 新建 `internal/persistence/sqlite/store_inbounds.go`：专属入站与端口分配的事务写入——
+- [X] T016 新建 `internal/persistence/sqlite/store_inbounds.go`：专属入站与端口分配的事务写入——
   分配端口（依赖唯一索引拒绝冲突而非应用层判断）、释放端口、确认监听状态、按模板统计端口池使用量
-- [ ] T017 改写 `internal/persistence/sqlite/store_profiles.go` 为入站模板存储：移除服务端密钥读写与
+- [X] T017 改写 `internal/persistence/sqlite/store_profiles.go` 为入站模板存储：移除服务端密钥读写与
   bootstrap 身份注册，新增端口池字段读写；保留 001 的 revision 条件提交与 `CompleteProfileValidation`
   事务边界
-- [ ] T018 更新 `internal/persistence/sqlite/store_users.go` 与 `store_quota.go`：用户创建事务内联动
+- [X] T018 更新 `internal/persistence/sqlite/store_users.go` 与 `store_quota.go`：用户创建事务内联动
   端口分配与专属入站写入，删除确认事务内置 `released_at`；`readFacts`/`applyDecision` 的决策结果映射到
   `create_inbound` / `remove_inbound` 阶段 【重试/协调】
-- [ ] T019 更新 `internal/ports/store.go`：新增专属入站与端口分配相关的 Store 方法签名与记录类型，
+- [X] T019 更新 `internal/ports/store.go`：新增专属入站与端口分配相关的 Store 方法签名与记录类型，
   与 data-model.md 的实体映射一致
 
 ### 测试支撑
 
-- [ ] T020 更新 `internal/testsupport/app.go`：`RegisterCompatibleProfile` 改为登记入站模板（含端口池），
+- [X] T020 更新 `internal/testsupport/app.go`：`RegisterCompatibleProfile` 改为登记入站模板（含端口池），
   `CreateUser` 返回值包含分配端口；新增按端口查询监听状态的辅助方法
-- [ ] T021 更新 `internal/application/profile_service.go` → 重命名为 `template_service.go`：
+- [X] T021 更新 `internal/application/profile_service.go` → 重命名为 `template_service.go`：
   能力校验改为验证实例支持运行时创建/移除入站、SS2022 多用户与独立用户统计（含 `policy` 缺失检出），
   不再校验预配置入站；同步更新 `internal/application/profile_service_test.go`
 

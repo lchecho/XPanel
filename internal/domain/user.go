@@ -52,7 +52,7 @@ func NewManagedUser(id ID, displayName string, now time.Time) (ManagedUser, erro
 type AccessAllocation struct {
 	ID                       ID
 	UserID                   ID
-	ProfileID                ID
+	TemplateID               ID
 	IdentityID               ID
 	AdminEnabled             bool
 	QuotaState               QuotaState

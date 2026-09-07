@@ -9,24 +9,27 @@ import (
 
 // UserView 是用户列表与详情的展示模型；不含任何密钥材料。
 type UserView struct {
-	ID                string
-	DisplayName       string
-	ProfileID         string
-	ProfileName       string
-	ProfileCompatible bool
-	ProfileStateLabel string
-	State             string
-	StateLabel        string
-	PendingSync       bool
-	SyncError         string
-	SyncErrorKind     string
-	LastSyncAt        string
-	Deleted           bool
-	AdminEnabled      bool
-	QuotaExceeded     bool
-	Revision          int64
-	CreatedAt         string
-	Quota             QuotaView
+	ID                 string
+	DisplayName        string
+	TemplateID         string
+	TemplateName       string
+	TemplateCompatible bool
+	Port               int
+	InboundTag         string
+	Listening          bool
+	TemplateStateLabel string
+	State              string
+	StateLabel         string
+	PendingSync        bool
+	SyncError          string
+	SyncErrorKind      string
+	LastSyncAt         string
+	Deleted            bool
+	AdminEnabled       bool
+	QuotaExceeded      bool
+	Revision           int64
+	CreatedAt          string
+	Quota              QuotaView
 }
 
 // QuotaView 按 data-model §QuotaCycle 展示规则计算剩余量与百分比。
@@ -51,10 +54,12 @@ type QuotaView struct {
 func NewUserView(record ports.UserRecord, location *time.Location) UserView {
 	state := record.Allocation.DisplayState(record.User)
 	view := UserView{ID: record.User.ID.String(), DisplayName: record.User.DisplayName,
-		ProfileID: record.Profile.Profile.ID.String(), ProfileName: record.Profile.Profile.Name,
-		ProfileCompatible: record.Profile.Profile.Compatibility == domain.CompatibilityCompatible,
-		ProfileStateLabel: CompatibilityLabel(record.Profile.Profile.Compatibility),
-		State:             string(state), StateLabel: StateLabel(state),
+		TemplateID: record.Template.Template.ID.String(), TemplateName: record.Template.Template.Name,
+		TemplateCompatible: record.Template.Template.Compatibility == domain.CompatibilityCompatible,
+		TemplateStateLabel: CompatibilityLabel(record.Template.Template.Compatibility),
+		Port:               record.Inbound.Inbound.Port, InboundTag: record.Inbound.Inbound.InboundTag,
+		Listening: record.Inbound.Inbound.ObservedPresent != nil && *record.Inbound.Inbound.ObservedPresent,
+		State:     string(state), StateLabel: StateLabel(state),
 		PendingSync:   record.User.Lifecycle != domain.LifecycleDeleted && record.Allocation.PendingSync(),
 		SyncErrorKind: record.Allocation.LastSyncErrorCode, SyncError: ErrorSentence(record.Allocation.LastSyncErrorCode),
 		LastSyncAt: FormatTime(record.Allocation.LastSyncAt, location), Deleted: record.User.Lifecycle == domain.LifecycleDeleted,

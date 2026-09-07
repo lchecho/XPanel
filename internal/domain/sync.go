@@ -21,10 +21,12 @@ const (
 type SyncPhase string
 
 const (
-	SyncRemoveOld  SyncPhase = "remove_old"
-	SyncAddDesired SyncPhase = "add_desired"
-	SyncConfirm    SyncPhase = "confirm"
-	SyncDone       SyncPhase = "done"
+	SyncCreateInbound SyncPhase = "create_inbound"
+	SyncRemoveInbound SyncPhase = "remove_inbound"
+	SyncRemoveOld     SyncPhase = "remove_old"
+	SyncAddDesired    SyncPhase = "add_desired"
+	SyncConfirm       SyncPhase = "confirm"
+	SyncDone          SyncPhase = "done"
 )
 
 type SyncState string

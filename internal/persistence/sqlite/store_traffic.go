@@ -13,11 +13,11 @@ import (
 // CollectionTargets 返回当前应读取计数的分配：未删除且 Xray 投影为 present 的分配（含超限但尚未移除者）。
 func (s *Store) CollectionTargets(ctx context.Context) ([]ports.CollectionTarget, error) {
 	rows, err := s.db.Read.QueryContext(ctx, `SELECT u.id,u.display_name,u.normalized_name,u.lifecycle_state,u.revision,u.created_at,u.updated_at,u.deleted_at,
-        i.id,i.instance_id,i.profile_id,i.statistics_id,i.kind,i.created_at,
-        a.id,a.user_id,a.profile_id,a.identity_id,a.admin_enabled,a.quota_state,a.projection_state,a.observed_present,
+        i.id,i.instance_id,i.template_id,i.statistics_id,i.kind,i.created_at,
+        a.id,a.user_id,a.template_id,a.identity_id,a.admin_enabled,a.quota_state,a.projection_state,a.observed_present,
         a.desired_revision,a.synced_revision,a.desired_credential_version,a.synced_credential_version,a.last_sync_at,
         COALESCE(a.last_sync_error_code,''),COALESCE(a.last_sync_error_summary,''),a.created_at,a.updated_at,
-        p.inbound_tag,
+        d.inbound_tag,
         qp.allocation_id,qp.limit_bytes,qp.reset_day,qp.revision,qp.created_at,qp.updated_at,
         qc.id,qc.allocation_id,qc.starts_at_utc,qc.ends_at_utc,qc.timezone_name,qc.reset_day,qc.status,
         qc.gross_uplink_bytes,qc.gross_downlink_bytes,qc.accounted_uplink_bytes,qc.accounted_downlink_bytes,qc.manual_reset_count,qc.opened_at,qc.closed_at,
@@ -26,7 +26,7 @@ func (s *Store) CollectionTargets(ctx context.Context) ([]ports.CollectionTarget
         FROM managed_users u
         JOIN access_allocations a ON a.user_id=u.id
         JOIN xray_user_identities i ON i.id=a.identity_id
-        JOIN access_profiles p ON p.id=a.profile_id
+        JOIN dedicated_inbounds d ON d.allocation_id=a.id AND d.released_at IS NULL
         JOIN quota_policies qp ON qp.allocation_id=a.id
         JOIN quota_cycles qc ON qc.allocation_id=a.id AND qc.status='open'
         JOIN traffic_cursors tc ON tc.allocation_id=a.id
@@ -61,8 +61,8 @@ func (s *Store) CollectionTargets(ctx context.Context) ([]ports.CollectionTarget
 		}
 		t.User.ID, t.User.CreatedAt, t.User.UpdatedAt = domain.ID(userID), fromMillis(userCreated), fromMillis(userUpdated)
 		setTime(&t.User.DeletedAt, userDeleted)
-		t.Identity.ID, t.Identity.InstanceID, t.Identity.ProfileID, t.Identity.CreatedAt = domain.ID(identityID), domain.ID(identityInstance), domain.ID(identityProfile), fromMillis(identityCreated)
-		t.Allocation.ID, t.Allocation.UserID, t.Allocation.ProfileID, t.Allocation.IdentityID = domain.ID(allocationID), domain.ID(allocationUser), domain.ID(allocationProfile), domain.ID(allocationIdentity)
+		t.Identity.ID, t.Identity.InstanceID, t.Identity.TemplateID, t.Identity.CreatedAt = domain.ID(identityID), domain.ID(identityInstance), domain.ID(identityProfile), fromMillis(identityCreated)
+		t.Allocation.ID, t.Allocation.UserID, t.Allocation.TemplateID, t.Allocation.IdentityID = domain.ID(allocationID), domain.ID(allocationUser), domain.ID(allocationProfile), domain.ID(allocationIdentity)
 		t.Allocation.CreatedAt, t.Allocation.UpdatedAt = fromMillis(allocationCreated), fromMillis(allocationUpdated)
 		setBool(&t.Allocation.ObservedPresent, observed)
 		setInt64(&t.Allocation.SyncedCredentialVersion, syncedCredential)

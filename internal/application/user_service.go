@@ -14,7 +14,9 @@ import (
 
 type CreateUserInput struct {
 	DisplayName string
-	ProfileID   domain.ID
+	TemplateID  domain.ID
+	// Port 为空表示由面板自动分配池内最小空闲端口；非空时必须在池内且未被占用。
+	Port        *int
 	LimitBytes  *int64
 	ResetDay    int
 	RequestID   domain.ID
@@ -43,12 +45,27 @@ func (s *UserService) CreateUser(ctx context.Context, input CreateUserInput) (do
 	if input.LimitBytes != nil && (*input.LimitBytes <= 0 || *input.LimitBytes > 1<<62) {
 		return "", false, &domain.ValidationError{Field: "limit_bytes", Message: "quota must be positive and at most 2^62 bytes"}
 	}
-	profile, err := s.store.Profile(ctx, input.ProfileID)
+	template, err := s.store.Template(ctx, input.TemplateID)
 	if err != nil {
 		return "", false, err
 	}
-	if profile.Profile.Compatibility != domain.CompatibilityCompatible || profile.Profile.ArchivedAt != nil {
-		return "", false, &domain.InvalidStateError{Message: "profile is not compatible"}
+	if template.Template.Compatibility != domain.CompatibilityCompatible || template.Template.ArchivedAt != nil {
+		return "", false, &domain.InvalidStateError{Message: "inbound template is not compatible"}
+	}
+	// 端口分配：未指定时按池内升序取最小空闲端口；指定端口必须在池内且未被占用（FR-007/FR-009）。
+	// 这里的检查是快速失败路径，最终唯一性由 dedicated_inbounds 的部分唯一索引保证（FR-008）。
+	assigned, err := s.store.AssignedPorts(ctx, template.Template.ID)
+	if err != nil {
+		return "", false, err
+	}
+	var port int
+	if input.Port != nil {
+		if err := domain.ValidateRequestedPort(template.Template.Pool, *input.Port, assigned); err != nil {
+			return "", false, err
+		}
+		port = *input.Port
+	} else if port, err = domain.NextAvailablePort(template.Template.Pool, assigned); err != nil {
+		return "", false, err
 	}
 	now := s.clock.Now().UTC()
 	userID, allocationID, identityID, credentialID, cycleID, operationID, auditID := domain.ID(""), domain.ID(""), domain.ID(""), domain.ID(""), domain.ID(""), domain.ID(""), domain.ID("")
@@ -66,7 +83,7 @@ func (s *UserService) CreateUser(ctx context.Context, input CreateUserInput) (do
 	if err != nil {
 		return "", false, err
 	}
-	key, err := security.GenerateUserKey(profile.Profile.Method)
+	key, err := security.GenerateUserKey(template.Template.Method)
 	if err != nil {
 		return "", false, err
 	}
@@ -74,8 +91,18 @@ func (s *UserService) CreateUser(ctx context.Context, input CreateUserInput) (do
 	if err != nil {
 		return "", false, err
 	}
+	// 每条专属入站有自己的服务端密钥，由面板生成，管理员不再提供（FR-004/FR-011）。
+	serverKey, err := security.GenerateUserKey(template.Template.Method)
+	if err != nil {
+		return "", false, err
+	}
+	serverCiphertext, serverNonce, err := s.keyring.Encrypt([]byte(serverKey.Reveal()),
+		security.SecretAAD("dedicated_inbounds", allocationID.String(), "server_key", 1))
+	if err != nil {
+		return "", false, err
+	}
 	version := int64(1)
-	allocation := domain.AccessAllocation{ID: allocationID, UserID: userID, ProfileID: profile.Profile.ID, IdentityID: identityID,
+	allocation := domain.AccessAllocation{ID: allocationID, UserID: userID, TemplateID: template.Template.ID, IdentityID: identityID,
 		AdminEnabled: true, QuotaState: domain.QuotaWithinLimit, ProjectionState: domain.ProjectionPending,
 		DesiredRevision: 1, DesiredCredentialVersion: version, CreatedAt: now, UpdatedAt: now}
 	credential := domain.AccessCredential{ID: credentialID, AllocationID: allocationID, Version: version,
@@ -88,7 +115,7 @@ func (s *UserService) CreateUser(ctx context.Context, input CreateUserInput) (do
 	if err != nil {
 		return "", false, &domain.ValidationError{Field: "reset_day", Message: "quota cycle could not be calculated"}
 	}
-	operation := domain.NewSynchronizationOperation(operationID, allocationID, 1, true, &version, domain.SyncCreate, domain.SyncAddDesired, now)
+	operation := domain.NewSynchronizationOperation(operationID, allocationID, 1, true, &version, domain.SyncCreate, domain.SyncCreateInbound, now)
 	completed := now
 	actor := input.ActorID
 	limit := "unlimited"
@@ -97,7 +124,7 @@ func (s *UserService) CreateUser(ctx context.Context, input CreateUserInput) (do
 	}
 	fingerprint := input.Fingerprint
 	if len(fingerprint) == 0 {
-		fingerprint = domain.Fingerprint(domain.ActionUserCreated, user.NormalizedName, input.ProfileID.String(), limit, strconv.Itoa(input.ResetDay))
+		fingerprint = domain.Fingerprint(domain.ActionUserCreated, user.NormalizedName, input.TemplateID.String(), limit, strconv.Itoa(input.ResetDay))
 	}
 	command := domain.DomainCommand{ID: input.RequestID, ActorType: domain.ActorAdministrator, ActorID: &actor,
 		CommandType: domain.ActionUserCreated, TargetType: "user", TargetID: userID, RequestFingerprint: fingerprint,
@@ -105,9 +132,14 @@ func (s *UserService) CreateUser(ctx context.Context, input CreateUserInput) (do
 	audit := domain.AuditEvent{ID: auditID, OccurredAt: now, ActorType: domain.ActorAdministrator, ActorID: &actor,
 		TargetType: "user", TargetID: userID, Action: domain.ActionUserCreated, Result: domain.AuditAccepted,
 		CommandID: &input.RequestID, OperationID: &operationID, SafeSummary: "user created; Xray projection pending"}
+	inbound := domain.DedicatedInbound{AllocationID: allocationID, TemplateID: template.Template.ID,
+		InboundTag: domain.InboundTag(allocationID), ListenAddress: template.Template.ListenAddress, Port: port,
+		DesiredPresent: true, CreatedAt: now, UpdatedAt: now}
 	record := ports.UserCreateRecord{User: user,
-		Identity: domain.XrayUserIdentity{ID: identityID, InstanceID: profile.Profile.InstanceID, ProfileID: profile.Profile.ID,
-			StatisticsID: statisticsID, Kind: domain.IdentityManaged, CreatedAt: now}, Allocation: allocation, Credential: credential,
+		Identity: domain.XrayUserIdentity{ID: identityID, InstanceID: template.Template.InstanceID, TemplateID: template.Template.ID,
+			StatisticsID: statisticsID, Kind: domain.IdentityManaged, CreatedAt: now}, Allocation: allocation,
+		Inbound: ports.InboundRecord{Inbound: inbound, ServerKeyCiphertext: serverCiphertext, ServerKeyNonce: serverNonce,
+			KeyEncryptionVersion: 1}, Credential: credential,
 		Policy: ports.QuotaPolicyRecord{AllocationID: allocationID, LimitBytes: input.LimitBytes, ResetDay: input.ResetDay, CreatedAt: now, UpdatedAt: now},
 		Cycle: ports.QuotaCycleRecord{ID: cycleID, AllocationID: allocationID, StartsAt: start, EndsAt: end,
 			Timezone: settings.QuotaTimezone, ResetDay: input.ResetDay, Status: "open", OpenedAt: now},
@@ -389,7 +421,7 @@ func (s *UserService) RotateCredential(ctx context.Context, input LifecycleInput
 	if err != nil {
 		return false, err
 	}
-	key, err := security.GenerateUserKey(record.Profile.Profile.Method)
+	key, err := security.GenerateUserKey(record.Template.Template.Method)
 	if err != nil {
 		return false, err
 	}

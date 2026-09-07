@@ -15,7 +15,7 @@ import (
 
 type RouteDependencies struct {
 	Auth        *application.AuthService
-	Profiles    *application.ProfileService
+	Templates   *application.TemplateService
 	Users       *application.UserService
 	Connections *application.ConnectionService
 	Settings    *application.SettingsService
@@ -60,8 +60,8 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 	public.HandleFunc("POST /login", auth.Login)
 
 	base := handlers.Base{Sessions: deps.Sessions, Renderer: renderer, Settings: deps.Settings, Logger: deps.Logger}
-	profiles := &handlers.ProfileHandler{Base: base, Service: deps.Profiles}
-	users := &handlers.UserHandler{Base: base, Service: deps.Users, Profiles: deps.Profiles, Connections: deps.Connections, Dashboard: deps.Dashboard}
+	templateHandler := &handlers.TemplateHandler{Base: base, Service: deps.Templates}
+	users := &handlers.UserHandler{Base: base, Service: deps.Users, Templates: deps.Templates, Connections: deps.Connections, Dashboard: deps.Dashboard}
 
 	protected := http.NewServeMux()
 	if deps.Dashboard != nil {
@@ -78,14 +78,14 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 		})
 	}
 	protected.HandleFunc("POST /logout", auth.Logout)
-	if deps.Profiles != nil {
-		protected.HandleFunc("GET /profiles", profiles.List)
-		protected.HandleFunc("GET /profiles/new", profiles.NewForm)
-		protected.HandleFunc("POST /profiles", profiles.Create)
-		protected.HandleFunc("GET /profiles/{profile_id}", profiles.Detail)
-		protected.HandleFunc("GET /profiles/{profile_id}/edit", profiles.EditForm)
-		protected.HandleFunc("POST /profiles/{profile_id}", profiles.Update)
-		protected.HandleFunc("POST /profiles/{profile_id}/revalidate", profiles.Revalidate)
+	if deps.Templates != nil {
+		protected.HandleFunc("GET /templates", templateHandler.List)
+		protected.HandleFunc("GET /templates/new", templateHandler.NewForm)
+		protected.HandleFunc("POST /templates", templateHandler.Create)
+		protected.HandleFunc("GET /templates/{template_id}", templateHandler.Detail)
+		protected.HandleFunc("GET /templates/{template_id}/edit", templateHandler.EditForm)
+		protected.HandleFunc("POST /templates/{template_id}", templateHandler.Update)
+		protected.HandleFunc("POST /templates/{template_id}/revalidate", templateHandler.Revalidate)
 	}
 	if deps.Users != nil {
 		protected.HandleFunc("GET /users", users.List)

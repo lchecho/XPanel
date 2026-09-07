@@ -80,10 +80,10 @@ func (s *Store) LeaseDueSync(ctx context.Context, owner string, now time.Time, l
         o.reason,o.phase,o.state,o.idempotency_key,o.attempt_count,o.next_attempt_at,o.lease_owner,o.lease_expires_at,
         COALESCE(o.last_error_code,''),COALESCE(o.last_error_summary,''),o.created_at,o.started_at,o.completed_at
         FROM synchronization_operations o JOIN access_allocations a ON a.id=o.allocation_id
-        JOIN access_profiles p ON p.id=a.profile_id
+        JOIN inbound_templates t ON t.id=a.template_id
         WHERE ((o.state IN ('pending','retry_wait') AND o.next_attempt_at<=?) OR
                (o.state='leased' AND o.lease_expires_at<=?))
-          AND p.compatibility_state IN ('compatible','unreachable')
+          AND t.compatibility_state IN ('compatible','unreachable')
         ORDER BY o.next_attempt_at,o.created_at LIMIT 1`, millis(now), millis(now))
 	operation, err := scanOperation(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -113,7 +113,7 @@ func (s *Store) LeaseDueSync(ctx context.Context, owner string, now time.Time, l
 		return nil, err
 	}
 	return &ports.SyncWork{Operation: operation, User: user.User, Allocation: user.Allocation, Identity: user.Identity,
-		Profile: user.Profile, Credential: user.Credential}, nil
+		Template: user.Template, Inbound: user.Inbound, Credential: user.Credential}, nil
 }
 
 func scanOperation(row scanner) (domain.SynchronizationOperation, error) {

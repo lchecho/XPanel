@@ -12,14 +12,14 @@ import (
 	"xpanel/internal/ports"
 )
 
-// 核心函数：ReconciliationService 比较 SQLite 期望状态与 Xray 实际用户集合并修复漂移。
+// 核心函数：ReconciliationService 比较 SQLite 期望状态与 Xray 实际入站/用户集合并修复漂移。
 //
-// 职责：按 profile 列出 Xray 用户，为“应在而不在”“不应在而在”的分配写入 reconcile 操作，直接移除面板命名空间内
+// 职责：列出 Xray 入站，为“应监听而未监听”“不应监听而在监听”的分配写入 reconcile 操作；把面板命名空间内
 //
-//	SQLite 无记录的身份，保留 bootstrap 与非面板身份；不负责执行 add/remove（由 synchronizer 完成）。
+//	SQLite 无记录的孤立入站与未知客户端排队移除；不负责执行创建/移除（由 synchronizer 完成）。
 //
 // 约束：只在漂移时创建操作；有未完成操作的分配不重复入队；持续不同步超过 3×reconcile_interval 记 warn。
-// AI-LOCK：非 `xpanel-` 前缀的身份（含 bootstrap）一律保留，不计入面板统计。
+// AI-LOCK：非 `xpanel-` 前缀的入站与身份一律保留，不得修改或移除，也不计入面板统计（宪章 I/II）。
 type ReconciliationService struct {
 	store      ports.Store
 	adapter    ports.Adapter
@@ -77,7 +77,7 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 	if err := s.store.MarkInstanceHealthy(ctx, epochString(observation), now); err != nil {
 		return summary, err
 	}
-	profiles, err := s.store.Profiles(ctx, false)
+	templates, err := s.store.Templates(ctx, false)
 	if err != nil {
 		return summary, err
 	}
@@ -85,114 +85,153 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 	if err != nil {
 		return summary, err
 	}
-	byIdentity := make(map[string]ports.UserRecord, len(users))
-	for _, record := range users {
-		byIdentity[record.Identity.StatisticsID] = record
+	inbounds, err := s.adapter.ListInbounds(ctx)
+	if err != nil {
+		s.markDegraded(ctx, err)
+		return summary, err
 	}
+	remoteInbounds := make(map[string]bool, len(inbounds))
+	for _, inbound := range inbounds {
+		if inbound.PanelManaged {
+			remoteInbounds[inbound.InboundTag] = true
+		}
+	}
+	byTag := make(map[string]ports.UserRecord, len(users))
+	for _, record := range users {
+		byTag[record.Inbound.Inbound.InboundTag] = record
+	}
+	templateByID := make(map[domain.ID]ports.TemplateRecord, len(templates))
 	enqueued := false
-	for _, profile := range profiles {
-		if profile.Profile.Compatibility != domain.CompatibilityCompatible && profile.Profile.Compatibility != domain.CompatibilityUnreachable {
+	for _, template := range templates {
+		templateByID[template.Template.ID] = template
+		summary.Profiles++
+		if summary.Reconnected && template.Template.Compatibility == domain.CompatibilityUnreachable && s.revalidate != nil {
+			_ = s.revalidate(ctx, template.Template.ID)
+		}
+	}
+
+	// 面板命名空间内但 SQLite 无记录的入站：孤立入站，排队移除并在完成时释放端口（FR-031）。
+	for tag := range remoteInbounds {
+		if _, known := byTag[tag]; known {
 			continue
 		}
-		if summary.Reconnected && profile.Profile.Compatibility == domain.CompatibilityUnreachable && s.revalidate != nil {
-			_ = s.revalidate(ctx, profile.Profile.ID)
+		templateID := anyTemplateID(templates)
+		if !templateID.Valid() {
+			continue // 没有任何模板时无法归属该意图，留待下一轮
 		}
-		runtimeProfile := ports.RuntimeProfile{ID: profile.Profile.ID, InboundTag: profile.Profile.InboundTag, Method: profile.Profile.Method,
-			BootstrapStatisticsID: profile.Profile.BootstrapStatisticsID}
-		remote, err := s.adapter.ListUsers(ctx, runtimeProfile)
+		created, err := s.store.EnqueueDriftRemoval(ctx, templateID, tag, "inbound", tag, now)
 		if err != nil {
-			s.markDegraded(ctx, err)
 			return summary, err
 		}
-		summary.Profiles++
-		present := make(map[string]bool, len(remote))
-		for _, user := range remote {
-			if !user.Present {
-				continue
-			}
-			present[user.StatisticsID] = true
-			if user.Kind != "managed" || user.StatisticsID == profile.Profile.BootstrapStatisticsID {
-				continue
-			}
-			if _, known := byIdentity[user.StatisticsID]; known {
-				continue
-			}
-			// 面板命名空间内但 SQLite 无记录：先持久化移除意图，由 synchronizer 在事务外串行执行并审计（Constitution I/IV）。
-			created, err := s.store.EnqueueDriftRemoval(ctx, profile.Profile.ID, user.StatisticsID, now)
+		if created {
+			summary.RemovedUnknown++
+			enqueued = true
+			s.logger.Info("orphan panel inbound queued for removal", logging.FieldResult, "queued")
+		}
+	}
+
+	for _, record := range users {
+		tag := record.Inbound.Inbound.InboundTag
+		template, ok := templateByID[record.Allocation.TemplateID]
+		if !ok || (template.Template.Compatibility != domain.CompatibilityCompatible &&
+			template.Template.Compatibility != domain.CompatibilityUnreachable) {
+			continue
+		}
+		actual := remoteInbounds[tag]
+		if actual {
+			// 入站存在时进一步确认其中的受管客户端；多余的面板客户端按未知身份排队移除。
+			remote, err := s.adapter.ListUsers(ctx, ports.RuntimeInbound{TemplateID: template.Template.ID,
+				InboundTag: tag, Method: template.Template.Method})
 			if err != nil {
+				s.markDegraded(ctx, err)
 				return summary, err
 			}
-			if created {
-				summary.RemovedUnknown++
-				enqueued = true
-				s.logger.Info("unknown namespace identity queued for removal", logging.FieldNodeID, profile.Profile.InstanceID.String(),
-					"profile_id", profile.Profile.ID.String(), logging.FieldResult, "queued")
+			expected := false
+			for _, user := range remote {
+				if !user.Present || user.Kind != "managed" {
+					continue
+				}
+				if user.StatisticsID == record.Identity.StatisticsID {
+					expected = true
+					continue
+				}
+				created, err := s.store.EnqueueDriftRemoval(ctx, template.Template.ID, tag, "identity", user.StatisticsID, now)
+				if err != nil {
+					return summary, err
+				}
+				if created {
+					summary.RemovedUnknown++
+					enqueued = true
+					s.logger.Info("unknown namespace identity queued for removal", logging.FieldNodeID, template.Template.InstanceID.String(),
+						"template_id", template.Template.ID.String(), logging.FieldResult, "queued")
+				}
 			}
+			actual = expected
 		}
-		// 永久失败的移除意图仍冻结 profile 契约字段；身份已因重启或外部移除而不在 Xray 时，
-		// 通过可租约的确认路径（重新排队 → synchronizer 读后确认 absent 并审计）收敛，避免 profile 永久锁死（FR-020）。
-		stale, err := s.store.StaleDriftRemovals(ctx, profile.Profile.ID)
+		desired := record.Allocation.DesiredPresent(record.User)
+		if err := s.store.RecordObservation(ctx, record.Allocation.ID, actual, now); err != nil {
+			return summary, err
+		}
+		if err := s.store.ConfirmInboundPresence(ctx, record.Allocation.ID, actual, now); err != nil {
+			return summary, err
+		}
+		if record.Allocation.PendingSync() {
+			if now.Sub(record.Allocation.UpdatedAt) > 3*s.interval {
+				summary.StuckSync++
+				s.logger.Warn("allocation remains out of sync", logging.FieldAllocationID, record.Allocation.ID.String(),
+					logging.FieldTargetState, targetState(desired), logging.FieldResult, "stuck")
+			}
+			continue
+		}
+		if actual == desired {
+			continue
+		}
+		open, err := s.store.HasOpenOperation(ctx, record.Allocation.ID)
+		if err != nil {
+			return summary, err
+		}
+		if open {
+			continue
+		}
+		opID, err := domain.NewID()
+		if err != nil {
+			return summary, err
+		}
+		version := record.Allocation.DesiredCredentialVersion
+		op := domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1, desired, &version,
+			domain.SyncReconcile, phaseFor(desired), now)
+		queued, err := s.store.EnqueueReconcile(ctx, record.Allocation.ID, record.Allocation.DesiredRevision, op, now)
+		if err != nil {
+			return summary, err
+		}
+		if queued {
+			summary.Drift++
+			enqueued = true
+			s.logger.Info("drift detected; reconcile operation queued", logging.FieldAllocationID, record.Allocation.ID.String(),
+				logging.FieldOperationID, opID.String(), logging.FieldTargetState, targetState(desired), logging.FieldResult, "queued")
+		}
+	}
+
+	// 永久失败的移除意图仍冻结模板契约字段；目标已因重启或外部移除而不在 Xray 时，
+	// 通过可租约的确认路径（重新排队 → synchronizer 读后确认 absent 并审计）收敛，避免模板永久锁死（FR-020）。
+	for _, template := range templates {
+		stale, err := s.store.StaleDriftRemovals(ctx, template.Template.ID)
 		if err != nil {
 			return summary, err
 		}
 		for _, removal := range stale {
-			if present[removal.StatisticsID] {
-				continue // 仍存在：上面的未知身份分支已重新排队移除
+			if remoteInbounds[removal.InboundTag] {
+				continue // 目标仍在：上面的分支已重新排队移除
 			}
-			created, err := s.store.EnqueueDriftRemoval(ctx, profile.Profile.ID, removal.StatisticsID, now)
+			created, err := s.store.EnqueueDriftRemoval(ctx, template.Template.ID, removal.InboundTag, removal.Kind, removal.StatisticsID, now)
 			if err != nil {
 				return summary, err
 			}
 			if created {
 				summary.ConfirmedAbsent++
 				enqueued = true
-				s.logger.Info("permanently failed drift removal re-queued for absence confirmation", "profile_id", profile.Profile.ID.String(),
-					logging.FieldResult, "queued")
-			}
-		}
-		for _, record := range users {
-			if record.Allocation.ProfileID != profile.Profile.ID {
-				continue
-			}
-			actual := present[record.Identity.StatisticsID]
-			desired := record.Allocation.DesiredPresent(record.User)
-			if err := s.store.RecordObservation(ctx, record.Allocation.ID, actual, now); err != nil {
-				return summary, err
-			}
-			if record.Allocation.PendingSync() {
-				if now.Sub(record.Allocation.UpdatedAt) > 3*s.interval {
-					summary.StuckSync++
-					s.logger.Warn("allocation remains out of sync", logging.FieldAllocationID, record.Allocation.ID.String(),
-						logging.FieldTargetState, targetState(desired), logging.FieldResult, "stuck")
-				}
-				continue
-			}
-			if actual == desired {
-				continue
-			}
-			open, err := s.store.HasOpenOperation(ctx, record.Allocation.ID)
-			if err != nil {
-				return summary, err
-			}
-			if open {
-				continue
-			}
-			opID, err := domain.NewID()
-			if err != nil {
-				return summary, err
-			}
-			version := record.Allocation.DesiredCredentialVersion
-			op := domain.NewSynchronizationOperation(opID, record.Allocation.ID, record.Allocation.DesiredRevision+1, desired, &version,
-				domain.SyncReconcile, phaseFor(desired), now)
-			ok, err := s.store.EnqueueReconcile(ctx, record.Allocation.ID, record.Allocation.DesiredRevision, op, now)
-			if err != nil {
-				return summary, err
-			}
-			if ok {
-				summary.Drift++
-				enqueued = true
-				s.logger.Info("drift detected; reconcile operation queued", logging.FieldAllocationID, record.Allocation.ID.String(),
-					logging.FieldOperationID, opID.String(), logging.FieldTargetState, targetState(desired), logging.FieldResult, "queued")
+				s.logger.Info("permanently failed drift removal re-queued for absence confirmation",
+					"template_id", template.Template.ID.String(), logging.FieldResult, "queued")
 			}
 		}
 	}
@@ -200,7 +239,7 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 		s.notify()
 	}
 	summary.Duration = s.clock.Now().Sub(started)
-	s.logger.Info("reconciliation finished", "profiles", summary.Profiles, "drift", summary.Drift, "removed_unknown", summary.RemovedUnknown, "confirmed_absent", summary.ConfirmedAbsent,
+	s.logger.Info("reconciliation finished", "templates", summary.Profiles, "drift", summary.Drift, "removed_unknown", summary.RemovedUnknown, "confirmed_absent", summary.ConfirmedAbsent,
 		"stuck", summary.StuckSync, logging.FieldResult, "succeeded", logging.FieldDurationMS, summary.Duration.Milliseconds())
 	return summary, nil
 }
@@ -244,4 +283,16 @@ func (s *ReconciliationService) clearDegraded() bool {
 	was := s.degraded
 	s.degraded = false
 	return was
+}
+
+// anyTemplateID 为孤立入站的移除意图选择一个归属模板：孤立入站不属于任何用户，
+// 意图只需要一个稳定的归属点以复用既有的租约与因果链机制。
+func anyTemplateID(templates []ports.TemplateRecord) domain.ID {
+	for _, template := range templates {
+		if template.Template.Compatibility == domain.CompatibilityCompatible ||
+			template.Template.Compatibility == domain.CompatibilityUnreachable {
+			return template.Template.ID
+		}
+	}
+	return ""
 }

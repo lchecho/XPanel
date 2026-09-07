@@ -157,7 +157,7 @@ func runServe(args []string, stderr io.Writer) int {
 			validator.Enqueue(id)
 		}
 	}
-	profiles := application.NewProfileService(store, xrayClient, keyring, clock, target, requestValidation)
+	templates := application.NewTemplateService(store, xrayClient, keyring, clock, target, requestValidation)
 	synchronizer := worker.NewSynchronizer(store, xrayClient, keyring, clock, logger, node, worker.SynchronizerOptions{
 		MaxRetryInterval: cfg.Workers.MaxRetryInterval.Duration, RPCTimeout: cfg.Xray.RPCTimeout.Duration, OnProfileRecovered: requestValidation})
 	users := application.NewUserService(store, keyring, clock, synchronizer.Wake)
@@ -165,16 +165,16 @@ func runServe(args []string, stderr io.Writer) int {
 	settings := application.NewSettingsService(store).WithClock(clock)
 	dashboard := application.NewDashboardService(store, clock, cfg.Workers.TrafficInterval.Duration, cfg.Workers.ReconcileInterval.Duration)
 	auditService := application.NewAuditService(store)
-	validator = worker.NewProfileValidator(profiles, store, logger, node, cfg.Workers.ReconcileInterval.Duration)
+	validator = worker.NewProfileValidator(templates, store, logger, node, cfg.Workers.ReconcileInterval.Duration)
 	traffic := application.NewTrafficService(store, xrayClient, clock, target, cfg.Workers.TrafficInterval.Duration, synchronizer.Wake, logger)
 	quota := application.NewQuotaService(store, clock, synchronizer.Wake, logger)
 	collector := worker.NewCollector(traffic, cfg.Workers.TrafficInterval.Duration, logger)
 	scheduler := worker.NewScheduler(quota, clock, time.Minute, logger)
 	reconciliation := application.NewReconciliationService(store, xrayClient, clock, target, node, cfg.Workers.ReconcileInterval.Duration,
-		synchronizer.Wake, profiles.RunValidation, logger)
+		synchronizer.Wake, templates.RunValidation, logger)
 	reconciler := worker.NewReconciler(reconciliation, cfg.Workers.ReconcileInterval.Duration, logger)
 
-	server, err := web.NewServer(cfg, web.RouteDependencies{Auth: auth, Profiles: profiles, Users: users, Connections: connections,
+	server, err := web.NewServer(cfg, web.RouteDependencies{Auth: auth, Templates: templates, Users: users, Connections: connections,
 		Settings: settings, Dashboard: dashboard, Audit: auditService, Sessions: sessions, CSRFKey: keyring.CSRFKey(), Secure: !cfg.Server.InsecureDevelopment, Logger: logger})
 	if err != nil {
 		logger.Error("initialize HTTP server", "error_kind", "internal")

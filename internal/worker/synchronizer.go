@@ -164,39 +164,51 @@ func (s *Synchronizer) Drain(ctx context.Context) (int, error) {
 	}
 }
 
-// handleDriftRemoval 执行一条持久化的漂移移除意图：删除不存在视为收敛；不确定结果读后写；可重试错误退避。
+// handleDriftRemoval 执行一条持久化的漂移移除意图。
+// Kind 为 inbound 时移除整条孤立入站，为 identity 时移除面板入站内的未知客户端；
+// 目标不存在视为收敛；回收过期租约时先读后写避免重复外部移除（FR-021）。
 func (s *Synchronizer) handleDriftRemoval(ctx context.Context, removal *ports.DriftRemoval) error {
 	s.node.Lock()
 	defer s.node.Unlock()
 	now := s.clock.Now()
-	logger := s.logger.With("drift_removal_id", removal.ID.String(), "profile_id", removal.ProfileID.String(), logging.FieldTargetState, "absent")
-	profile := ports.RuntimeProfile{ID: removal.ProfileID, InboundTag: removal.InboundTag}
+	logger := s.logger.With("drift_removal_id", removal.ID.String(), "template_id", removal.TemplateID.String(),
+		"drift_kind", removal.Kind, logging.FieldTargetState, "absent")
+	inbound := ports.RuntimeInbound{TemplateID: removal.TemplateID, InboundTag: removal.InboundTag}
 	if held, err := s.fenceDrift(ctx, removal, logger); err != nil || !held {
 		return err
 	}
+	observe := func() (bool, error) {
+		if removal.Kind == "inbound" {
+			return s.inboundPresent(ctx, removal.InboundTag)
+		}
+		return s.observe(ctx, inbound, removal.StatisticsID)
+	}
 	if removal.Reclaimed {
-		// 回收过期租约：前一持有者的 RemoveUser 可能已经生效（RPC 成功后崩溃）。先读原入站的实际身份，
-		// 已不存在则直接完成，不再重复调用外部移除（FR-021）。
-		present, observeErr := s.observe(ctx, profile, removal.StatisticsID)
-		if observeErr == nil && !present {
-			logger.Info("unknown namespace identity already absent after lease reclaim", logging.FieldResult, "succeeded")
+		// 回收过期租约：前一持有者的移除可能已经生效（RPC 成功后崩溃）。先读实际状态，已不存在则直接完成。
+		if present, err := observe(); err == nil && !present {
+			logger.Info("drift target already absent after lease reclaim", logging.FieldResult, "succeeded")
 			return s.store.CompleteDriftRemoval(ctx, removal.ID, s.owner, now,
-				s.driftAudit(removal, domain.AuditSucceeded, "unknown identity "+removal.StatisticsID+" confirmed absent after lease reclaim", now))
+				s.driftAudit(removal, domain.AuditSucceeded, "drift target confirmed absent after lease reclaim", now))
 		}
 	}
-	_, err := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: removal.ID, ProfileTag: removal.InboundTag, StatisticsID: removal.StatisticsID})
-	summary := "removed unknown identity " + removal.StatisticsID + " from the managed namespace"
+	var err error
+	if removal.Kind == "inbound" {
+		_, err = s.adapter.RemoveInbound(ctx, ports.RemoveInboundCommand{OperationID: removal.ID, InboundTag: removal.InboundTag})
+	} else {
+		_, err = s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: removal.ID, InboundTag: removal.InboundTag, StatisticsID: removal.StatisticsID})
+	}
+	summary := "removed unknown " + removal.Kind + " from the managed namespace"
 	if err != nil {
 		kind, retryable := describe(err)
-		converged := kind == ports.ErrorUserNotFound
+		converged := kind == ports.ErrorUserNotFound || kind == ports.ErrorInboundNotFound
 		if converged {
-			summary = "unknown identity " + removal.StatisticsID + " confirmed absent from the managed namespace"
+			summary = "unknown " + removal.Kind + " confirmed absent from the managed namespace"
 		}
 		if !converged && retryable && kind != ports.ErrorInstanceUnavailable {
 			if held, err := s.fenceDrift(ctx, removal, logger); err != nil || !held {
 				return err
 			}
-			present, observeErr := s.observe(ctx, profile, removal.StatisticsID)
+			present, observeErr := observe()
 			converged = observeErr == nil && !present
 		}
 		if !converged {
@@ -242,40 +254,46 @@ func (s *Synchronizer) fence(ctx context.Context, work *ports.SyncWork, logger *
 func (s *Synchronizer) driftAudit(removal *ports.DriftRemoval, result domain.AuditResult, summary string, now time.Time) domain.AuditEvent {
 	id, _ := domain.NewID()
 	operationID := removal.ID
-	return domain.AuditEvent{ID: id, OccurredAt: now, ActorType: domain.ActorSystem, TargetType: "profile", TargetID: removal.ProfileID,
+	return domain.AuditEvent{ID: id, OccurredAt: now, ActorType: domain.ActorSystem, TargetType: "template", TargetID: removal.TemplateID,
 		Action: domain.ActionReconcileRemovedUnknown, Result: result, OperationID: &operationID, SafeSummary: summary}
 }
 
+// handle 把一次同步意图投影到 Xray。
+//
+// 三条路径：期望不监听 → 移除整条入站；期望监听且入站不存在 → 创建入站（含唯一客户端）；
+// 凭证轮换 → 在既有入站内先加后删，端口与监听不中断。
+// AI-LOCK：停止访问必须移除整条入站，不得只删客户端——空客户端列表会让入站退化为服务端密钥可直连（FR-019）。
 func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 	s.node.Lock()
 	defer s.node.Unlock()
 	op := work.Operation
 	started := s.clock.Now()
-	profile := ports.RuntimeProfile{ID: work.Profile.Profile.ID, InboundTag: work.Profile.Profile.InboundTag,
-		Method: work.Profile.Profile.Method, BootstrapStatisticsID: work.Profile.Profile.BootstrapStatisticsID}
+	inbound := ports.RuntimeInbound{TemplateID: work.Template.Template.ID, InboundTag: work.Inbound.Inbound.InboundTag,
+		Method: work.Template.Template.Method}
 	statisticsID := work.Identity.StatisticsID
 	targetState := "absent"
 	if op.DesiredPresence {
 		targetState = "present"
 	}
 	logger := s.logger.With(logging.FieldAllocationID, work.Allocation.ID.String(), logging.FieldOperationID, op.ID.String(),
-		logging.FieldTargetState, targetState, logging.FieldNodeID, work.Profile.Profile.InstanceID.String())
+		logging.FieldTargetState, targetState, "port", work.Inbound.Inbound.Port,
+		logging.FieldNodeID, work.Template.Template.InstanceID.String())
 
-	if !op.DesiredPresence || op.Phase == domain.SyncRemoveOld {
+	// 1) 期望不监听：移除整条入站。
+	if !op.DesiredPresence {
 		if held, err := s.fence(ctx, work, logger); err != nil || !held {
 			return err
 		}
-		_, err := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: op.ID, ProfileTag: profile.InboundTag, StatisticsID: statisticsID})
-		if err != nil {
+		if _, err := s.adapter.RemoveInbound(ctx, ports.RemoveInboundCommand{OperationID: op.ID, InboundTag: inbound.InboundTag}); err != nil {
 			kind, retryable := describe(err)
 			switch {
-			case kind == ports.ErrorUserNotFound:
-				// 删除不存在视为收敛。
+			case kind == ports.ErrorInboundNotFound:
+				// 移除不存在视为收敛。
 			case retryable && kind != ports.ErrorInstanceUnavailable:
 				if held, err := s.fence(ctx, work, logger); err != nil || !held {
 					return err
 				}
-				present, observeErr := s.observe(ctx, profile, statisticsID)
+				present, observeErr := s.inboundPresent(ctx, inbound.InboundTag)
 				if observeErr != nil || present {
 					return s.retry(ctx, work, err, logger, started)
 				}
@@ -283,27 +301,69 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 				return s.retry(ctx, work, err, logger, started)
 			}
 		}
-		if !op.DesiredPresence {
-			return s.confirm(ctx, work, false, 0, logger, started)
-		}
-		if err := s.store.AdvancePhase(ctx, op.ID, s.owner, domain.SyncAddDesired, s.clock.Now()); err != nil {
-			var invalid *domain.InvalidStateError
-			if errors.As(err, &invalid) {
-				logger.Warn("synchronization lease lost before rotation add phase; abandoned", logging.FieldResult, "abandoned")
-				return nil
-			}
-			return err
-		}
-		op.Phase = domain.SyncAddDesired
-		work.Operation = op
+		return s.confirm(ctx, work, false, 0, logger, started)
 	}
 
+	// 2) 凭证轮换：入站已在，先加新客户端再删旧的，端口不中断。
+	if op.Reason == domain.SyncRotate {
+		return s.rotateWithinInbound(ctx, work, inbound, statisticsID, logger, started)
+	}
+
+	// 3) 期望监听：创建整条入站（含唯一客户端）。
+	serverKey, err := s.keyring.Decrypt(work.Inbound.ServerKeyCiphertext, work.Inbound.ServerKeyNonce,
+		security.SecretAAD("dedicated_inbounds", work.Allocation.ID.String(), "server_key", work.Inbound.KeyEncryptionVersion))
+	if err != nil {
+		return s.fail(ctx, work, ports.ErrorInternal, "inbound key could not be decrypted", logger, started)
+	}
+	userKey, err := s.keyring.Decrypt(work.Credential.KeyCiphertext, work.Credential.KeyNonce,
+		security.SecretAAD("access_credentials", work.Allocation.ID.String(), "user_key", work.Credential.KeyEncryptionVersion))
+	if err != nil {
+		return s.fail(ctx, work, ports.ErrorInternal, "credential key could not be decrypted", logger, started)
+	}
+	command := ports.CreateInboundCommand{OperationID: op.ID, InboundTag: inbound.InboundTag,
+		ListenAddress: work.Inbound.Inbound.ListenAddress, Port: work.Inbound.Inbound.Port,
+		Method: work.Template.Template.Method, Network: work.Template.Template.Network,
+		ServerKey: security.NewRedactedString(string(serverKey)),
+		Client: ports.InboundClient{StatisticsID: statisticsID, CredentialVersion: work.Credential.Version,
+			UserKey: security.NewRedactedString(string(userKey))}}
+	if held, err := s.fence(ctx, work, logger); err != nil || !held {
+		return err
+	}
+	if _, err := s.adapter.CreateInbound(ctx, command); err != nil {
+		kind, _ := describe(err)
+		// AddInbound 非原子：监听失败时入站仍可能被注册。必须读后写确认并补偿移除，
+		// 否则重试会一直得到 inbound_already_exists 而永久卡住（research.md R-003）。
+		if kind == ports.ErrorPortUnavailable || kind == ports.ErrorInboundAlreadyExists {
+			if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
+				return fenceErr
+			}
+			present, observeErr := s.inboundPresent(ctx, inbound.InboundTag)
+			if observeErr == nil && present {
+				if kind == ports.ErrorPortUnavailable {
+					logger.Warn("inbound registered without listening; compensating removal before retry",
+						logging.FieldErrorKind, kind, logging.FieldResult, "compensating")
+					_, _ = s.adapter.RemoveInbound(ctx, ports.RemoveInboundCommand{OperationID: op.ID, InboundTag: inbound.InboundTag})
+				} else {
+					// 标签已存在且确实在监听：本意图已由此前的尝试达成，视为收敛。
+					return s.confirm(ctx, work, true, work.Credential.Version, logger, started)
+				}
+			}
+		}
+		return s.retry(ctx, work, err, logger, started)
+	}
+	return s.confirm(ctx, work, true, work.Credential.Version, logger, started)
+}
+
+// rotateWithinInbound 在既有入站内完成凭证轮换：先加新客户端，确认后移除旧客户端，端口与监听全程不中断（FR-017）。
+func (s *Synchronizer) rotateWithinInbound(ctx context.Context, work *ports.SyncWork, inbound ports.RuntimeInbound,
+	statisticsID string, logger *slog.Logger, started time.Time) error {
+	op := work.Operation
 	key, err := s.keyring.Decrypt(work.Credential.KeyCiphertext, work.Credential.KeyNonce,
 		security.SecretAAD("access_credentials", work.Allocation.ID.String(), "user_key", work.Credential.KeyEncryptionVersion))
 	if err != nil {
 		return s.fail(ctx, work, ports.ErrorInternal, "credential key could not be decrypted", logger, started)
 	}
-	command := ports.AddUserCommand{OperationID: op.ID, ProfileTag: profile.InboundTag, AllocationID: work.Allocation.ID,
+	command := ports.AddUserCommand{OperationID: op.ID, InboundTag: inbound.InboundTag, AllocationID: work.Allocation.ID,
 		StatisticsID: statisticsID, CredentialVersion: work.Credential.Version, UserKey: security.NewRedactedString(string(key))}
 	if held, err := s.fence(ctx, work, logger); err != nil || !held {
 		return err
@@ -313,25 +373,28 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 		switch {
 		case kind == ports.ErrorUserAlreadyExists:
 			// 受控修复：先移除再添加，保证 Xray 中的密钥就是期望版本。
-			if held, err := s.fence(ctx, work, logger); err != nil || !held {
-				return err
+			if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
+				return fenceErr
 			}
-			if _, removeErr := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: op.ID, ProfileTag: profile.InboundTag, StatisticsID: statisticsID}); removeErr != nil {
+			if _, removeErr := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: op.ID, InboundTag: inbound.InboundTag, StatisticsID: statisticsID}); removeErr != nil {
 				if removeKind, _ := describe(removeErr); removeKind != ports.ErrorUserNotFound {
 					return s.retry(ctx, work, removeErr, logger, started)
 				}
 			}
-			if held, err := s.fence(ctx, work, logger); err != nil || !held {
-				return err
+			if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
+				return fenceErr
 			}
 			if _, addErr := s.adapter.AddUser(ctx, command); addErr != nil {
 				return s.retry(ctx, work, addErr, logger, started)
 			}
+		case kind == ports.ErrorInboundNotFound:
+			// 入站不在（例如刚重启）：交由协调器重建，本轮按可重试处理。
+			return s.retry(ctx, work, err, logger, started)
 		case retryable && kind != ports.ErrorInstanceUnavailable:
-			if held, err := s.fence(ctx, work, logger); err != nil || !held {
-				return err
+			if held, fenceErr := s.fence(ctx, work, logger); fenceErr != nil || !held {
+				return fenceErr
 			}
-			present, observeErr := s.observe(ctx, profile, statisticsID)
+			present, observeErr := s.observe(ctx, inbound, statisticsID)
 			if observeErr != nil || !present {
 				return s.retry(ctx, work, err, logger, started)
 			}
@@ -339,11 +402,27 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 			return s.retry(ctx, work, err, logger, started)
 		}
 	}
+	// 新客户端已在：移除旧版本客户端由 ConfirmSync 的凭证销毁与下一轮对账保证；
+	// 这里只需确认本次意图。轮换不改变端口，因此不触碰入站本身。
 	return s.confirm(ctx, work, true, work.Credential.Version, logger, started)
 }
 
-func (s *Synchronizer) observe(ctx context.Context, profile ports.RuntimeProfile, statisticsID string) (bool, error) {
-	users, err := s.adapter.ListUsers(ctx, profile)
+// inboundPresent 读后写：确认某入站当前是否存在于 Xray。
+func (s *Synchronizer) inboundPresent(ctx context.Context, tag string) (bool, error) {
+	inbounds, err := s.adapter.ListInbounds(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, inbound := range inbounds {
+		if inbound.InboundTag == tag {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *Synchronizer) observe(ctx context.Context, inbound ports.RuntimeInbound, statisticsID string) (bool, error) {
+	users, err := s.adapter.ListUsers(ctx, inbound)
 	if err != nil {
 		return false, err
 	}
@@ -377,8 +456,8 @@ func (s *Synchronizer) recordSuccess(ctx context.Context, work *ports.SyncWork, 
 	if err := s.store.MarkInstanceHealthy(ctx, "", now); err != nil {
 		s.logger.Warn("record instance health", logging.FieldErrorKind, "internal")
 	}
-	if work.Profile.Profile.Compatibility == domain.CompatibilityUnreachable && s.onProfileRecovered != nil {
-		s.onProfileRecovered(work.Profile.Profile.ID)
+	if work.Template.Template.Compatibility == domain.CompatibilityUnreachable && s.onProfileRecovered != nil {
+		s.onProfileRecovered(work.Template.Template.ID)
 	}
 }
 
@@ -414,7 +493,7 @@ func (s *Synchronizer) fail(ctx context.Context, work *ports.SyncWork, kind, sum
 func (s *Synchronizer) trackDrift(ctx context.Context, work *ports.SyncWork, kind, summary string, now time.Time) {
 	switch kind {
 	case ports.ErrorIncompatibleProfile, ports.ErrorUnsupportedProtocol, ports.ErrorProfileNotFound, ports.ErrorVersionMismatch:
-		if err := s.store.SetProfileCompatibility(ctx, work.Profile.Profile.ID, domain.CompatibilityIncompatible, summary, now); err != nil {
+		if err := s.store.SetTemplateCompatibility(ctx, work.Template.Template.ID, domain.CompatibilityIncompatible, summary, now); err != nil {
 			s.logger.Warn("record profile drift", logging.FieldErrorKind, "internal")
 		}
 	case ports.ErrorInstanceUnavailable, ports.ErrorDeadlineExceeded:
@@ -425,8 +504,8 @@ func (s *Synchronizer) trackDrift(ctx context.Context, work *ports.SyncWork, kin
 		if err := s.store.MarkInstanceUnreachable(ctx, kind, summary, now); err != nil {
 			s.logger.Warn("record instance health", logging.FieldErrorKind, "internal")
 		}
-		if count >= unreachableThreshold && work.Profile.Profile.Compatibility == domain.CompatibilityCompatible {
-			if err := s.store.SetProfileCompatibility(ctx, work.Profile.Profile.ID, domain.CompatibilityUnreachable, summary, now); err != nil {
+		if count >= unreachableThreshold && work.Template.Template.Compatibility == domain.CompatibilityCompatible {
+			if err := s.store.SetTemplateCompatibility(ctx, work.Template.Template.ID, domain.CompatibilityUnreachable, summary, now); err != nil {
 				s.logger.Warn("record profile drift", logging.FieldErrorKind, "internal")
 			}
 		}

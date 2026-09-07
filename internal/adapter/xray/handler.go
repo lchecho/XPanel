@@ -3,8 +3,6 @@ package xray
 import (
 	"context"
 	"encoding/base64"
-	"errors"
-	"strings"
 	"time"
 
 	handlercommand "github.com/xtls/xray-core/app/proxyman/command"
@@ -12,9 +10,8 @@ import (
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
 	shadowsocks2022 "github.com/xtls/xray-core/proxy/shadowsocks_2022"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
+	"xpanel/internal/domain"
 	"xpanel/internal/ports"
 	"xpanel/internal/security"
 )
@@ -35,93 +32,17 @@ func (c *Client) Probe(ctx context.Context, _ ports.InstanceTarget) (ports.Insta
 
 func timeDurationSeconds(seconds uint32) time.Duration { return time.Duration(seconds) * time.Second }
 
-func (c *Client) ValidateProfile(ctx context.Context, profile ports.RuntimeProfile) (ports.ProfileCapabilities, error) {
+func (c *Client) ListUsers(ctx context.Context, inbound ports.RuntimeInbound) ([]ports.RemoteUser, error) {
 	callCtx, cancel := c.deadline(ctx)
 	defer cancel()
-	list, err := c.handler.ListInbounds(callCtx, &handlercommand.ListInboundsRequest{IsOnlyTags: false})
-	if err != nil {
-		return ports.ProfileCapabilities{}, mapError("validate_profile", err)
-	}
-	capabilities := ports.ProfileCapabilities{}
-	for _, inbound := range list.GetInbounds() {
-		if inbound.GetTag() == profile.InboundTag {
-			capabilities.InboundPresent = true
-			if inbound.GetProxySettings() != nil {
-				instance, decodeErr := inbound.GetProxySettings().GetInstance()
-				if decodeErr != nil {
-					capabilities.CompatibilityReason = "inbound protocol settings could not be decoded"
-					return capabilities, nil
-				}
-				switch config := instance.(type) {
-				case *shadowsocks2022.MultiUserServerConfig:
-					capabilities.ProtocolSupported = true
-					capabilities.MethodSupported = config.GetMethod() == profile.Method &&
-						(profile.Method == security.MethodAES128 || profile.Method == security.MethodAES256)
-				case *shadowsocks2022.ServerConfig:
-					capabilities.ProtocolSupported = true
-					capabilities.MethodSupported = config.GetMethod() == profile.Method
-				}
-			}
-			break
-		}
-	}
-	if !capabilities.InboundPresent {
-		capabilities.CompatibilityReason = "configured inbound was not found"
-		return capabilities, nil
-	}
-	count, err := c.handler.GetInboundUsersCount(callCtx, &handlercommand.GetInboundUserRequest{Tag: profile.InboundTag})
-	if err != nil {
-		mapped := mapError("validate_profile", err)
-		var adapterErr *ports.AdapterError
-		if errors.As(mapped, &adapterErr) && adapterErr.Kind == ports.ErrorIncompatibleProfile {
-			capabilities.CompatibilityReason = adapterErr.SafeSummary
-			return capabilities, nil
-		}
-		return capabilities, mapped
-	}
-	capabilities.MultiUserSupported = count.GetCount() > 0
-	users, err := c.handler.GetInboundUsers(callCtx, &handlercommand.GetInboundUserRequest{Tag: profile.InboundTag})
-	if err != nil {
-		return capabilities, mapError("validate_profile", err)
-	}
-	for _, user := range users.GetUsers() {
-		if user.GetEmail() == profile.BootstrapStatisticsID {
-			capabilities.BootstrapVisible = true
-			break
-		}
-	}
-	capabilities.IndependentStats = capabilities.BootstrapVisible
-	if capabilities.BootstrapVisible {
-		for _, direction := range []ports.Direction{ports.Uplink, ports.Downlink} {
-			name, nameErr := CounterName(profile.BootstrapStatisticsID, direction)
-			if nameErr != nil {
-				return capabilities, nameErr
-			}
-			_, statErr := c.stats.GetStats(callCtx, &statscommand.GetStatsRequest{Name: name, Reset_: false})
-			if statErr != nil && status.Code(statErr) != codes.NotFound {
-				return capabilities, mapError("validate_profile", statErr)
-			}
-		}
-	}
-	if !capabilities.Compatible() {
-		capabilities.CompatibilityReason = "inbound does not satisfy the Shadowsocks 2022 multi-user contract"
-	}
-	return capabilities, nil
-}
-
-func (c *Client) ListUsers(ctx context.Context, profile ports.RuntimeProfile) ([]ports.RemoteUser, error) {
-	callCtx, cancel := c.deadline(ctx)
-	defer cancel()
-	response, err := c.handler.GetInboundUsers(callCtx, &handlercommand.GetInboundUserRequest{Tag: profile.InboundTag})
+	response, err := c.handler.GetInboundUsers(callCtx, &handlercommand.GetInboundUserRequest{Tag: inbound.InboundTag})
 	if err != nil {
 		return nil, mapError("list_users", err)
 	}
 	users := make([]ports.RemoteUser, 0, len(response.GetUsers()))
 	for _, user := range response.GetUsers() {
 		kind := "external"
-		if user.GetEmail() == profile.BootstrapStatisticsID {
-			kind = "bootstrap"
-		} else if strings.HasPrefix(user.GetEmail(), "xpanel-") {
+		if domain.IsPanelNamespace(user.GetEmail()) {
 			kind = "managed"
 		}
 		users = append(users, ports.RemoteUser{StatisticsID: user.GetEmail(), Present: true, Kind: kind})
@@ -137,7 +58,7 @@ func (c *Client) AddUser(ctx context.Context, command ports.AddUserCommand) (por
 		Account: serial.ToTypedMessage(&shadowsocks2022.Account{Key: command.UserKey.Reveal()})}}
 	callCtx, cancel := c.deadline(ctx)
 	defer cancel()
-	_, err := c.handler.AlterInbound(callCtx, &handlercommand.AlterInboundRequest{Tag: command.ProfileTag, Operation: serial.ToTypedMessage(operation)})
+	_, err := c.handler.AlterInbound(callCtx, &handlercommand.AlterInboundRequest{Tag: command.InboundTag, Operation: serial.ToTypedMessage(operation)})
 	if err != nil {
 		return ports.MutationReceipt{}, mapError("add_user", err)
 	}
@@ -156,7 +77,7 @@ func (c *Client) RemoveUser(ctx context.Context, command ports.RemoveUserCommand
 	operation := &handlercommand.RemoveUserOperation{Email: command.StatisticsID}
 	callCtx, cancel := c.deadline(ctx)
 	defer cancel()
-	_, err := c.handler.AlterInbound(callCtx, &handlercommand.AlterInboundRequest{Tag: command.ProfileTag, Operation: serial.ToTypedMessage(operation)})
+	_, err := c.handler.AlterInbound(callCtx, &handlercommand.AlterInboundRequest{Tag: command.InboundTag, Operation: serial.ToTypedMessage(operation)})
 	if err != nil {
 		return ports.MutationReceipt{}, mapError("remove_user", err)
 	}

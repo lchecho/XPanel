@@ -13,7 +13,7 @@ import (
 // EnqueueDriftRemoval 为未知身份写入移除意图；同一 profile+身份只允许一条未完成记录（重放幂等）。
 // 新意图在同一事务内显式取代此前该身份的 permanent_failed 记录（superseded_by 因果链），
 // 旧失败是否被覆盖不再依赖 created_at 的时间比较（T155）。
-func (s *Store) EnqueueDriftRemoval(ctx context.Context, profileID domain.ID, statisticsID string, now time.Time) (bool, error) {
+func (s *Store) EnqueueDriftRemoval(ctx context.Context, templateID domain.ID, inboundTag, kind, statisticsID string, now time.Time) (bool, error) {
 	id, err := domain.NewID()
 	if err != nil {
 		return false, err
@@ -23,9 +23,9 @@ func (s *Store) EnqueueDriftRemoval(ctx context.Context, profileID domain.ID, st
 		return false, err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `INSERT INTO drift_removals(id,profile_id,statistics_id,state,attempt_count,next_attempt_at,created_at)
-        VALUES (?,?,?,'pending',0,?,?) ON CONFLICT(profile_id,statistics_id) WHERE state IN ('pending','leased','retry_wait') DO NOTHING`,
-		id.String(), profileID.String(), statisticsID, millis(now), millis(now))
+	result, err := tx.ExecContext(ctx, `INSERT INTO drift_removals(id,template_id,inbound_tag,kind,statistics_id,state,attempt_count,next_attempt_at,created_at)
+        VALUES (?,?,?,?,?,'pending',0,?,?) ON CONFLICT(template_id,statistics_id) WHERE state IN ('pending','leased','retry_wait') DO NOTHING`,
+		id.String(), templateID.String(), inboundTag, kind, statisticsID, millis(now), millis(now))
 	if err != nil {
 		return false, err
 	}
@@ -33,8 +33,8 @@ func (s *Store) EnqueueDriftRemoval(ctx context.Context, profileID domain.ID, st
 	if rows != 1 {
 		return false, nil
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE drift_removals SET superseded_by=? WHERE profile_id=? AND statistics_id=? AND state='permanent_failed'
-        AND superseded_by IS NULL AND id<>?`, id.String(), profileID.String(), statisticsID, id.String()); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE drift_removals SET superseded_by=? WHERE template_id=? AND statistics_id=? AND state='permanent_failed'
+        AND superseded_by IS NULL AND id<>?`, id.String(), templateID.String(), statisticsID, id.String()); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
@@ -51,12 +51,12 @@ func (s *Store) LeaseDueDriftRemoval(ctx context.Context, owner string, now time
 	var id, profileID, previousState string
 	var next int64
 	var previousOwner sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT d.id,d.profile_id,p.inbound_tag,d.statistics_id,d.state,d.attempt_count,d.next_attempt_at,d.lease_owner
-        FROM drift_removals d JOIN access_profiles p ON p.id=d.profile_id
+	err = tx.QueryRowContext(ctx, `SELECT d.id,d.template_id,d.inbound_tag,d.kind,d.statistics_id,d.state,d.attempt_count,d.next_attempt_at,d.lease_owner
+        FROM drift_removals d JOIN inbound_templates t ON t.id=d.template_id
         WHERE ((d.state IN ('pending','retry_wait') AND d.next_attempt_at<=?) OR (d.state='leased' AND d.lease_expires_at<=?))
-          AND p.compatibility_state IN ('compatible','unreachable')
+          AND t.compatibility_state IN ('compatible','unreachable')
         ORDER BY d.next_attempt_at,d.created_at LIMIT 1`, millis(now), millis(now)).Scan(
-		&id, &profileID, &removal.InboundTag, &removal.StatisticsID, &previousState, &removal.AttemptCount, &next, &previousOwner)
+		&id, &profileID, &removal.InboundTag, &removal.Kind, &removal.StatisticsID, &previousState, &removal.AttemptCount, &next, &previousOwner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -76,7 +76,7 @@ func (s *Store) LeaseDueDriftRemoval(ctx context.Context, owner string, now time
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	removal.ID, removal.ProfileID, removal.NextAttemptAt, removal.State = domain.ID(id), domain.ID(profileID), fromMillis(next), domain.SyncLeased
+	removal.ID, removal.TemplateID, removal.NextAttemptAt, removal.State = domain.ID(id), domain.ID(profileID), fromMillis(next), domain.SyncLeased
 	removal.Reclaimed = previousState == string(domain.SyncLeased)
 	return &removal, nil
 }
@@ -146,9 +146,9 @@ func (s *Store) FailDriftRemoval(ctx context.Context, id domain.ID, owner, code,
 // StaleDriftRemovals 返回某 profile 下仍冻结契约字段的 permanent_failed 移除意图：
 // 尚未被后续意图显式取代（superseded_by IS NULL）的永久失败（与 UpdateProfile 守卫的判定一致）。
 func (s *Store) StaleDriftRemovals(ctx context.Context, profileID domain.ID) ([]ports.DriftRemoval, error) {
-	rows, err := s.db.Read.QueryContext(ctx, `SELECT d.id,d.profile_id,p.inbound_tag,d.statistics_id,d.state,d.attempt_count,d.next_attempt_at
-        FROM drift_removals d JOIN access_profiles p ON p.id=d.profile_id
-        WHERE d.profile_id=? AND d.state='permanent_failed' AND d.superseded_by IS NULL
+	rows, err := s.db.Read.QueryContext(ctx, `SELECT d.id,d.template_id,d.inbound_tag,d.kind,d.statistics_id,d.state,d.attempt_count,d.next_attempt_at
+        FROM drift_removals d JOIN inbound_templates t ON t.id=d.template_id
+        WHERE d.template_id=? AND d.state='permanent_failed' AND d.superseded_by IS NULL
         ORDER BY d.created_at,d.id`, profileID.String())
 	if err != nil {
 		return nil, err
@@ -159,10 +159,10 @@ func (s *Store) StaleDriftRemovals(ctx context.Context, profileID domain.ID) ([]
 		var removal ports.DriftRemoval
 		var id, profile string
 		var next int64
-		if err := rows.Scan(&id, &profile, &removal.InboundTag, &removal.StatisticsID, &removal.State, &removal.AttemptCount, &next); err != nil {
+		if err := rows.Scan(&id, &profile, &removal.InboundTag, &removal.Kind, &removal.StatisticsID, &removal.State, &removal.AttemptCount, &next); err != nil {
 			return nil, err
 		}
-		removal.ID, removal.ProfileID, removal.NextAttemptAt = domain.ID(id), domain.ID(profile), fromMillis(next)
+		removal.ID, removal.TemplateID, removal.NextAttemptAt = domain.ID(id), domain.ID(profile), fromMillis(next)
 		result = append(result, removal)
 	}
 	return result, rows.Err()

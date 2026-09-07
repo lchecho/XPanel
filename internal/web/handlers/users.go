@@ -19,7 +19,7 @@ import (
 type UserHandler struct {
 	Base
 	Service     *application.UserService
-	Profiles    *application.ProfileService
+	Templates   *application.TemplateService
 	Connections *application.ConnectionService
 	Dashboard   *application.DashboardService
 }
@@ -29,7 +29,7 @@ const activeCapacity = 20
 var quotaUnits = []string{"MiB", "GiB", "TiB"}
 
 type userFormData struct {
-	Profiles     []views.ProfileView
+	Templates    []views.TemplateView
 	NoCompatible bool
 	Units        []string
 }
@@ -135,11 +135,18 @@ func (h *UserHandler) NewForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UserHandler) formData(r *http.Request) (userFormData, error) {
-	records, err := h.Profiles.List(r.Context(), true)
+	records, err := h.Templates.List(r.Context(), true)
 	if err != nil {
 		return userFormData{}, err
 	}
-	return userFormData{Profiles: views.NewProfileViews(records, h.Location(r)), NoCompatible: len(records) == 0, Units: quotaUnits}, nil
+	// 端口池占用一并带出，供表单展示剩余可分配数量与耗尽提示（FR-009/FR-035）。
+	views := views.NewTemplateViews(records, h.Location(r))
+	for i, record := range records {
+		if usage, err := h.Templates.PortUsage(r.Context(), record.Template.ID); err == nil {
+			views[i].PortsAssigned, views[i].PortsRemaining, views[i].PortsOutside = usage.Assigned, usage.Remaining, usage.Outside
+		}
+	}
+	return userFormData{Templates: views, NoCompatible: len(records) == 0, Units: quotaUnits}, nil
 }
 
 func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -148,11 +155,20 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		h.Renderer.Error(w, http.StatusBadRequest, "表单格式无效", "")
 		return
 	}
-	input := application.CreateUserInput{DisplayName: form.Values["display_name"], ProfileID: domain.ID(form.Values["profile_id"]),
+	input := application.CreateUserInput{DisplayName: form.Values["display_name"], TemplateID: domain.ID(form.Values["template_id"]),
 		RequestID: form.RequestID, ActorID: h.Actor(r), Fingerprint: form.Fingerprint}
-	if !input.ProfileID.Valid() {
-		h.renderUserForm(w, r, form.Values, &domain.ValidationError{Field: "profile_id", Message: "profile is required"})
+	if !input.TemplateID.Valid() {
+		h.renderUserForm(w, r, form.Values, &domain.ValidationError{Field: "template_id", Message: "inbound template is required"})
 		return
+	}
+	// 端口留空表示由面板自动分配；填写时必须是池内未占用端口（FR-007）。
+	if raw := strings.TrimSpace(form.Values["port"]); raw != "" {
+		port, convErr := strconv.Atoi(raw)
+		if convErr != nil {
+			h.renderUserForm(w, r, form.Values, &domain.ValidationError{Field: "port", Message: "port must be a number"})
+			return
+		}
+		input.Port = &port
 	}
 	input.ResetDay, _ = strconv.Atoi(strings.TrimSpace(form.Values["reset_day"]))
 	limit, err := parseQuota(form.Values)

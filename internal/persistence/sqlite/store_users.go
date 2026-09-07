@@ -36,18 +36,22 @@ func (s *Store) CreateUser(ctx context.Context, record ports.UserCreateRecord) (
 			return translateConstraint(err, "user name already exists")
 		}
 		if _, err := tx.tx.ExecContext(ctx, `INSERT INTO xray_user_identities
-            (id,instance_id,profile_id,statistics_id,kind,created_at) VALUES (?,?,?,?,?,?)`, i.ID.String(), i.InstanceID.String(),
-			i.ProfileID.String(), i.StatisticsID, i.Kind, millis(i.CreatedAt)); err != nil {
+            (id,instance_id,template_id,statistics_id,kind,created_at) VALUES (?,?,?,?,?,?)`, i.ID.String(), i.InstanceID.String(),
+			i.TemplateID.String(), i.StatisticsID, i.Kind, millis(i.CreatedAt)); err != nil {
 			return translateConstraint(err, "statistics identity already exists")
 		}
 		if _, err := tx.tx.ExecContext(ctx, `INSERT INTO access_allocations
-            (id,user_id,profile_id,identity_id,admin_enabled,quota_state,projection_state,observed_present,
+            (id,user_id,template_id,identity_id,admin_enabled,quota_state,projection_state,observed_present,
              desired_revision,synced_revision,desired_credential_version,synced_credential_version,last_sync_at,
              last_sync_error_code,last_sync_error_summary,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, a.ID.String(), a.UserID.String(), a.ProfileID.String(), a.IdentityID.String(),
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, a.ID.String(), a.UserID.String(), a.TemplateID.String(), a.IdentityID.String(),
 			boolInt(a.AdminEnabled), a.QuotaState, a.ProjectionState, nullableBool(a.ObservedPresent), a.DesiredRevision,
 			a.SyncedRevision, a.DesiredCredentialVersion, nullableInt64(a.SyncedCredentialVersion), nullTime(a.LastSyncAt),
 			nullString(a.LastSyncErrorCode), nullString(a.LastSyncErrorSummary), millis(a.CreatedAt), millis(a.UpdatedAt)); err != nil {
+			return err
+		}
+		// 端口分配与专属入站在同一事务写入；端口冲突由部分唯一索引拒绝，不产生部分状态（FR-008/FR-038）。
+		if err := insertDedicatedInbound(ctx, tx.tx, record.Inbound); err != nil {
 			return err
 		}
 		if _, err := tx.tx.ExecContext(ctx, `INSERT INTO access_credentials
@@ -100,14 +104,16 @@ func (s *Store) loadUser(ctx context.Context, condition string, args ...any) (po
 
 const userSelect = `SELECT
     u.id,u.display_name,u.normalized_name,u.lifecycle_state,u.revision,u.created_at,u.updated_at,u.deleted_at,
-    i.id,i.instance_id,i.profile_id,i.statistics_id,i.kind,i.created_at,
-    a.id,a.user_id,a.profile_id,a.identity_id,a.admin_enabled,a.quota_state,a.projection_state,a.observed_present,
+    i.id,i.instance_id,i.template_id,i.statistics_id,i.kind,i.created_at,
+    a.id,a.user_id,a.template_id,a.identity_id,a.admin_enabled,a.quota_state,a.projection_state,a.observed_present,
     a.desired_revision,a.synced_revision,a.desired_credential_version,a.synced_credential_version,a.last_sync_at,
     COALESCE(a.last_sync_error_code,''),COALESCE(a.last_sync_error_summary,''),a.created_at,a.updated_at,
     c.id,c.allocation_id,c.version,c.state,c.key_ciphertext,c.key_nonce,c.key_encryption_version,c.created_at,c.activated_at,c.retired_at,
-    p.id,p.instance_id,p.name,p.normalized_name,p.inbound_tag,p.public_host,p.public_port,p.method,p.network,
-    p.server_key_ciphertext,p.server_key_nonce,p.key_encryption_version,p.bootstrap_statistics_id,p.compatibility_state,
-    COALESCE(p.compatibility_reason,''),p.last_validated_at,p.revision,p.archived_at,p.created_at,p.updated_at,
+    t.id,t.instance_id,t.name,t.normalized_name,t.public_host,t.listen_address,t.port_pool_start,t.port_pool_end,
+    t.method,t.network,t.compatibility_state,COALESCE(t.compatibility_reason,''),t.last_validated_at,t.revision,
+    t.archived_at,t.created_at,t.updated_at,
+    d.allocation_id,d.template_id,d.inbound_tag,d.listen_address,d.port,d.server_key_ciphertext,d.server_key_nonce,
+    d.key_encryption_version,d.desired_present,d.observed_present,d.last_sync_at,d.released_at,d.created_at,d.updated_at,
     qp.allocation_id,qp.limit_bytes,qp.reset_day,qp.revision,qp.created_at,qp.updated_at,
     qc.id,qc.allocation_id,qc.starts_at_utc,qc.ends_at_utc,qc.timezone_name,qc.reset_day,qc.status,
     qc.gross_uplink_bytes,qc.gross_downlink_bytes,qc.accounted_uplink_bytes,qc.accounted_downlink_bytes,
@@ -115,34 +121,43 @@ const userSelect = `SELECT
     FROM managed_users u
     JOIN access_allocations a ON a.user_id=u.id
     JOIN xray_user_identities i ON i.id=a.identity_id
-    JOIN access_profiles p ON p.id=a.profile_id
+    JOIN inbound_templates t ON t.id=a.template_id
+    JOIN dedicated_inbounds d ON d.allocation_id=a.id
     JOIN access_credentials c ON c.allocation_id=a.id AND c.version=a.desired_credential_version
     JOIN quota_policies qp ON qp.allocation_id=a.id
     JOIN quota_cycles qc ON qc.allocation_id=a.id AND qc.status='open'`
 
 func scanUser(row scanner) (ports.UserRecord, error) {
 	var record ports.UserRecord
-	var userID, identityID, identityInstanceID, identityProfileID, allocationID, allocationUserID, allocationProfileID, allocationIdentityID string
-	var credentialID, credentialAllocationID, profileID, profileInstanceID, policyAllocationID, cycleID, cycleAllocationID string
+	var userID, identityID, identityInstanceID, identityTemplateID, allocationID, allocationUserID, allocationTemplateID, allocationIdentityID string
+	var credentialID, credentialAllocationID, templateID, templateInstanceID, policyAllocationID, cycleID, cycleAllocationID string
+	var inboundAllocationID, inboundTemplateID string
+	var poolStart, poolEnd int
 	var userCreated, userUpdated, identityCreated, allocationCreated, allocationUpdated, credentialCreated int64
-	var profileCreated, profileUpdated, policyCreated, policyUpdated, starts, ends, opened int64
-	var userDeleted, lastSync, credentialActivated, credentialRetired, profileValidated, profileArchived, cycleClosed sql.NullInt64
+	var templateCreated, templateUpdated, policyCreated, policyUpdated, starts, ends, opened int64
+	var inboundCreated, inboundUpdated, inboundDesired int64
+	var userDeleted, lastSync, credentialActivated, credentialRetired, templateValidated, templateArchived, cycleClosed sql.NullInt64
 	var observed, syncedCredential, keyVersion, limit sql.NullInt64
+	var inboundObserved, inboundLastSync, inboundReleased sql.NullInt64
 	err := row.Scan(&userID, &record.User.DisplayName, &record.User.NormalizedName, &record.User.Lifecycle, &record.User.Revision,
-		&userCreated, &userUpdated, &userDeleted, &identityID, &identityInstanceID, &identityProfileID,
+		&userCreated, &userUpdated, &userDeleted, &identityID, &identityInstanceID, &identityTemplateID,
 		&record.Identity.StatisticsID, &record.Identity.Kind, &identityCreated, &allocationID, &allocationUserID,
-		&allocationProfileID, &allocationIdentityID, &record.Allocation.AdminEnabled, &record.Allocation.QuotaState,
+		&allocationTemplateID, &allocationIdentityID, &record.Allocation.AdminEnabled, &record.Allocation.QuotaState,
 		&record.Allocation.ProjectionState, &observed, &record.Allocation.DesiredRevision, &record.Allocation.SyncedRevision,
 		&record.Allocation.DesiredCredentialVersion, &syncedCredential, &lastSync, &record.Allocation.LastSyncErrorCode,
 		&record.Allocation.LastSyncErrorSummary, &allocationCreated, &allocationUpdated, &credentialID, &credentialAllocationID,
 		&record.Credential.Version, &record.Credential.State, &record.Credential.KeyCiphertext, &record.Credential.KeyNonce,
-		&keyVersion, &credentialCreated, &credentialActivated, &credentialRetired, &profileID, &profileInstanceID,
-		&record.Profile.Profile.Name, &record.Profile.Profile.NormalizedName, &record.Profile.Profile.InboundTag,
-		&record.Profile.Profile.PublicHost, &record.Profile.Profile.PublicPort, &record.Profile.Profile.Method,
-		&record.Profile.Profile.Network, &record.Profile.ServerKeyCiphertext, &record.Profile.ServerKeyNonce,
-		&record.Profile.KeyEncryptionVersion, &record.Profile.Profile.BootstrapStatisticsID, &record.Profile.Profile.Compatibility,
-		&record.Profile.Profile.CompatibilityReason, &profileValidated, &record.Profile.Profile.Revision, &profileArchived,
-		&profileCreated, &profileUpdated, &policyAllocationID, &limit, &record.Policy.ResetDay, &record.Policy.Revision,
+		&keyVersion, &credentialCreated, &credentialActivated, &credentialRetired,
+		&templateID, &templateInstanceID, &record.Template.Template.Name, &record.Template.Template.NormalizedName,
+		&record.Template.Template.PublicHost, &record.Template.Template.ListenAddress, &poolStart, &poolEnd,
+		&record.Template.Template.Method, &record.Template.Template.Network, &record.Template.Template.Compatibility,
+		&record.Template.Template.CompatibilityReason, &templateValidated, &record.Template.Template.Revision,
+		&templateArchived, &templateCreated, &templateUpdated,
+		&inboundAllocationID, &inboundTemplateID, &record.Inbound.Inbound.InboundTag, &record.Inbound.Inbound.ListenAddress,
+		&record.Inbound.Inbound.Port, &record.Inbound.ServerKeyCiphertext, &record.Inbound.ServerKeyNonce,
+		&record.Inbound.KeyEncryptionVersion, &inboundDesired, &inboundObserved, &inboundLastSync, &inboundReleased,
+		&inboundCreated, &inboundUpdated,
+		&policyAllocationID, &limit, &record.Policy.ResetDay, &record.Policy.Revision,
 		&policyCreated, &policyUpdated, &cycleID, &cycleAllocationID, &starts, &ends, &record.Cycle.Timezone,
 		&record.Cycle.ResetDay, &record.Cycle.Status, &record.Cycle.GrossUplinkBytes, &record.Cycle.GrossDownlinkBytes,
 		&record.Cycle.AccountedUplinkBytes, &record.Cycle.AccountedDownlinkBytes, &record.Cycle.ManualResetCount, &opened, &cycleClosed)
@@ -154,9 +169,9 @@ func scanUser(row scanner) (ports.UserRecord, error) {
 	}
 	record.User.ID, record.User.CreatedAt, record.User.UpdatedAt = domain.ID(userID), fromMillis(userCreated), fromMillis(userUpdated)
 	setTime(&record.User.DeletedAt, userDeleted)
-	record.Identity.ID, record.Identity.InstanceID, record.Identity.ProfileID = domain.ID(identityID), domain.ID(identityInstanceID), domain.ID(identityProfileID)
+	record.Identity.ID, record.Identity.InstanceID, record.Identity.TemplateID = domain.ID(identityID), domain.ID(identityInstanceID), domain.ID(identityTemplateID)
 	record.Identity.CreatedAt = fromMillis(identityCreated)
-	record.Allocation.ID, record.Allocation.UserID, record.Allocation.ProfileID, record.Allocation.IdentityID = domain.ID(allocationID), domain.ID(allocationUserID), domain.ID(allocationProfileID), domain.ID(allocationIdentityID)
+	record.Allocation.ID, record.Allocation.UserID, record.Allocation.TemplateID, record.Allocation.IdentityID = domain.ID(allocationID), domain.ID(allocationUserID), domain.ID(allocationTemplateID), domain.ID(allocationIdentityID)
 	record.Allocation.CreatedAt, record.Allocation.UpdatedAt = fromMillis(allocationCreated), fromMillis(allocationUpdated)
 	setBool(&record.Allocation.ObservedPresent, observed)
 	setInt64(&record.Allocation.SyncedCredentialVersion, syncedCredential)
@@ -168,10 +183,17 @@ func scanUser(row scanner) (ports.UserRecord, error) {
 	}
 	setTime(&record.Credential.ActivatedAt, credentialActivated)
 	setTime(&record.Credential.RetiredAt, credentialRetired)
-	record.Profile.Profile.ID, record.Profile.Profile.InstanceID = domain.ID(profileID), domain.ID(profileInstanceID)
-	record.Profile.Profile.CreatedAt, record.Profile.Profile.UpdatedAt = fromMillis(profileCreated), fromMillis(profileUpdated)
-	setTime(&record.Profile.Profile.LastValidatedAt, profileValidated)
-	setTime(&record.Profile.Profile.ArchivedAt, profileArchived)
+	record.Template.Template.ID, record.Template.Template.InstanceID = domain.ID(templateID), domain.ID(templateInstanceID)
+	record.Template.Template.Pool = domain.PortPool{Start: poolStart, End: poolEnd}
+	record.Template.Template.CreatedAt, record.Template.Template.UpdatedAt = fromMillis(templateCreated), fromMillis(templateUpdated)
+	setTime(&record.Template.Template.LastValidatedAt, templateValidated)
+	setTime(&record.Template.Template.ArchivedAt, templateArchived)
+	record.Inbound.Inbound.AllocationID, record.Inbound.Inbound.TemplateID = domain.ID(inboundAllocationID), domain.ID(inboundTemplateID)
+	record.Inbound.Inbound.DesiredPresent = inboundDesired != 0
+	setBool(&record.Inbound.Inbound.ObservedPresent, inboundObserved)
+	setTime(&record.Inbound.Inbound.LastSyncAt, inboundLastSync)
+	setTime(&record.Inbound.Inbound.ReleasedAt, inboundReleased)
+	record.Inbound.Inbound.CreatedAt, record.Inbound.Inbound.UpdatedAt = fromMillis(inboundCreated), fromMillis(inboundUpdated)
 	record.Policy.AllocationID, record.Policy.CreatedAt, record.Policy.UpdatedAt = domain.ID(policyAllocationID), fromMillis(policyCreated), fromMillis(policyUpdated)
 	if limit.Valid {
 		value := limit.Int64
@@ -320,6 +342,7 @@ func (s *Store) RotateCredential(ctx context.Context, record ports.RotationRecor
 }
 
 // SoftDeleteUser 把用户标记为 deleted、清除启用意图并写入移除操作；密钥销毁在移除确认事务中完成。
+// SoftDeleteUser 软删除用户并排队移除入站；端口在移除确认事务内释放（见 ConfirmSync）。
 func (s *Store) SoftDeleteUser(ctx context.Context, record ports.DeleteRecord) (bool, error) {
 	replay := false
 	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {

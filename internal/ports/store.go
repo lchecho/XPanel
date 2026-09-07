@@ -18,15 +18,20 @@ type Store interface {
 	Settings(context.Context) (PanelSettingsRecord, error)
 	SetInstanceHealth(context.Context, string, string, string, *time.Time, string, time.Time) error
 	AppendAudit(context.Context, domain.AuditEvent) error
-	CreateProfile(context.Context, ProfileRecord, domain.DomainCommand, domain.AuditEvent) (domain.ID, bool, error)
-	UpdateProfile(context.Context, ProfileRecord, RevisionMatch, domain.DomainCommand, domain.AuditEvent) error
-	Profile(context.Context, domain.ID) (ProfileRecord, error)
-	Profiles(context.Context, bool) ([]ProfileRecord, error)
-	ArchiveProfile(context.Context, domain.ID, domain.Revision, time.Time) error
-	SetProfileCompatibility(context.Context, domain.ID, domain.CompatibilityState, string, time.Time) error
-	CompleteProfileValidation(context.Context, ValidationOutcome) (bool, error)
+	CreateTemplate(context.Context, TemplateRecord, domain.DomainCommand, domain.AuditEvent) (domain.ID, bool, error)
+	UpdateTemplate(context.Context, TemplateRecord, RevisionMatch, domain.DomainCommand, domain.AuditEvent) error
+	Template(context.Context, domain.ID) (TemplateRecord, error)
+	Templates(context.Context, bool) ([]TemplateRecord, error)
+	ArchiveTemplate(context.Context, domain.ID, domain.Revision, time.Time) error
+	SetTemplateCompatibility(context.Context, domain.ID, domain.CompatibilityState, string, time.Time) error
+	CompleteTemplateValidation(context.Context, ValidationOutcome) (bool, error)
 	RequestRevalidation(context.Context, domain.ID, domain.Revision, domain.DomainCommand, domain.AuditEvent) (bool, error)
-	RegisterBootstrapIdentity(context.Context, domain.XrayUserIdentity) error
+	// 专属入站与端口分配（data-model.md §dedicated_inbounds）
+	AssignedPorts(context.Context, domain.ID) ([]int, error)
+	DedicatedInbound(context.Context, domain.ID) (domain.DedicatedInbound, error)
+	PanelInbounds(context.Context) ([]domain.DedicatedInbound, error)
+	ConfirmInboundPresence(context.Context, domain.ID, bool, time.Time) error
+	PortPoolUsage(context.Context, domain.ID) (PortPoolUsage, error)
 	CreateUser(context.Context, UserCreateRecord) (domain.ID, bool, error)
 	User(context.Context, domain.ID) (UserRecord, error)
 	ListUsers(context.Context, UserFilter) ([]UserRecord, error)
@@ -63,7 +68,7 @@ type Store interface {
 	EnqueueReconcile(context.Context, domain.ID, domain.Revision, domain.SynchronizationOperation, time.Time) (bool, error)
 	RecordObservation(context.Context, domain.ID, bool, time.Time) error
 	AuditEvents(context.Context, AuditFilter) ([]domain.AuditEvent, *AuditCursor, error)
-	EnqueueDriftRemoval(context.Context, domain.ID, string, time.Time) (bool, error)
+	EnqueueDriftRemoval(context.Context, domain.ID, string, string, string, time.Time) (bool, error)
 	LeaseDueDriftRemoval(context.Context, string, time.Time, time.Duration) (*DriftRemoval, error)
 	RenewDriftRemovalLease(context.Context, domain.ID, string, time.Time, time.Duration) (bool, error)
 	StaleDriftRemovals(context.Context, domain.ID) ([]DriftRemoval, error)
@@ -147,11 +152,25 @@ type ManagedInstanceRecord struct {
 	UpdatedAt               time.Time
 }
 
-type ProfileRecord struct {
-	Profile              domain.AccessProfile
+// TemplateRecord 是入站模板的持久化表示。模板不再持有服务端密钥——每条专属入站独立生成（FR-004）。
+type TemplateRecord struct {
+	Template domain.InboundTemplate
+}
+
+// InboundRecord 是专属入站及其加密后的服务端密钥。
+type InboundRecord struct {
+	Inbound              domain.DedicatedInbound
 	ServerKeyCiphertext  []byte
 	ServerKeyNonce       []byte
 	KeyEncryptionVersion int64
+}
+
+// PortPoolUsage 供仪表盘展示端口池占用情况（FR-035）。
+type PortPoolUsage struct {
+	Capacity  int
+	Assigned  int
+	Remaining int
+	Outside   []int
 }
 
 type RevisionMatch struct{ Expected domain.Revision }
@@ -193,6 +212,7 @@ type UserCreateRecord struct {
 	User       domain.ManagedUser
 	Identity   domain.XrayUserIdentity
 	Allocation domain.AccessAllocation
+	Inbound    InboundRecord
 	Credential domain.AccessCredential
 	Policy     QuotaPolicyRecord
 	Cycle      QuotaCycleRecord
@@ -204,9 +224,10 @@ type UserCreateRecord struct {
 type UserRecord struct {
 	User       domain.ManagedUser
 	Identity   domain.XrayUserIdentity
+	Inbound    InboundRecord
 	Allocation domain.AccessAllocation
 	Credential domain.AccessCredential
-	Profile    ProfileRecord
+	Template   TemplateRecord
 	Policy     QuotaPolicyRecord
 	Cycle      QuotaCycleRecord
 }
@@ -216,7 +237,8 @@ type SyncWork struct {
 	User       domain.ManagedUser
 	Allocation domain.AccessAllocation
 	Identity   domain.XrayUserIdentity
-	Profile    ProfileRecord
+	Template   TemplateRecord
+	Inbound    InboundRecord
 	Credential domain.AccessCredential
 }
 
@@ -390,9 +412,11 @@ type AuditFilter struct {
 
 // DriftRemoval 是持久化的“移除面板命名空间内未知身份”意图（data-model §DriftRemoval，迁移 00002）。
 type DriftRemoval struct {
-	ID            domain.ID
-	ProfileID     domain.ID
-	InboundTag    string
+	ID         domain.ID
+	TemplateID domain.ID
+	InboundTag string
+	// Kind 区分两类漂移目标：identity 为面板入站内的未知客户端，inbound 为面板命名空间内的孤立入站。
+	Kind          string
 	StatisticsID  string
 	State         domain.SyncState
 	AttemptCount  int
@@ -403,7 +427,7 @@ type DriftRemoval struct {
 
 // ValidationOutcome 是一次 profile 验证的完整结果，按 ExpectedRevision 条件在一个事务中提交（FR-021）。
 type ValidationOutcome struct {
-	ProfileID        domain.ID
+	TemplateID       domain.ID
 	ExpectedRevision domain.Revision
 	State            domain.CompatibilityState
 	Reason           string
@@ -413,6 +437,5 @@ type ValidationOutcome struct {
 	ErrorCode        string
 	ErrorSummary     string
 	SuccessAt        *time.Time
-	Bootstrap        *domain.XrayUserIdentity
 	Audit            domain.AuditEvent
 }

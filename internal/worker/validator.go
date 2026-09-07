@@ -20,7 +20,7 @@ import (
 //
 // 约束：验证与用户变更共用 node 锁，避免并发打到同一 Xray 实例。
 type ProfileValidator struct {
-	profiles *application.ProfileService
+	profiles *application.TemplateService
 	store    ports.Store
 	logger   *slog.Logger
 	node     *sync.Mutex
@@ -28,7 +28,7 @@ type ProfileValidator struct {
 	queue    chan domain.ID
 }
 
-func NewProfileValidator(profiles *application.ProfileService, store ports.Store, logger *slog.Logger, node *sync.Mutex, interval time.Duration) *ProfileValidator {
+func NewProfileValidator(profiles *application.TemplateService, store ports.Store, logger *slog.Logger, node *sync.Mutex, interval time.Duration) *ProfileValidator {
 	if node == nil {
 		node = &sync.Mutex{}
 	}
@@ -69,14 +69,14 @@ func (v *ProfileValidator) Run(ctx context.Context) {
 
 // SweepOnce 重新验证所有 unverified 与 unreachable 的 profile。
 func (v *ProfileValidator) SweepOnce(ctx context.Context) error {
-	profiles, err := v.store.Profiles(ctx, false)
+	profiles, err := v.store.Templates(ctx, false)
 	if err != nil {
 		return err
 	}
 	for _, record := range profiles {
-		state := record.Profile.Compatibility
+		state := record.Template.Compatibility
 		if state == domain.CompatibilityUnverified || state == domain.CompatibilityUnreachable {
-			v.validate(ctx, record.Profile.ID)
+			v.validate(ctx, record.Template.ID)
 		}
 	}
 	return nil

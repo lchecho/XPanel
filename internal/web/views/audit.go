@@ -26,7 +26,7 @@ var auditActionLabels = []Option{
 	{domain.ActionUserEnabled, "启用用户"}, {domain.ActionUserDisabled, "禁用用户"}, {domain.ActionCredentialRotated, "轮换凭证"},
 	{domain.ActionUserDeleted, "删除用户"}, {domain.ActionQuotaExceeded, "配额超限"}, {domain.ActionTrafficReset, "手动重置流量"},
 	{domain.ActionCycleRestored, "周期恢复"}, {domain.ActionSyncSucceeded, "同步确认"}, {domain.ActionSyncFailed, "同步失败"},
-	{domain.ActionProfileRegistered, "登记访问配置"}, {domain.ActionProfileUpdated, "修改访问配置"}, {domain.ActionProfileValidated, "验证访问配置"},
+	{domain.ActionTemplateRegistered, "登记访问配置"}, {domain.ActionTemplateUpdated, "修改访问配置"}, {domain.ActionTemplateValidated, "验证访问配置"},
 	{domain.ActionSettingsUpdated, "修改设置"}, {domain.ActionReconcileRemovedUnknown, "协调移除未知身份"},
 }
 

@@ -39,7 +39,7 @@ type App struct {
 	Clock       *ports.FixedClock
 	Adapter     *fake.Adapter
 	Auth        *application.AuthService
-	Profiles    *application.ProfileService
+	Templates   *application.TemplateService
 	Users       *application.UserService
 	Connections *application.ConnectionService
 	Settings    *application.SettingsService
@@ -62,10 +62,11 @@ type App struct {
 }
 
 const (
-	DefaultUsername = "admin"
-	DefaultPassword = "correct horse battery staple"
-	ProfileTag      = "managed"
-	BootstrapID     = "bootstrap"
+	DefaultUsername      = "admin"
+	DefaultPassword      = "correct horse battery staple"
+	DefaultListenAddress = "127.0.0.1"
+	DefaultPoolStart     = 30000
+	DefaultPoolEnd       = 30099
 )
 
 // Options 允许契约测试注入真实 Xray Adapter 与目标；零值等同 New（fake Adapter）。
@@ -138,7 +139,7 @@ func NewWith(t *testing.T, options Options) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app.Profiles = application.NewProfileService(store, adapter, keyring, clock, target, func(id domain.ID) {
+	app.Templates = application.NewTemplateService(store, adapter, keyring, clock, target, func(id domain.ID) {
 		if app.Validator != nil {
 			app.Validator.Enqueue(id)
 		}
@@ -148,11 +149,11 @@ func NewWith(t *testing.T, options Options) *App {
 	app.Users = application.NewUserService(store, keyring, clock, app.Sync.Wake)
 	app.Connections = application.NewConnectionService(store, keyring)
 	app.Settings = application.NewSettingsService(store).WithClock(clock)
-	app.Validator = worker.NewProfileValidator(app.Profiles, store, nil, node, 15*time.Second)
+	app.Validator = worker.NewProfileValidator(app.Templates, store, nil, node, 15*time.Second)
 	app.Traffic = application.NewTrafficService(store, adapter, clock, target, 5*time.Second, app.Sync.Wake, nil)
 	app.Quota = application.NewQuotaService(store, clock, app.Sync.Wake, nil)
 	app.Dashboard = application.NewDashboardService(store, clock, 5*time.Second, 15*time.Second)
-	app.Reconcile = application.NewReconciliationService(store, adapter, clock, target, node, 15*time.Second, app.Sync.Wake, app.Profiles.RunValidation, nil)
+	app.Reconcile = application.NewReconciliationService(store, adapter, clock, target, node, 15*time.Second, app.Sync.Wake, app.Templates.RunValidation, nil)
 	app.Audit = application.NewAuditService(store)
 
 	app.Sessions = scs.New()
@@ -161,7 +162,7 @@ func NewWith(t *testing.T, options Options) *App {
 		sessionStore = options.WrapSessionStore(sessionStore)
 	}
 	webmiddleware.ConfigureSessions(app.Sessions, sessionStore, 30*time.Minute, 12*time.Hour, false)
-	app.Handler, err = web.Routes(web.RouteDependencies{Auth: app.Auth, Profiles: app.Profiles, Users: app.Users,
+	app.Handler, err = web.Routes(web.RouteDependencies{Auth: app.Auth, Templates: app.Templates, Users: app.Users,
 		Connections: app.Connections, Settings: app.Settings, Dashboard: app.Dashboard, Audit: app.Audit, Sessions: app.Sessions, CSRFKey: keyring.CSRFKey(), Secure: false,
 		Ready: func() bool { return true }})
 	if err != nil {
@@ -240,33 +241,39 @@ func (a *App) Login() {
 	}
 }
 
-// RegisterCompatibleProfile 通过服务层登记 profile 并同步验证为 compatible。
-func (a *App) RegisterCompatibleProfile(name string) domain.ID {
+// RegisterCompatibleTemplate 通过服务层登记入站模板并同步验证为 compatible。
+func (a *App) RegisterCompatibleTemplate(name string) domain.ID {
 	a.T.Helper()
-	key, err := security.GenerateUserKey(security.MethodAES256)
-	if err != nil {
-		a.T.Fatal(err)
-	}
-	id, err := a.Profiles.RegisterProfile(context.Background(), application.ProfileInput{Name: name, InboundTag: ProfileTag,
-		PublicHost: "vpn.example.com", PublicPort: 8388, Method: security.MethodAES256, Network: domain.NetworkTCPUDP,
-		ServerKey: key.Reveal(), BootstrapStatisticsID: BootstrapID, RequestID: NewID(a.T), ActorID: NewID(a.T)})
+	id, err := a.Templates.RegisterTemplate(context.Background(), application.TemplateInput{Name: name,
+		PublicHost: "vpn.example.com", ListenAddress: DefaultListenAddress, PortPoolStart: DefaultPoolStart,
+		PortPoolEnd: DefaultPoolEnd, Method: security.MethodAES256, Network: domain.NetworkTCPUDP,
+		RequestID: NewID(a.T), ActorID: NewID(a.T)})
 	if err != nil {
 		a.T.Fatal(err)
 	}
 	if err := a.Validator.ValidateNow(context.Background(), id); err != nil {
 		a.T.Fatal(err)
 	}
-	record, err := a.Store.Profile(context.Background(), id)
-	if err != nil || record.Profile.Compatibility != domain.CompatibilityCompatible {
-		a.T.Fatalf("profile = %#v, %v", record.Profile, err)
+	record, err := a.Store.Template(context.Background(), id)
+	if err != nil || record.Template.Compatibility != domain.CompatibilityCompatible {
+		a.T.Fatalf("template = %#v, %v", record.Template, err)
 	}
 	return id
 }
 
-// CreateUser 通过服务层创建用户，返回完整记录（未同步）。
-func (a *App) CreateUser(name string, profileID domain.ID, limit *int64) ports.UserRecord {
+// Listening 判定某端口当前是否被 fake Xray 中的面板入站占用。
+func (a *App) Listening(port int) bool {
 	a.T.Helper()
-	id, _, err := a.Users.CreateUser(context.Background(), application.CreateUserInput{DisplayName: name, ProfileID: profileID,
+	if a.Adapter == nil {
+		a.T.Fatal("Listening requires the fake adapter")
+	}
+	return a.Adapter.Listening(port)
+}
+
+// CreateUser 通过服务层创建用户，返回完整记录（未同步）。
+func (a *App) CreateUser(name string, templateID domain.ID, limit *int64) ports.UserRecord {
+	a.T.Helper()
+	id, _, err := a.Users.CreateUser(context.Background(), application.CreateUserInput{DisplayName: name, TemplateID: templateID,
 		LimitBytes: limit, ResetDay: 1, RequestID: NewID(a.T), ActorID: NewID(a.T)})
 	if err != nil {
 		a.T.Fatal(err)

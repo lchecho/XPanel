@@ -214,29 +214,29 @@ v1.2.0 追加「面板管理入站时 MUST 追加覆盖端口冲突与端口被�
 
 ### 实现
 
-- [ ] T042 [US3] 更新 `internal/application/user_service.go` 的 `SetAdminEnabled`：禁用产出
+- [X] T042 [US3] 更新 `internal/application/user_service.go` 的 `SetAdminEnabled`：禁用产出
   `remove_inbound`、启用产出 `create_inbound` 且复用原端口；启用前仍先检查当前用量是否符合配额
-- [ ] T043 [US3] 更新 `internal/application/user_service.go` 的 `RotateCredential`：轮换 MUST NOT 改变
+- [X] T043 [US3] 更新 `internal/application/user_service.go` 的 `RotateCredential`：轮换 MUST NOT 改变
   端口与入站，仅在既有入站内走 `remove_old` → `add_desired`，端口监听不中断
-- [ ] T044 [US3] 更新 `internal/application/user_service.go` 的 `DeleteUser` 与
+- [X] T044 [US3] 更新 `internal/application/user_service.go` 的 `DeleteUser` 与
   `internal/persistence/sqlite/store_users.go`：移除入站的确认事务内置 `released_at`，端口回到池中，
   历史行与审计保留
-- [ ] T045 [US3] 更新 `internal/application/template_service.go` 的 `UpdateProfile`：端口池被缩小到
+- [X] T045 [US3] 更新 `internal/application/template_service.go` 的 `UpdateProfile`：端口池被缩小到
   不包含既有分配时保存仍成功，返回池外端口清单供界面标识；契约字段变更守卫沿用 001 的
   `superseded_by` 因果链判定
-- [ ] T046 [US3] 更新 `internal/web/templates/pages/profile_detail.html`：标识落在端口池之外的既有分配
+- [X] T046 [US3] 更新 `internal/web/templates/pages/profile_detail.html`：标识落在端口池之外的既有分配
 
 ### 测试
 
-- [ ] T047 [P] [US3] 新建 `tests/integration/lifecycle_inbound_test.go`：禁用/启用复用原端口、
+- [X] T047 [P] [US3] 新建 `tests/integration/lifecycle_inbound_test.go`：禁用/启用复用原端口、
   轮换期间端口持续可连接、删除后端口回池
-- [ ] T048 [P] [US3] 新建 `tests/integration/port_reuse_test.go`：端口被回收后再分配给新用户时，
+- [X] T048 [P] [US3] 新建 `tests/integration/port_reuse_test.go`：端口被回收后再分配给新用户时，
   新用户获得新入站标签、新服务端密钥、新用户密钥与新统计标识，旧连接信息在该端口不可用
-- [ ] T049 [P] [US3] 新建 `tests/integration/template_pool_shrink_test.go`：缩小端口池后既有用户保持
+- [X] T049 [P] [US3] 新建 `tests/integration/template_pool_shrink_test.go`：缩小端口池后既有用户保持
   可用且被标识为池外，新建用户只能落在新池内
-- [ ] T050 [P] [US3] 更新 `internal/web/handlers/users_lifecycle_test.go`：禁用、启用、轮换、删除四条
+- [X] T050 [P] [US3] 更新 `internal/web/handlers/users_lifecycle_test.go`：禁用、启用、轮换、删除四条
   路径的端口与监听状态渲染
-- [ ] T051 [US3] 更新 `tests/e2e/lifecycle_test.go`：生命周期端到端证据覆盖端口维度
+- [X] T051 [US3] 更新 `tests/e2e/lifecycle_test.go`：生命周期端到端证据覆盖端口维度
 
 **Checkpoint**: 用户生命周期的每一步都在端口层面可验证
 

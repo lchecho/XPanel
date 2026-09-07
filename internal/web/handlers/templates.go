@@ -80,7 +80,12 @@ func (h *TemplateHandler) Detail(w http.ResponseWriter, r *http.Request) {
 	}
 	page := h.NewPage(r, "入站模板："+record.Template.Name)
 	page.Version = int64(record.Template.Revision)
-	page.Data = views.NewTemplateView(record, h.Location(r))
+	view := views.NewTemplateView(record, h.Location(r))
+	// 端口池占用与池外分配：缩小端口池后既有用户仍可用，界面必须把这些端口标识出来（FR-009）。
+	if usage, err := h.Service.PortUsage(r.Context(), id); err == nil {
+		view.PortsAssigned, view.PortsRemaining, view.PortsOutside = usage.Assigned, usage.Remaining, usage.Outside
+	}
+	page.Data = view
 	h.Renderer.Page(w, http.StatusOK, "template_detail.html", page)
 }
 

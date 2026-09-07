@@ -9,7 +9,7 @@
   <dt>加密方式</dt><dd>{{.Data.Method}}</dd>
   <dt>网络能力</dt><dd>{{.Data.Network}}</dd>
 </dl>
-{{if .Data.PortsOutside}}<p class="notice">以下已分配端口位于当前端口池之外，既有用户仍可正常使用：{{range .Data.PortsOutside}}{{.}} {{end}}</p>{{end}}
+{{if .Data.PortsOutside}}<p class="notice">以下 {{len .Data.PortsOutside}} 个已分配端口位于当前端口池之外（不计入上面的“已分配”），既有用户仍可正常使用，缩小端口池不会中断他们：{{range .Data.PortsOutside}}{{.}} {{end}}</p>{{end}}
 {{if eq .Data.Compatibility "incompatible"}}<p class="notice">节点不满足要求，等待运维修复后重新验证。该模板下的用户变更会暂停。</p>{{end}}
 {{if eq .Data.Compatibility "unreachable"}}<p class="notice">节点暂时不可达，系统会自动重试验证。</p>{{end}}
 <div class="actions">

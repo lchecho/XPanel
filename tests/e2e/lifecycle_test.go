@@ -87,6 +87,11 @@ func TestLifecycleEndToEnd(t *testing.T) {
 		t.Fatal("rotation changed traffic history or identity")
 	}
 
+	// 轮换期间端口不中断：轮换前后都在监听，且始终是同一个端口。
+	if !app.Listening(port) || app.User(userID).Inbound.Inbound.Port != port {
+		t.Fatalf("rotation changed or stopped port %d", port)
+	}
+
 	// 删除：软删除、移除、名称复用得到新身份。
 	if response, _ = app.PostForm(path+"/delete", path+"/delete", url.Values{"_version": {"4"}}); response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("delete status=%d", response.StatusCode)
@@ -94,6 +99,9 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	app.Drain()
 	if present() {
 		t.Fatal("deleted user still present in fake Xray")
+	}
+	if app.Listening(port) {
+		t.Fatalf("port %d kept listening after deletion", port)
 	}
 	_, body = app.Get("/users")
 	if strings.Contains(body, ">Alice Prime<") {
@@ -116,6 +124,15 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	reused := app.User(domain.ID(strings.TrimPrefix(response.Header.Get("Location"), "/users/")))
 	if reused.User.ID == userID || reused.Identity.StatisticsID == statsID || reused.Cycle.GrossDownlinkBytes != 0 {
 		t.Fatal("recreated user reused the old identity or history")
+	}
+	// 释放的端口回到池中，被新用户以全新入站标签重新占用。
+	if reused.Inbound.Inbound.Port != port || reused.Inbound.Inbound.InboundTag == tag {
+		t.Fatalf("recreated user port=%d tag=%s (previous port=%d tag=%s)", reused.Inbound.Inbound.Port,
+			reused.Inbound.Inbound.InboundTag, port, tag)
+	}
+	app.Drain()
+	if !app.Listening(port) {
+		t.Fatalf("port %d did not come back for the new user", port)
 	}
 	var audits int
 	_ = app.Store.DB().Read.QueryRow(`SELECT count(*) FROM audit_events WHERE target_id=? AND action IN (?,?,?,?,?)`, userID.String(),

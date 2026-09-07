@@ -3,6 +3,7 @@ package handlers_test
 import (
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -17,10 +18,23 @@ func TestUserLifecycleActionsIdempotencyAndConflicts(t *testing.T) {
 	record := app.CreateUser("Alice", templateID, nil)
 	app.Drain()
 	path := "/users/" + record.User.ID.String()
+	port := strconv.Itoa(record.Inbound.Inbound.Port)
 	_, body := app.Get(path)
 	if !strings.Contains(body, `action="`+path+`/disable"`) || !strings.Contains(body, "轮换凭证") || !strings.Contains(body, "删除") {
 		t.Fatalf("detail actions missing: %s", body)
 	}
+	// 四条生命周期路径都必须在详情页反映端口与监听状态。
+	assertListening := func(step, state string) {
+		t.Helper()
+		_, detail := app.Get(path)
+		if !strings.Contains(detail, "<dt>专属端口</dt><dd>"+port+"</dd>") {
+			t.Fatalf("%s: detail lost the port %s: %s", step, port, detail)
+		}
+		if !strings.Contains(detail, "<dt>监听状态</dt><dd>"+state+"</dd>") {
+			t.Fatalf("%s: listening state is not %q: %s", step, state, detail)
+		}
+	}
+	assertListening("created", "监听中")
 
 	requestID := testsupport.NewID(t).String()
 	disable := url.Values{"_request_id": {requestID}, "_version": {"0"}}
@@ -45,11 +59,13 @@ func TestUserLifecycleActionsIdempotencyAndConflicts(t *testing.T) {
 	if !strings.Contains(body, `action="`+path+`/enable"`) || !strings.Contains(body, "手动禁用") {
 		t.Fatalf("detail after disable: %s", body)
 	}
+	assertListening("disabled", "未监听")
 	response, _ = app.PostForm(path+"/enable", path, url.Values{"_version": {"1"}})
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("enable status=%d", response.StatusCode)
 	}
 	app.Drain()
+	assertListening("re-enabled", "监听中")
 
 	response, body = app.Get(path + "/rotate")
 	if response.StatusCode != http.StatusOK || !strings.Contains(body, "旧凭证只有在节点确认移除后才停止接受新连接") {
@@ -72,6 +88,10 @@ func TestUserLifecycleActionsIdempotencyAndConflicts(t *testing.T) {
 	if !strings.Contains(body, "ss://") {
 		t.Fatalf("connection after rotation body=%s", body)
 	}
+	if !strings.Contains(body, ":"+port) {
+		t.Fatalf("connection information does not carry the dedicated port %s: %s", port, body)
+	}
+	assertListening("rotated", "监听中")
 
 	response, body = app.Get(path + "/delete")
 	if response.StatusCode != http.StatusOK || !strings.Contains(body, "软删除") {
@@ -86,6 +106,7 @@ func TestUserLifecycleActionsIdempotencyAndConflicts(t *testing.T) {
 	if !strings.Contains(body, "该用户已删除，页面只读") || strings.Contains(body, `action="`+path+`/enable"`) {
 		t.Fatalf("deleted detail body=%s", body)
 	}
+	assertListening("deleted", "未监听")
 	response, _ = app.PostForm(path+"/enable", path, url.Values{"_version": {"4"}})
 	if response.StatusCode != http.StatusConflict {
 		t.Fatalf("enable on deleted status=%d", response.StatusCode)

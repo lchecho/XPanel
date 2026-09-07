@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	xrayfake "xpanel/internal/adapter/xray/fake"
 	"xpanel/internal/application"
 	"xpanel/internal/domain"
 	"xpanel/internal/ports"
@@ -116,5 +117,50 @@ func TestProfileNonContractFieldsRemainEditable(t *testing.T) {
 	record, _ = app.Store.Profile(context.Background(), profileID)
 	if record.Profile.Name != "Renamed" || record.Profile.PublicHost != "edge.example.com" || record.Profile.Compatibility != domain.CompatibilityCompatible {
 		t.Fatalf("profile after non-contract edit = %#v", record.Profile)
+	}
+}
+
+// T149：未知身份移除永久失败不是安全终结——改 tag 仍被拒绝；Xray 恢复后协调器重新排队并移除，之后才允许改 tag，旧入站无遗留身份。
+func TestProfileContractFrozenAfterPermanentDriftRemovalFailureUntilRecovered(t *testing.T) {
+	app := testsupport.New(t)
+	profileID := app.RegisterCompatibleProfile("Primary")
+	const unknown = "xpanel-77777777-1111-4111-8111-777777777777"
+	app.Adapter.Users[testsupport.ProfileTag] = map[string]ports.RemoteUser{
+		testsupport.BootstrapID: {StatisticsID: testsupport.BootstrapID, Present: true, Kind: "bootstrap"},
+		unknown:                 {StatisticsID: unknown, Present: true, Kind: "managed"},
+	}
+	if summary := app.ReconcileOnce(); summary.RemovedUnknown != 1 {
+		t.Fatalf("reconcile summary = %#v", summary)
+	}
+	app.Adapter.Failures["remove_user"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorUpstreamRejected, Operation: "remove_user",
+		Retryable: false, SafeSummary: "rejected by Xray"}}}
+	app.Drain()
+	var state string
+	_ = app.Store.DB().Read.QueryRow(`SELECT state FROM drift_removals WHERE statistics_id=?`, unknown).Scan(&state)
+	if state != string(domain.SyncPermanentFailed) {
+		t.Fatalf("drift removal state = %s, want permanent_failed", state)
+	}
+	var conflict *domain.ConflictError
+	if err := retagProfile(app, profileID, "managed-next"); !errors.As(err, &conflict) {
+		t.Fatalf("retag after permanent drift failure err = %v, want conflict", err)
+	}
+	if left := managedOnInbound(app, testsupport.ProfileTag); len(left) != 1 {
+		t.Fatalf("identity state on old inbound = %v", left)
+	}
+	// Xray 恢复：协调器再次发现该身份并重新排队，synchronizer 移除后契约字段才可变更。
+	if summary := app.ReconcileOnce(); summary.RemovedUnknown != 1 {
+		t.Fatalf("reconcile after recovery = %#v", summary)
+	}
+	app.Drain()
+	if left := managedOnInbound(app, testsupport.ProfileTag); len(left) != 0 {
+		t.Fatalf("old inbound still has xpanel- identities: %v", left)
+	}
+	if err := retagProfile(app, profileID, "managed-next"); err != nil {
+		t.Fatalf("retag after recovery: %v", err)
+	}
+	var failed, succeeded int
+	_ = app.Store.DB().Read.QueryRow(`SELECT SUM(state='permanent_failed'),SUM(state='succeeded') FROM drift_removals WHERE statistics_id=?`, unknown).Scan(&failed, &succeeded)
+	if failed != 1 || succeeded != 1 {
+		t.Fatalf("drift removals failed=%d succeeded=%d", failed, succeeded)
 	}
 }

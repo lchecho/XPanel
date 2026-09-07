@@ -122,13 +122,16 @@ func (s *Store) UpdateProfile(ctx context.Context, record ports.ProfileRecord, m
 		var currentTag, currentMethod, currentBootstrap string
 		var liveAllocations, openOperations, openRemovals int
 		// 契约字段（inbound_tag/method/bootstrap）只在旧入站上没有任何“可能仍存在”的面板身份时才允许变更：
-		// 未删除用户、已软删除但移除尚未确认 absent 的分配、未终结的同步操作与漂移移除都算在内（FR-006/FR-012/FR-020）。
+		// 未删除用户、已软删除但移除尚未确认 absent 的分配、未终结的同步操作与漂移移除都算在内；
+		// permanent_failed 的漂移移除不算安全终结——身份可能仍在旧入站——直到同一身份之后有一次成功移除（FR-006/FR-012/FR-020）。
 		if err := tx.tx.QueryRowContext(ctx, `SELECT inbound_tag,method,bootstrap_statistics_id,
             (SELECT count(*) FROM access_allocations a JOIN managed_users u ON u.id=a.user_id WHERE a.profile_id=access_profiles.id
                AND (u.deleted_at IS NULL OR a.projection_state<>'absent' OR a.synced_revision<>a.desired_revision OR COALESCE(a.observed_present,0)=1)),
             (SELECT count(*) FROM synchronization_operations o JOIN access_allocations a ON a.id=o.allocation_id
                WHERE a.profile_id=access_profiles.id AND o.state IN ('pending','leased','retry_wait')),
-            (SELECT count(*) FROM drift_removals d WHERE d.profile_id=access_profiles.id AND d.state IN ('pending','leased','retry_wait'))
+            (SELECT count(*) FROM drift_removals d WHERE d.profile_id=access_profiles.id AND (d.state IN ('pending','leased','retry_wait')
+               OR (d.state='permanent_failed' AND NOT EXISTS (SELECT 1 FROM drift_removals s WHERE s.profile_id=d.profile_id
+                   AND s.statistics_id=d.statistics_id AND s.state='succeeded' AND s.created_at>=d.created_at))))
             FROM access_profiles WHERE id=?`, p.ID.String()).Scan(&currentTag, &currentMethod, &currentBootstrap, &liveAllocations, &openOperations, &openRemovals); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return &domain.NotFoundError{Resource: "profile"}

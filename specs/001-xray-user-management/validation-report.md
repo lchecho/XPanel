@@ -48,6 +48,12 @@ Phase 12（2026-09-06，第四轮 converge）补充的收敛证据：
 | T153 辅助会话刷新语义 | `internal/web/middleware/session.go`：既有会话的 idle/flash 刷新失败保留原会话与真实业务响应；`TestMiddlewareSessionCommitFailureLeavesNoPartialState`：设置只提交一次、303、无新 cookie、同 request ID 重放幂等 | 通过 |
 | T154 永久失败意图收敛 | `Store.StaleDriftRemovals` + 协调器重新排队 + synchronizer 确认 absent 审计；`tests/integration/profile_guard_test.go`：移除永久失败 → Xray 重启 → reconcile/drain → 改 inbound tag 成功，旧入站无身份、失败意图已被成功确认 | 通过 |
 
+Phase 13（2026-09-06，第五轮 converge）补充的收敛证据：
+
+| 任务 | 证据 | 结果 |
+|---|---|---|
+| T155 显式因果链 | 迁移 `00003`（`drift_removals.superseded_by`）、`EnqueueDriftRemoval` 同事务取代旧永久失败、守卫与 `StaleDriftRemovals` 不再比较 `created_at`；`TestOldSuccessDoesNotCoverSameMillisecondPermanentFailure`（固定时钟，旧成功与新失败同毫秒）：确认前改 tag/bootstrap 均 409，确认后只解冻一次、旧入站无身份 | 通过 |
+
 ## 2. 发布门禁（T127）
 
 | 步骤 | 命令 | 结果 |
@@ -56,7 +62,7 @@ Phase 12（2026-09-06，第四轮 converge）补充的收敛证据：
 | 静态检查 | `make vet` | 通过（2026-09-04；2026-09-05 复跑通过） |
 | 全量测试 | `make test` | 通过（2026-09-04；2026-09-05 复跑通过，12 个包，含 42 格故障矩阵、CLI 二进制测试与真实 Xray 契约套件） |
 | 竞态检测 | `make test-race` | 通过（2026-09-04；2026-09-05 复跑通过，契约套件在 `-race` 下同样通过） |
-| 固定 Xray 契约套件 | `XRAY_BIN=<path> XPANEL_REQUIRE_CONTRACT=1 make check` | 通过（2026-09-05，`XRAY_BIN` 指向从 `github.com/xtls/xray-core@v1.260327.0` 构建的 `Xray 26.3.27`；`tests/contract/xray` 9 个测试全部通过，`exit=0`；Phase 10、Phase 11、Phase 12 完成后各复跑整条门禁均 `exit=0`） |
+| 固定 Xray 契约套件 | `XRAY_BIN=<path> XPANEL_REQUIRE_CONTRACT=1 make check` | 通过（2026-09-05，`XRAY_BIN` 指向从 `github.com/xtls/xray-core@v1.260327.0` 构建的 `Xray 26.3.27`；`tests/contract/xray` 9 个测试全部通过，`exit=0`；Phase 10、Phase 11、Phase 12、Phase 13 完成后各复跑整条门禁均 `exit=0`） |
 
 ## 3. 真实 Xray 人工验收（T126，待执行）
 

@@ -504,7 +504,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   20 次的 SC-002 P95、SC-010 纯键盘与 360×640/390×844 两个视口的逐流程成功率和观察记录；不得以
   自动化结构检查替代人工结果，也不得在仍为“待执行”时宣称 Phase 完成 per
   SC-001 / SC-002 / SC-010 / T076 / T082 (missing)
-- [ ] T091 解决统计探针实现与 `plan.md` “本功能不新增任何依赖、go.mod/go.sum 零变化”决策的冲突：
+- [X] T091 解决统计探针实现与 `plan.md` “本功能不新增任何依赖、go.mod/go.sum 零变化”决策的冲突：
   优先使用已批准的 Xray Adapter 依赖面实现探针并移除 `github.com/sagernet/sing`、
   `github.com/sagernet/sing-shadowsocks` 的新增直接依赖；若确实无法替代，则必须在 `plan.md` 的 Primary
   Dependencies、Constitution Check 与 Complexity Tracking 中显式记录这两个固定版本依赖的必要性、

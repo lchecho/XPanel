@@ -21,12 +21,30 @@ SQLite 继续作为唯一权威状态，投影范围从“用户列表”扩大�
 
 **Language/Version**: Go `1.26.8`；`go`/`toolchain`、CI 与发布镜像沿用同一补丁基线
 
-**Primary Dependencies**: 与 001 完全一致，本功能不新增任何依赖（已验证 `go.mod`/`go.sum` 零变化）：
-标准库 `net/http`, `html/template`, `embed`, `log/slog`；`github.com/xtls/xray-core@v1.260327.0`；
-`modernc.org/sqlite@v1.58.0`；`github.com/pressly/goose/v3@v3.28.0`；`golang.org/x/crypto@v0.56.0`；
-`github.com/alexedwards/scs/v2@v2.9.0`；`github.com/gorilla/csrf@v1.7.3`；本地嵌入 HTMX `2.0.10`。
+**Primary Dependencies**: 标准库 `net/http`, `html/template`, `embed`, `log/slog`；
+`github.com/xtls/xray-core@v1.260327.0`；`modernc.org/sqlite@v1.58.0`；`github.com/pressly/goose/v3@v3.28.0`；
+`golang.org/x/crypto@v0.56.0`；`github.com/alexedwards/scs/v2@v2.9.0`；`github.com/gorilla/csrf@v1.7.3`；
+本地嵌入 HTMX `2.0.10`。
 运行时入站构建只使用 Adapter 依赖集合内已有的 `core`、`app/proxyman`、`proxy/shadowsocks_2022`、
-`common/net`、`common/protocol`、`common/serial`，明确不引入 `infra/conf`（见 research.md R-001）
+`common/net`、`common/protocol`、`common/serial`，明确不引入 `infra/conf`（见 research.md R-001）。
+
+**依赖决策更正（T085/T091）**：原计划写的是「本功能不新增任何依赖（`go.mod`/`go.sum` 零变化）」。
+用户级统计能力门禁（FR-005）需要在探针入站上产生一次经过 SS2022 身份认证的真实流量才能证实
+（research.md C-007），因此 `internal/adapter/xray/probe.go` 直接引用了
+`github.com/sagernet/sing-shadowsocks@v0.2.7`（`shadowaead_2022`）与 `github.com/sagernet/sing@v0.5.1`
+（`common/buf`、`common/metadata`、`common/network`）。
+
+- **模块图与二进制未变**：这两个模块本来就在 `xray-core` 的依赖图内（SS2022 的实现就出自它们），
+  改动只是把 `go.mod` 里的两行 `// indirect` 提升为直接依赖，**`go.sum` 零变化**，
+  编译进单二进制的代码集合与版本完全相同（`go mod tidy -diff` 无差异，`CGO_ENABLED=0` 构建通过）。
+- **为什么不用 xray-core 自己的出站**：`proxy/shadowsocks_2022.NewClient` + `Outbound.Process` 需要自行
+  搭建 `transport.Link` 管道、`internet.Dialer` 与带出站目标的 session context，代码量更大且深度耦合
+  xray-core 内部结构，跨版本升级更脆弱；而 `shadowaead_2022.NewWithPassword` 是稳定的公开 API，
+  且正是 xray-core 内部使用的同一实现，探针与被测服务端不会出现实现差异。
+- **安全边界**：探针只连接面板自己刚创建的一次性入站，目标是面板自己起的本地回显端口，
+  不产生任何外部流量；使用的服务端/用户密钥随机生成、只存在于内存、用完即随探针入站一并销毁；
+  探针身份每次唯一且不进入任何用户的计量口径。
+- **版本固定**：两个模块与 `xray-core` 同属固定版本集合，升级 Xray 时必须一并复跑契约门禁。
 
 **Storage**: 本地 SQLite，WAL、foreign keys、5 秒 busy timeout、`synchronous=FULL`、嵌入式顺序
 migrations（本功能新增 `00004` 起）；数据库外 root-only 32-byte AEAD 主密钥
@@ -58,7 +76,7 @@ MUST 在 60 秒内完成（SC-006）
 | Gate | Pre-Research | Post-Design | Evidence |
 |---|---|---|---|
 | I. SQLite 是唯一权威状态 | PASS | PASS | 入站、端口分配与用户意图全部落库；Xray 中的入站与用户均为可重建投影，重启后按库中端口分配整体重建 |
-| II. Xray 集成隔离且版本化 | **CONDITIONAL** | PASS | 固定 runtime/module，protobuf 只在 `internal/adapter/xray`，不引入 `infra/conf`；宪章已于 commit `5a5867b` 修订至 v1.2.0 授权并约束面板管理入站生命周期 |
+| II. Xray 集成隔离且版本化 | **CONDITIONAL** | PASS | 固定 runtime/module，protobuf 只在 `internal/adapter/xray`，不引入 `infra/conf`；宪章已于 commit `5a5867b` 修订至 v1.2.0 授权并约束面板管理入站生命周期。能力门禁的 SS2022 探针客户端同样封闭在 `internal/adapter/xray/probe.go`，业务层只看到 `TemplateCapabilities`；新增的两个直接依赖与 xray-core 同属固定版本集合、`go.sum` 未变（见 Primary Dependencies 的依赖决策更正） |
 | III. 流量核算准确且语义诚实 | PASS | PASS | 沿用用户级计数器与 5 秒非破坏性读取；游标与日/周期聚合同事务；软配额文案不变（research.md R-007） |
 | IV. 状态变更幂等且可恢复 | PASS | PASS | 入站创建/移除纳入既有持久化同步操作与租约 fencing；AddInbound 部分失败的补偿路径已显式建模（R-003） |
 | V. 安全与可观测性默认开启 | PASS | PASS | 回环 gRPC、AEAD 密钥、审计与 slog 脱敏；新增端口与入站标签进入审计，服务端密钥改由面板生成不再经管理员输入 |
@@ -162,3 +180,4 @@ tests/
 |---|---|---|
 | 宪章原则 II 需 MINOR 修订以授权面板管理入站生命周期（**已完成**，v1.2.0 / commit `5a5867b`） | 规格的核心价值是每用户独立入站与端口，必须由面板在运行时创建和移除入站；修订前的条文只授权动态用户与统计读取 | 保持共享入站（即 001 模型）无法提供端口级隔离，与本规格的既定目标冲突；由运维为每个用户手工预配置入站则把面板降级为半自动工具，且无法满足 SC-001 的 5 分钟交付与 SC-013 的端口分配保证 |
 | 端口分配引入 SQLite 侧唯一性约束与面板预绑定探测 | 已验证 Xray 不拒绝重复端口且外部占用时仍会留下已注册入站，唯一性与占用检测只能由面板承担 | 依赖 Xray 报错的方案已被实测否定（research.md R-002/R-003） |
+| 统计能力门禁把 `sing-shadowsocks` / `sing` 从间接依赖提升为直接依赖（T085/T091） | 只有在探针入站上产生经过身份认证的真实流量，才能区分「节点开启了用户级统计」与「没开启」——零流量时两者都返回 NotFound（research.md C-007）。漏配 policy 的节点会让所有用户用量恒为零、配额形同虚设，这个门禁不能省 | 用 `xray-core` 自己的 SS2022 出站实现探针需要搭建 `transport.Link`、`internet.Dialer` 与 session context，代码量更大、与 xray-core 内部结构强耦合、跨版本更脆弱；改用事后 `StatsSuspect` 提示已被 T085 否定（它无法阻止用户在漏配节点上被创建）。模块图与 `go.sum` 未变，单二进制内容不变 |

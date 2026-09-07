@@ -82,6 +82,16 @@ SC-001、SC-002、SC-010 的人工验收（T076）待执行。**
 | T087 轮换故障契约 | `internal/worker/synchronizer_rotation_test.go` 覆盖 5 个边界：四次变更 RPC 之前各一次崩溃，外加「四次 RPC 全部成功、ConfirmSync 之前崩溃」（用 store 包装器注入），每个边界都断言确实被命中。`tests/contract/xray/rotation_app_test.go` 用真实 service + synchronizer 驱动真实 Xray，在四次变更 RPC **成功之后**的每个边界崩溃、回收租约、重放：每次 RPC 后校验端口在听且入站有客户端，恢复后以真实 SS2022 握手证明新凭证可用、旧凭证被拒，最终只剩原不可变统计身份、过渡身份不进连接信息、上行计数不回退 | 通过 |
 | T083 契约稳定性 | 端口池基址改到临时端口范围之下并逐个绑定校验，采集断言前用 `convergeAll` 等待全部分配收敛；`XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 go test ./tests/contract/xray -count=1` 连续 5 次全绿，随后整条 `make check` `exit=0`，运行后连续三次 `pgrep` 均无残留 Xray 进程 | 通过 |
 
+### Phase 11（2026-09-07）
+
+| 任务 | 证据 | 结果 |
+|---|---|---|
+| T086 未知客户端对账 | 协调器把专属入站里除期望身份之外的**任何**客户端都按漂移处理（不再看 `xpanel-` 前缀），轮换过渡身份仅在意图开放期间豁免；适配器与 fake 的最后客户端守卫改为「移除后是否还留有受管客户端」，外部身份不算「还有人」。`tests/integration/unknown_identity_test.go`（两类未知身份被清理、只剩未知身份时期望身份被恢复、过渡身份豁免与到期清理）、`tests/contract/xray/inbound_test.go`（真实节点上注入外部身份后可安全清理，且面板无法把入站变成「只剩未知身份」）、`internal/adapter/xray/handler_test.go` | 通过 |
+| T087 轮换故障契约 | 崩溃边界补齐到 5 个（含四次 RPC 全部成功、ConfirmSync 之前）；`tests/contract/xray/rotation_app_test.go` 用真实 service + synchronizer 驱动真实 Xray，在四次变更 RPC 成功后的每个边界崩溃并重放，以真实 SS2022 握手证明新凭证可用、旧凭证被拒 | 通过 |
+| T088 探针方法与网络 | 探针按模板的 Method 与 Network 发送 TCP/UDP 流量，网络取值异常直接报错；每次验证使用全新探针身份并在结束时清零计数。AES-128/AES-256 × tcp/udp/tcp_udp 六组矩阵各断言首次通过、重复通过、探针不残留；三组缺 policy 的回归确保没有组合因未发流量而误通过 | 通过 |
+| T089 能力世代绑定 | 迁移 00007 记录 `validated_boot_epoch`；协调器每轮把纪元不符的兼容模板置回待验证并立即重跑门禁（计入 `Revalidated`）；`CreateUser` 只接受对当前世代验证通过的模板。`tests/integration/capability_generation_test.go` 与 `tests/contract/xray/template_test.go`（同一管理端点重启到缺少 policy 的配置后旧缓存立即失效、新建被拒，恢复后才允许创建） | 通过 |
+| T091 依赖决策 | 统计探针直接引用 `sing-shadowsocks`/`sing`：这两个模块本就在 xray-core 依赖图内，改动只是把 `go.mod` 的 `// indirect` 提升为直接依赖，**`go.sum` 零变化**、`go mod tidy -diff` 无差异、`CGO_ENABLED=0 go build ./cmd/xpanel` 通过（单二进制内容不变）。已在 `plan.md` 的 Primary Dependencies、Constitution Check 与 Complexity Tracking 记录必要性、安全边界与版本固定要求 | 通过 |
+
 ### Phase 10（2026-09-07）
 
 | 任务 | 证据 | 结果 |

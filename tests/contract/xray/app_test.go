@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"strconv"
 	"sync"
@@ -79,13 +80,15 @@ func liveApp(t *testing.T, runtime *liveRuntime) (*testsupport.App, *switchableA
 }
 
 // freePortPool 找一段连续可用端口作为入站模板的端口池；面板会在其中为每个用户分配端口。
+//
+// 基址刻意取在临时端口范围（macOS 为 49152+，Linux 为 32768+）之下：freeAddress 拿到的端口来自
+// 该范围，测试自身的 SOCKS/回显监听也在那里，把池放进去会与它们抢端口，让创建入站偶发
+// port_unavailable。低位区间由内核分配的概率极低，配合逐个绑定校验足以稳定（T083）。
 func freePortPool(t *testing.T, size int) (int, int) {
 	t.Helper()
-	for attempt := 0; attempt < 40; attempt++ {
-		base := portOf(t, freeAddress(t))
-		if base+size > domain.MaxAssignablePort {
-			continue
-		}
+	const lowest, highest = 20000, 39000
+	for attempt := 0; attempt < 60; attempt++ {
+		base := lowest + rand.IntN(highest-lowest-size)
 		listeners := make([]net.Listener, 0, size)
 		ok := true
 		for offset := 0; offset < size; offset++ {
@@ -105,6 +108,43 @@ func freePortPool(t *testing.T, size int) (int, int) {
 	}
 	t.Fatal("could not find a contiguous free port range for the template pool")
 	return 0, 0
+}
+
+// convergeAll 反复推进 synchronizer（必要时把时钟推到下一次重试时刻），直到全部分配都不再 pending。
+//
+// 端口可能被同机其它进程短暂占用，创建入站会得到可恢复的 port_unavailable 并进入有界退避；
+// 断言「21 个采集目标」之前必须等收敛，否则会偶发只看到 20 个（T083）。
+func convergeAll(t *testing.T, app *testsupport.App, records []ports.UserRecord) {
+	t.Helper()
+	for attempt := 0; attempt < 12; attempt++ {
+		_, _ = app.Sync.Drain(context.Background())
+		pending := 0
+		for _, record := range records {
+			if app.User(record.User.ID).Allocation.PendingSync() {
+				pending++
+			}
+		}
+		if pending == 0 {
+			return
+		}
+		var next sql.NullInt64
+		_ = app.Store.DB().Read.QueryRow(`SELECT MIN(CASE WHEN state='retry_wait' THEN next_attempt_at WHEN state='leased' THEN lease_expires_at END)
+            FROM synchronization_operations WHERE state IN ('retry_wait','leased')`).Scan(&next)
+		if next.Valid && next.Int64 > 0 {
+			if at := time.UnixMilli(next.Int64).UTC(); at.After(app.Clock.Now()) {
+				app.Clock.Set(at)
+			}
+		}
+	}
+	unresolved := make([]string, 0, len(records))
+	for _, record := range records {
+		current := app.User(record.User.ID)
+		if current.Allocation.PendingSync() {
+			unresolved = append(unresolved, fmt.Sprintf("%s port=%d err=%s", current.User.DisplayName,
+				current.Inbound.Inbound.Port, current.Allocation.LastSyncErrorCode))
+		}
+	}
+	t.Fatalf("allocations did not converge: %v", unresolved)
 }
 
 // registerLiveTemplate 登记一个入站模板：只有监听地址与端口池，服务端密钥由面板为每条入站自行生成。
@@ -430,7 +470,8 @@ func TestLiveAppBatchedCollectionToleratesQuantizationButDetectsRestart(t *testi
 	for i := 0; i < 21; i++ {
 		records = append(records, app.CreateUser(fmt.Sprintf("Batch %02d", i), templateID, nil))
 	}
-	app.Drain()
+	// 等到 21 条分配全部收敛再开始采集断言：端口偶发被占用时创建会退避重试。
+	convergeAll(t, app, records)
 	for round := 0; round < 3; round++ {
 		time.Sleep(400 * time.Millisecond) // 让相邻批次跨越 uptime 的整秒进位
 		app.Clock.Advance(5 * time.Second)
@@ -476,10 +517,16 @@ func TestLiveAppBatchedCollectionToleratesQuantizationButDetectsRestart(t *testi
 	rows.Close()
 	// 协调 + 同步后用户恢复，下一轮一致并确认重启。
 	app.ReconcileOnce()
-	app.Drain()
+	convergeAll(t, app, records)
 	app.Clock.Advance(5 * time.Second)
 	if summary, err := app.Traffic.CollectOnce(context.Background()); err != nil || summary.Applied != 21 {
 		t.Fatalf("post-restart round: summary=%#v err=%v", summary, err)
 	}
-	_ = records
+	// 重启后按原端口重建：每个用户的端口都保持不变且在监听。
+	for _, record := range records {
+		current := app.User(record.User.ID)
+		if current.Inbound.Inbound.Port != record.Inbound.Inbound.Port || !listening(current.Inbound.Inbound.Port) {
+			t.Fatalf("%s port %d did not come back", current.User.DisplayName, current.Inbound.Inbound.Port)
+		}
+	}
 }

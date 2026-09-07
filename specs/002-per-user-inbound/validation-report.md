@@ -68,7 +68,20 @@ SC-001、SC-002、SC-010 的人工验收（T076）待执行。**
 | 运维文档 | `docs/operations.md` §6（入站与端口运维预期）、§6.1（端口池扩容流程）、§7（00004 破坏性说明与备份演练顺序） | 已更新 |
 | 上手文档 | `README.md`：入站模板 → 兼容性验证 → 创建用户 → 交付连接信息的最小路径 | 已更新 |
 
-## 5. 人工验收（T076，待执行）
+## 5. 收敛轮次（Phase 9，2026-09-07）
+
+| 任务 | 证据 | 结果 |
+|---|---|---|
+| T078 轮换状态机 | 轮换改为单阶段意图（先读实际状态再决策），加回失败时补偿移除整条入站并有界重试；`internal/worker/synchronizer_rotation_test.go` 五个用例（正常轮换、单阶段、补偿、崩溃恢复、坏入站不被误判收敛）每个都断言「不存在没有受管客户端的面板入站」；`tests/contract/xray/rotation_test.go` 在真实节点上证明同 email 无法原地换密钥、先删后加期间端口持续监听、补偿移除后可用同一端口重建 | 通过 |
+| T079 能力门禁 | `ValidateTemplate` 不再忽略探针移除结果，新增 InboundRemovable 硬门禁；不兼容原因经 `views.CompatibilityReasonSentence` 中文化；用户级统计经实测无法在校验期证实（research.md C-005），改为基于证据的提示（有在监听的用户却从未读到计数）。`internal/application/template_service_test.go`、`internal/web/handlers/templates_test.go`、契约 `TestLiveTemplateValidationUsesADisposableProbe` | 通过 |
+| T080 更换端口 | 迁移 00005（新增 port_change 原因，补回 00004 丢失的 idempotency_key 唯一与 UNIQUE(allocation_id, desired_revision)）；`Store.ChangeInboundPort` 单事务完成校验、改端口、写意图与审计；`tests/integration/port_change_test.go` 覆盖成功、三类拒绝无部分状态、重复提交只产生一条意图、并发抢同一端口只有一个成功；handler 测试覆盖 422/409/成功；故障矩阵新增 port_change 列（8×8=64 格全绿） | 通过 |
+| T081 无归属漂移 | 迁移 00006（template_id 可空 + COALESCE 归组的唯一索引）；协调器优先挂模板、无模板时以「无归属」持久化；LeaseDueDriftRemoval 改 LEFT JOIN 且兼容性只约束 identity 类；新增 OrphanStaleDriftRemovals 重排队。`tests/integration/inbound_drift_test.go` 覆盖「零模板」「全归档」两种场景与永久失败后的重排队 | 通过 |
+| T083 契约稳定性 | 端口池基址改到临时端口范围之下并逐个绑定校验，采集断言前用 `convergeAll` 等待全部分配收敛；`XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 go test ./tests/contract/xray -count=1` 连续 5 次全绿，随后整条 `make check` `exit=0`，运行后连续三次 `pgrep` 均无残留 Xray 进程 | 通过 |
+
+实测更正记录见 `research.md` C-004（移除唯一客户端不会让入站退化为服务端密钥可直连）与
+C-005（用户级统计无法在模板校验期证实）。
+
+## 6. 人工验收（T076 / T082，待执行）
 
 按 `quickstart.md` §3 在具备 Xray v26.3.27 的环境执行，并把结果填入下表：
 
@@ -79,5 +92,7 @@ SC-001、SC-002、SC-010 的人工验收（T076）待执行。**
 | SC-010 键盘与移动宽度 100% | 纯键盘以及 360×640、390×844 视口完成登记模板/创建/编辑/禁用/删除 | 待执行（结构性规则已由 `internal/web/handlers/accessibility_test.go` 自动校验） |
 | 端口池扩容与防火墙放行 | `docs/operations.md` §6.1 在真实环境演练 | 待执行 |
 | 备份/恢复 | `docs/operations.md` §2–§3 在真实环境演练 | 待执行（自动化演练见 `tests/integration/backup_restore_test.go`） |
+
+T082 与 T076 是同一件事：按 quickstart §3 完成人工验收后，把计时、P95 与成功率回填上表。
 
 SC-009（首次使用管理员可用性研究）按 spec 定义为发布后研究，不作为实现门禁。

@@ -439,7 +439,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   `specs/002-per-user-inbound/validation-report.md` 回填 SC-001 首次交付计时、SC-002 各类操作至少
   20 次的 P95，以及 SC-010 纯键盘和 360×640、390×844 视口的成功率与观察记录 per
   SC-001 / SC-002 / SC-010 / T076 (missing)
-- [ ] T083 稳定 `tests/contract/xray/app_test.go` 的
+- [X] T083 稳定 `tests/contract/xray/app_test.go` 的
   `TestLiveAppBatchedCollectionToleratesQuantizationButDetectsRestart` 端口准备与同步等待逻辑，使合法的
   临时 `port_unavailable` 不会令 21 用户批量采集断言偶发只看到 20 个目标；重复运行完整
   `XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 make check` 并记录稳定通过证据 per

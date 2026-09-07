@@ -36,6 +36,18 @@ func migrationProvider(db *sql.DB) (*goose.Provider, error) {
 	return provider, nil
 }
 
+// migrateUpTo 迁移到指定版本，仅供迁移测试构造「旧库升级」场景。
+func migrateUpTo(ctx context.Context, db *sql.DB, version int64) error {
+	provider, err := migrationProvider(db)
+	if err != nil {
+		return err
+	}
+	if _, err := provider.UpTo(ctx, version); err != nil {
+		return fmt.Errorf("apply migrations up to %d: %w", version, err)
+	}
+	return nil
+}
+
 // migrateDownTo 回滚到指定版本，仅供迁移测试验证 -- +goose Down 的可执行性。
 func migrateDownTo(ctx context.Context, db *sql.DB, version int64) error {
 	provider, err := migrationProvider(db)

@@ -79,6 +79,9 @@ func (s *TrafficService) CollectOnce(ctx context.Context) (CollectionSummary, er
 			s.recordFailure(ctx, err)
 			return summary, err
 		}
+		if err := s.advanceGeneration(ctx, observation); err != nil {
+			return summary, err
+		}
 		return summary, s.store.MarkInstanceHealthy(ctx, epochString(observation), s.clock.Now())
 	}
 	ids := make([]string, 0, len(targets))
@@ -128,6 +131,9 @@ func (s *TrafficService) CollectOnce(ctx context.Context) (CollectionSummary, er
 	summary.Blocked, summary.Rolled, summary.Restored = result.Blocked, result.Rolled, result.Restored
 	if summary.Blocked+summary.Restored > 0 && s.notify != nil {
 		s.notify()
+	}
+	if err := s.advanceGeneration(ctx, round.Observation); err != nil {
+		return summary, err
 	}
 	if err := s.store.MarkInstanceHealthy(ctx, epochString(round.Observation), s.clock.Now()); err != nil {
 		return summary, err
@@ -203,6 +209,13 @@ func observationMismatch(first, previous, current ports.InstanceObservation) str
 func (s *TrafficService) recordInconsistency(ctx context.Context, cause *InconsistentRoundError) {
 	s.logger.Warn("collection round discarded: inconsistent observations across batches", logging.FieldResult, "retry",
 		logging.FieldErrorKind, "inconsistent_observation", "reason", cause.Reason, "first_boot_epoch", cause.FirstEpoch, "last_boot_epoch", cause.LastEpoch)
+	// 批次之间的重启同样是「已确认的重启」：推进能力世代并把锚点移到最新观测，
+	// 否则实例诊断会一直显示旧纪元，模板的能力证据也不会失效。
+	if observed, err := time.Parse(time.RFC3339, cause.LastEpoch); err == nil {
+		if _, _, err := s.store.AdvanceCapabilityGeneration(ctx, observed, true, domain.CapabilityGenerationTolerance, s.clock.Now()); err != nil {
+			s.logger.Warn("advance capability generation", logging.FieldErrorKind, "internal")
+		}
+	}
 	if err := s.store.MarkInstanceHealthy(ctx, cause.LastEpoch, s.clock.Now()); err != nil {
 		s.logger.Warn("record instance health", logging.FieldErrorKind, "internal")
 	}
@@ -326,6 +339,14 @@ func (s *TrafficService) recordFailure(ctx context.Context, cause error) {
 		s.logger.Warn("record instance health", logging.FieldErrorKind, "internal")
 	}
 	s.logger.Warn("collection round failed", logging.FieldResult, "failed", logging.FieldErrorKind, kind)
+}
+
+// advanceGeneration 让采集路径也参与能力世代推进：它每 5 秒跑一次，比协调周期更早发现重启，
+// 实例的锚点 epoch 因此能及时反映真实状态（锚点由 AdvanceCapabilityGeneration 独占维护）。
+func (s *TrafficService) advanceGeneration(ctx context.Context, observation ports.InstanceObservation) error {
+	_, _, err := s.store.AdvanceCapabilityGeneration(ctx, observation.BootEpoch, observation.BootEpochKnown,
+		domain.CapabilityGenerationTolerance, s.clock.Now())
+	return err
 }
 
 func epochString(observation ports.InstanceObservation) string {

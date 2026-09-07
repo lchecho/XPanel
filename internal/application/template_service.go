@@ -272,6 +272,12 @@ func (s *TemplateService) complete(ctx context.Context, record ports.TemplateRec
 		Reason: reason, ValidatedAt: now, Health: "incompatible", ErrorCode: "incompatible_profile", ErrorSummary: reason}
 	if observation != nil && observation.BootEpochKnown {
 		outcome.BootEpoch = observation.BootEpoch.UTC().Format(time.RFC3339)
+		// 结论绑定当前能力世代：世代只在确认的重启后前进，因此这次验证「属于」哪个 Xray 进程是明确的。
+		generation, _, err := s.store.AdvanceCapabilityGeneration(ctx, observation.BootEpoch, true, domain.CapabilityGenerationTolerance, now)
+		if err != nil {
+			return err
+		}
+		outcome.CapabilityGeneration = generation
 	}
 	switch state {
 	case domain.CompatibilityCompatible:

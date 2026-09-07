@@ -100,6 +100,13 @@ func ApplySample(direction string, cursor TrafficDirectionCursor, sample Traffic
 	return result
 }
 
+// CapabilityGenerationTolerance 是判定「能力世代是否应当前进」时对 boot epoch 差值的容差。
+//
+// uptime 是 uint32 整秒，boot epoch = 观测时刻截断到秒 − uptime，因此同一个进程的两次观测最多相差
+// 一秒；`RestartConfirmed` 用的是「严格大于」，所以一秒容差既能吸收全部量化抖动，
+// 又能识别出「上一次启动之后仅隔两秒的重启」。不要改用采集/协调间隔——那会把十几秒内的重启放过去。
+const CapabilityGenerationTolerance = time.Second
+
 // RestartConfirmed 判定观测到的 boot epoch 是否代表已确认的重启：与存储值相差超过一个采集间隔。
 func RestartConfirmed(stored, observed time.Time, known bool, interval time.Duration) bool {
 	if !known || stored.IsZero() {

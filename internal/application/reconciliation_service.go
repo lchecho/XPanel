@@ -76,12 +76,19 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 	}
 	summary.Reconnected = s.clearDegraded()
 	now := s.clock.Now()
+	// 先推进能力世代（它独占维护锚点 epoch），再记录健康状态，否则健康写入会把锚点覆盖成本轮观测值，
+	// 让「与锚点比较」永远得不出重启结论。
+	generation, _, err := s.store.AdvanceCapabilityGeneration(ctx, observation.BootEpoch, observation.BootEpochKnown, domain.CapabilityGenerationTolerance, now)
+	if err != nil {
+		return summary, err
+	}
 	if err := s.store.MarkInstanceHealthy(ctx, epochString(observation), now); err != nil {
 		return summary, err
 	}
-	// 能力证据绑定当前启动纪元：节点重启（或纪元变化）后，旧的 compatible 结论对新进程不成立，
-	// 必须先置回待验证并重跑门禁，再进入后续对账（FR-005/FR-029）。
-	if stale, err := s.store.InvalidateStaleCapabilityEvidence(ctx, epochString(observation), now); err != nil {
+	// 能力证据绑定能力世代：世代只在**确认的**重启后前进（uptime 一秒容差），
+	// 因此同一进程的量化抖动不会让模板反复失效；一旦前进，旧的 compatible 结论即失效，
+	// 必须先置回待验证并重跑门禁，再进入后续对账（FR-005/FR-029、T094）。
+	if stale, err := s.store.InvalidateStaleCapabilityEvidence(ctx, generation, now); err != nil {
 		return summary, err
 	} else if len(stale) > 0 {
 		summary.Revalidated = len(stale)

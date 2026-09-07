@@ -25,7 +25,8 @@ type Store interface {
 	ArchiveTemplate(context.Context, domain.ID, domain.Revision, time.Time) error
 	SetTemplateCompatibility(context.Context, domain.ID, domain.CompatibilityState, string, time.Time) error
 	CompleteTemplateValidation(context.Context, ValidationOutcome) (bool, error)
-	InvalidateStaleCapabilityEvidence(context.Context, string, time.Time) ([]domain.ID, error)
+	AdvanceCapabilityGeneration(context.Context, time.Time, bool, time.Duration, time.Time) (int64, bool, error)
+	InvalidateStaleCapabilityEvidence(context.Context, int64, time.Time) ([]domain.ID, error)
 	RequestRevalidation(context.Context, domain.ID, domain.Revision, domain.DomainCommand, domain.AuditEvent) (bool, error)
 	// 专属入站与端口分配（data-model.md §dedicated_inbounds）
 	AssignedPorts(context.Context, domain.ID) ([]int, error)
@@ -149,10 +150,12 @@ type ManagedInstanceRecord struct {
 	SupportedRuntimeVersion string
 	HealthState             string
 	BootEpoch               string
-	LastSuccessAt           *time.Time
-	LastErrorCode           string
-	LastErrorSummary        string
-	UpdatedAt               time.Time
+	// CapabilityGeneration 只在确认的重启后前进；模板的兼容性证据绑定它而不是抖动的 boot epoch。
+	CapabilityGeneration int64
+	LastSuccessAt        *time.Time
+	LastErrorCode        string
+	LastErrorSummary     string
+	UpdatedAt            time.Time
 }
 
 // TemplateRecord 是入站模板的持久化表示。模板不再持有服务端密钥——每条专属入站独立生成（FR-004）。
@@ -453,8 +456,10 @@ type ValidationOutcome struct {
 	ValidatedAt      time.Time
 	Health           string
 	BootEpoch        string
-	ErrorCode        string
-	ErrorSummary     string
-	SuccessAt        *time.Time
-	Audit            domain.AuditEvent
+	// CapabilityGeneration 是做出本次结论时的能力世代；只有 compatible 结论才会落库。
+	CapabilityGeneration int64
+	ErrorCode            string
+	ErrorSummary         string
+	SuccessAt            *time.Time
+	Audit                domain.AuditEvent
 }

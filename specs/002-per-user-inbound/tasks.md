@@ -510,3 +510,43 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   Dependencies、Constitution Check 与 Complexity Tracking 中显式记录这两个固定版本依赖的必要性、
   安全边界和单二进制影响。执行 `go mod tidy -diff`、`CGO_ENABLED=0 go build ./cmd/xpanel` 与完整发布
   门禁并更新验证证据 per plan: Primary Dependencies / plan: Constraints (contradicts)
+
+---
+
+## Phase 12: Convergence
+
+- [ ] T092 **CRITICAL** 完成 T086 的“有效受管客户端”和轮换意图边界：把
+  `internal/application/reconciliation_service.go` 的过渡身份豁免从 `HasOpenOperation` 改为只匹配该
+  分配当前未完成且 `reason='rotate'` 的操作，普通 create/disable/reconcile 等未完成意图不得保护遗留
+  safety identity；重构 `ports.RemoveUserCommand`、`internal/adapter/xray/handler.go` 与 fake 的最后客户端
+  守卫，使其只认可该移除对应的精确期望身份/轮换过渡身份配对，不能把任意 `xpanel-` 前缀身份或用户总数
+  当成有效后继。补充 fake、集成和固定 Xray 回归：普通未完成操作期间遗留 safety identity 必须被排队
+  清理；“期望身份 + 前缀内未知身份”和“期望身份 + 前缀外未知身份”两种情况下移除期望身份均被拒绝；
+  开放轮换时精确 safety identity 仍允许保护过渡；任意执行顺序最终都只剩期望身份 per
+  Constitution I/II / FR-019 / FR-029 / T086 (partial)
+- [ ] T093 完成 T088 的真实网络组合与统计清理证据：`internal/adapter/xray/inbound.go` 创建探针入站时
+  必须使用 `probe.Network`，不得继续硬编码 `domain.NetworkTCPUDP`；将
+  `tests/contract/xray/template_test.go` 的缺失 policy 契约扩为 AES-128/AES-256 ×
+  TCP/UDP/tcp_udp 全六组合，并让每个组合都覆盖首次验证、重复验证和缺失 policy。为每次生成的探针身份
+  提供可测试的观察点，逐方向断言验证结束后 uplink/downlink 计数为零且探针入站、端口均已移除；取消或
+  deadline 场景下的清零应使用独立有界清理上下文，不得因原请求已取消而跳过 per
+  FR-005 / FR-040 / T085 / T088 (partial)
+- [X] T094 **CRITICAL** 修正 T089 的能力世代判定和启动迁移门禁：不得用量化 boot epoch 字符串的精确
+  不等直接判定重启，应复用 `domain.RestartConfirmed` 的 uptime/一秒容差或持久化稳定能力世代，证明同一
+  Xray 进程相邻探测的 ±1 秒量化抖动不会反复使模板失效，而真实重启、任务定义中的断线重连或能力世代变化
+  会原子地使旧证据失效并重跑门禁。迁移 `00007`（必要时追加修订迁移）必须把升级前没有
+  `validated_boot_epoch` 的 compatible 模板置回待验证；`UserService.CreateUser` 仅在当前实例世代和模板
+  验证世代都非空且匹配时放行。增加持久化/应用测试覆盖旧库升级、空 epoch 拒绝、同进程量化抖动、同世代
+  重连与真实重启，并保留固定 Xray 缺失/恢复 policy 契约 per FR-005 / FR-029 / T089 (partial)
+- [ ] T095 完成并关闭 T076/T082/T090：严格按 `specs/002-per-user-inbound/quickstart.md` §3 执行人工
+  验收，在 `validation-report.md` 回填 SC-001 从首次登录到复制连接信息的实测时间；登录、搜索、创建、
+  编辑、状态切换各至少 20 次的原始样本或可复核汇总及 P95；纯键盘和 360×640、390×844 两个视口下
+  登记模板、创建、编辑、禁用、删除各流程的成功次数、总次数、成功率与观察记录。完成前不得把自动化
+  accessibility 测试替代人工结论，也不得宣称 Phase 已完成 per
+  SC-001 / SC-002 / SC-010 / T076 / T082 / T090 (missing)
+- [ ] T096 消除 T091 后 `plan.md` 内部仍存在的依赖决策矛盾：更新 Constitution Check 的“技术与运行
+  约束”证据，不得继续写“零新增依赖”，而应与 Primary Dependencies 和 Complexity Tracking 一致，明确
+  两个模块由间接提升为固定版本直接依赖、`go.sum` 与最终单二进制代码集合不变；全篇检索并清除仍把当前
+  决策描述为 `go.mod` 零变化或无新增直接依赖的陈述，再运行 `go mod tidy -diff`、
+  `CGO_ENABLED=0 go build ./cmd/xpanel` 与完整发布门禁并更新验证证据 per
+  plan: Primary Dependencies / plan: Constitution Check / plan: Complexity Tracking / T091 (contradicts)

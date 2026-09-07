@@ -54,13 +54,13 @@ type InboundTemplate struct {
 	Compatibility       CompatibilityState
 	CompatibilityReason string
 	LastValidatedAt     *time.Time
-	// ValidatedBootEpoch 记录通过能力门禁时 Xray 的启动纪元。节点重启后它与当前纪元不符，
-	// 兼容结论即失效——重启后的进程可能换了配置（例如 policy 被去掉），旧结论不能沿用。
-	ValidatedBootEpoch string
-	Revision           Revision
-	ArchivedAt         *time.Time
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// ValidatedGeneration 记录通过能力门禁时的 Xray 能力世代。世代只在**确认的**重启后前进，
+	// 因此不会被 boot epoch 的一秒量化抖动误伤；与当前世代不符即视为证据过期（T094）。
+	ValidatedGeneration int64
+	Revision            Revision
+	ArchivedAt          *time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 func NewInboundTemplate(id, instanceID ID, name, publicHost, listenAddress string, poolStart, poolEnd int,

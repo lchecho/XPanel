@@ -137,3 +137,44 @@ func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
 	}
 	return count > 0
 }
+
+// T094：迁移 00008 必须把升级前通过门禁的模板置回待验证——它们的兼容结论是对「哪个 Xray 进程」
+// 做出的已不可考，没有世代证据就不能继续放行新用户。
+func TestCapabilityGenerationMigrationInvalidatesPreUpgradeEvidence(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	// 先迁到 00007（引入 validated_boot_epoch 的那一版），构造一条「升级前已通过门禁」的模板。
+	if err := migrateUpTo(ctx, db.Write, 7); err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`INSERT INTO managed_xray_instances(id,singleton,name,api_endpoint,supported_runtime_version,health_state,boot_epoch,updated_at) VALUES ('i',1,'i','127.0.0.1:1','v26.3.27','healthy','2026-09-04T12:00:00Z',1)`,
+		`INSERT INTO inbound_templates(id,instance_id,name,normalized_name,public_host,listen_address,port_pool_start,port_pool_end,method,network,compatibility_state,last_validated_at,validated_boot_epoch,revision,created_at,updated_at) VALUES ('t','i','p','p','host','127.0.0.1',30000,30099,'2022-blake3-aes-256-gcm','tcp','compatible',1,'2026-09-04T12:00:00Z',3,1,1)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Write.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Migrate(ctx, db.Write); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	var generation sql.NullInt64
+	var revision int64
+	if err := db.Read.QueryRowContext(ctx, `SELECT compatibility_state,validated_generation,revision FROM inbound_templates WHERE id='t'`).
+		Scan(&state, &generation, &revision); err != nil {
+		t.Fatal(err)
+	}
+	if state != "unverified" || generation.Valid || revision != 4 {
+		t.Fatalf("pre-upgrade template after migration: state=%s generation=%#v revision=%d", state, generation, revision)
+	}
+	var instanceGeneration int64
+	if err := db.Read.QueryRowContext(ctx, `SELECT capability_generation FROM managed_xray_instances WHERE singleton=1`).
+		Scan(&instanceGeneration); err != nil {
+		t.Fatal(err)
+	}
+	if instanceGeneration != 1 {
+		t.Fatalf("instance capability generation after migration = %d, want 1", instanceGeneration)
+	}
+}

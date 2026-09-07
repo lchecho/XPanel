@@ -13,14 +13,16 @@ import (
 
 func (s *Store) ManagedInstance(ctx context.Context) (ports.ManagedInstanceRecord, error) {
 	row := s.db.Read.QueryRowContext(ctx, `SELECT id,name,api_endpoint,supported_runtime_version,health_state,
-        COALESCE(boot_epoch,''),last_success_at,COALESCE(last_error_code,''),COALESCE(last_error_summary,''),updated_at
+        COALESCE(boot_epoch,''),capability_generation,last_success_at,COALESCE(last_error_code,''),
+        COALESCE(last_error_summary,''),updated_at
         FROM managed_xray_instances WHERE singleton=1`)
 	var result ports.ManagedInstanceRecord
 	var id string
 	var success sql.NullInt64
 	var updated int64
 	if err := row.Scan(&id, &result.Name, &result.APIEndpoint, &result.SupportedRuntimeVersion, &result.HealthState,
-		&result.BootEpoch, &success, &result.LastErrorCode, &result.LastErrorSummary, &updated); err != nil {
+		&result.BootEpoch, &result.CapabilityGeneration, &success, &result.LastErrorCode, &result.LastErrorSummary,
+		&updated); err != nil {
 		return result, err
 	}
 	result.ID = domain.ID(id)
@@ -46,10 +48,15 @@ func (s *Store) SetInstanceHealth(ctx context.Context, health, bootEpoch, errorC
 	return nil
 }
 
-// MarkInstanceHealthy 记录一次成功的 Xray 交互；bootEpoch 为空时保留原值。
+// MarkInstanceHealthy 记录一次成功的 Xray 交互。
+//
+// 只在没有锚点时写入 boot_epoch。锚点由 AdvanceCapabilityGeneration 独占维护：
+// boot epoch 由 uint32 整秒 uptime 推算，每轮都用观测值覆盖锚点会让 ±1 秒抖动逐轮累积，
+// 从而既测不出真实重启，也会让能力世代被误判（T094）。
 func (s *Store) MarkInstanceHealthy(ctx context.Context, bootEpoch string, now time.Time) error {
 	_, err := s.db.Write.ExecContext(ctx, `UPDATE managed_xray_instances SET health_state='healthy',
-        boot_epoch=COALESCE(?,boot_epoch),last_success_at=?,last_error_code=NULL,last_error_summary=NULL,updated_at=? WHERE singleton=1`,
+        boot_epoch=CASE WHEN COALESCE(boot_epoch,'')='' THEN ? ELSE boot_epoch END,
+        last_success_at=?,last_error_code=NULL,last_error_summary=NULL,updated_at=? WHERE singleton=1`,
 		nullString(bootEpoch), millis(now), millis(now))
 	return err
 }
@@ -209,7 +216,7 @@ func (s *Store) ArchiveTemplate(ctx context.Context, id domain.ID, revision doma
 
 const templateSelect = `SELECT t.id,t.instance_id,t.name,t.normalized_name,t.public_host,t.listen_address,
     t.port_pool_start,t.port_pool_end,t.method,t.network,t.compatibility_state,COALESCE(t.compatibility_reason,''),
-    t.last_validated_at,t.revision,t.archived_at,t.created_at,t.updated_at,COALESCE(t.validated_boot_epoch,'')
+    t.last_validated_at,t.revision,t.archived_at,t.created_at,t.updated_at,COALESCE(t.validated_generation,0)
     FROM inbound_templates t`
 
 type scanner interface{ Scan(...any) error }
@@ -223,7 +230,7 @@ func scanTemplate(row scanner) (ports.TemplateRecord, error) {
 	err := row.Scan(&id, &instanceID, &record.Template.Name, &record.Template.NormalizedName, &record.Template.PublicHost,
 		&record.Template.ListenAddress, &poolStart, &poolEnd, &record.Template.Method, &record.Template.Network,
 		&record.Template.Compatibility, &record.Template.CompatibilityReason, &validated, &record.Template.Revision,
-		&archived, &created, &updated, &record.Template.ValidatedBootEpoch)
+		&archived, &created, &updated, &record.Template.ValidatedGeneration)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return record, &domain.NotFoundError{Resource: "inbound template"}
@@ -277,15 +284,15 @@ func (s *Store) CompleteTemplateValidation(ctx context.Context, outcome ports.Va
 	applied := false
 	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
 		tx := write.(*txStore)
-		// 兼容结论与它所依据的启动纪元一起落库：不兼容/不可达时清空，避免旧世代的证据被误用。
-		validatedEpoch := ""
-		if outcome.State == domain.CompatibilityCompatible {
-			validatedEpoch = outcome.BootEpoch
+		// 兼容结论与它所依据的能力世代一起落库：不兼容/不可达时清空，避免旧世代的证据被误用。
+		var validatedGeneration any
+		if outcome.State == domain.CompatibilityCompatible && outcome.CapabilityGeneration > 0 {
+			validatedGeneration = outcome.CapabilityGeneration
 		}
 		result, err := tx.tx.ExecContext(ctx, `UPDATE inbound_templates SET compatibility_state=?,compatibility_reason=?,
-            last_validated_at=?,validated_boot_epoch=?,updated_at=?
+            last_validated_at=?,validated_generation=?,updated_at=?
             WHERE id=? AND revision=? AND archived_at IS NULL`, outcome.State, nullString(outcome.Reason),
-			millis(outcome.ValidatedAt), nullString(validatedEpoch), millis(outcome.ValidatedAt),
+			millis(outcome.ValidatedAt), validatedGeneration, millis(outcome.ValidatedAt),
 			outcome.TemplateID.String(), outcome.ExpectedRevision)
 		if err != nil {
 			return err
@@ -294,7 +301,9 @@ func (s *Store) CompleteTemplateValidation(ctx context.Context, outcome ports.Va
 			return nil
 		}
 		applied = true
-		if _, err := tx.tx.ExecContext(ctx, `UPDATE managed_xray_instances SET health_state=?,boot_epoch=COALESCE(?,boot_epoch),
+		// 同上：锚点只在缺失时写入，其余由 AdvanceCapabilityGeneration 维护。
+		if _, err := tx.tx.ExecContext(ctx, `UPDATE managed_xray_instances SET health_state=?,
+            boot_epoch=CASE WHEN COALESCE(boot_epoch,'')='' THEN ? ELSE boot_epoch END,
             last_success_at=COALESCE(?,last_success_at),last_error_code=?,last_error_summary=?,updated_at=? WHERE singleton=1`,
 			outcome.Health, nullString(outcome.BootEpoch), nullTime(outcome.SuccessAt), nullString(outcome.ErrorCode),
 			nullString(outcome.ErrorSummary), millis(outcome.ValidatedAt)); err != nil {
@@ -336,19 +345,59 @@ func (s *Store) RequestRevalidation(ctx context.Context, id domain.ID, expected 
 	return replay, err
 }
 
-// InvalidateStaleCapabilityEvidence 把「兼容结论所依据的启动纪元与当前不符」的模板原子地置回待验证。
+// AdvanceCapabilityGeneration 按「已确认的重启」推进能力世代，并返回当前世代与是否刚刚前进。
+//
+// 只有 domain.RestartConfirmed（uptime 一秒容差）成立时才推进：boot epoch 由 uint32 整秒 uptime 推算，
+// 同一进程相邻两次探测就会有 ±1 秒抖动，用字符串精确不等判定重启会让模板反复失效（T094）。
+// 未确认重启时**不覆盖**已存的锚点 epoch，避免抖动逐轮累积。
+func (s *Store) AdvanceCapabilityGeneration(ctx context.Context, observed time.Time, known bool,
+	tolerance time.Duration, now time.Time) (int64, bool, error) {
+	var generation int64
+	advanced := false
+	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
+		tx := write.(*txStore)
+		var storedEpoch string
+		if err := tx.tx.QueryRowContext(ctx, `SELECT COALESCE(boot_epoch,''),capability_generation
+            FROM managed_xray_instances WHERE singleton=1`).Scan(&storedEpoch, &generation); err != nil {
+			return err
+		}
+		if !known {
+			return nil // 纪元未知时不做任何判断
+		}
+		anchor := time.Time{}
+		if storedEpoch != "" {
+			parsed, err := time.Parse(time.RFC3339, storedEpoch)
+			if err == nil {
+				anchor = parsed
+			}
+		}
+		if !anchor.IsZero() && !domain.RestartConfirmed(anchor, observed, true, tolerance) {
+			return nil // 同一进程的量化抖动：锚点与世代都不动
+		}
+		if !anchor.IsZero() {
+			generation++
+			advanced = true
+		}
+		_, err := tx.tx.ExecContext(ctx, `UPDATE managed_xray_instances SET boot_epoch=?,capability_generation=?,updated_at=?
+            WHERE singleton=1`, observed.UTC().Format(time.RFC3339), generation, millis(now))
+		return err
+	})
+	return generation, advanced, err
+}
+
+// InvalidateStaleCapabilityEvidence 把「兼容结论所依据的能力世代与当前不符」的模板原子地置回待验证。
 //
 // 能力门禁验证的是「这个正在运行的 Xray 进程」；节点重启后配置可能已经变了（例如 policy 被去掉），
 // 旧的 compatible 结论对新进程不成立，必须重跑门禁（FR-005/FR-029）。返回被置回的模板标识。
-func (s *Store) InvalidateStaleCapabilityEvidence(ctx context.Context, currentEpoch string, now time.Time) ([]domain.ID, error) {
-	if currentEpoch == "" {
-		return nil, nil // 纪元未知时不做判断，避免把好模板误判为过期
+func (s *Store) InvalidateStaleCapabilityEvidence(ctx context.Context, generation int64, now time.Time) ([]domain.ID, error) {
+	if generation <= 0 {
+		return nil, nil // 世代未知时不做判断，避免把好模板误判为过期
 	}
 	var stale []domain.ID
 	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
 		tx := write.(*txStore)
 		rows, err := tx.tx.QueryContext(ctx, `SELECT id FROM inbound_templates
-            WHERE archived_at IS NULL AND compatibility_state='compatible' AND COALESCE(validated_boot_epoch,'')<>?`, currentEpoch)
+            WHERE archived_at IS NULL AND compatibility_state='compatible' AND COALESCE(validated_generation,0)<>?`, generation)
 		if err != nil {
 			return err
 		}
@@ -367,9 +416,9 @@ func (s *Store) InvalidateStaleCapabilityEvidence(ctx context.Context, currentEp
 			return nil
 		}
 		_, err = tx.tx.ExecContext(ctx, `UPDATE inbound_templates SET compatibility_state='unverified',
-            compatibility_reason=?,last_validated_at=NULL,validated_boot_epoch=NULL,revision=revision+1,updated_at=?
-            WHERE archived_at IS NULL AND compatibility_state='compatible' AND COALESCE(validated_boot_epoch,'')<>?`,
-			"node restarted; capability gate must run again on the current Xray process", millis(now), currentEpoch)
+            compatibility_reason=?,last_validated_at=NULL,validated_generation=NULL,revision=revision+1,updated_at=?
+            WHERE archived_at IS NULL AND compatibility_state='compatible' AND COALESCE(validated_generation,0)<>?`,
+			"node restarted; capability gate must run again on the current Xray process", millis(now), generation)
 		return err
 	})
 	return stale, err

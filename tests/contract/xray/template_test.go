@@ -215,6 +215,8 @@ func TestLiveCapabilityEvidenceExpiresWhenTheNodeRestartsWithoutStatsPolicy(t *t
 	convergeAll(t, app, []ports.UserRecord{first})
 
 	// 重启到缺少 policy 的配置：管理端点不变，但节点能力变了。
+	// 先等一秒多，让重启前后的 boot epoch 差值明确超过量化容差（uptime 是整秒）。
+	time.Sleep(1100 * time.Millisecond)
 	degraded := baseConfig(apiAddress, operatorAddress)
 	delete(degraded, "policy")
 	runtime.restartWith(t, contractBinary(t), degraded)
@@ -237,6 +239,7 @@ func TestLiveCapabilityEvidenceExpiresWhenTheNodeRestartsWithoutStatsPolicy(t *t
 	}
 
 	// 恢复 policy 并重新验证后才允许创建。
+	time.Sleep(1100 * time.Millisecond)
 	runtime.restartWith(t, contractBinary(t), full)
 	app.Clock.Set(app.Clock.Now().Add(time.Minute))
 	app.ReconcileOnce()
@@ -246,8 +249,9 @@ func TestLiveCapabilityEvidenceExpiresWhenTheNodeRestartsWithoutStatsPolicy(t *t
 	restored, _ := app.Store.Template(context.Background(), templateID)
 	instance, _ := app.Store.ManagedInstance(context.Background())
 	if restored.Template.Compatibility != domain.CompatibilityCompatible ||
-		restored.Template.ValidatedBootEpoch != instance.BootEpoch {
-		t.Fatalf("template after restoring the policy = %#v (instance epoch %q)", restored.Template, instance.BootEpoch)
+		restored.Template.ValidatedGeneration != instance.CapabilityGeneration {
+		t.Fatalf("template after restoring the policy = %#v (instance generation %d)", restored.Template,
+			instance.CapabilityGeneration)
 	}
 	if _, _, err := app.Users.CreateUser(context.Background(), application.CreateUserInput{DisplayName: "Allowed",
 		TemplateID: templateID, ResetDay: 1, RequestID: testsupport.NewID(t), ActorID: app.AdminID}); err != nil {

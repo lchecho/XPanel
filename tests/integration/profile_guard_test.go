@@ -215,3 +215,91 @@ func TestPermanentDriftRemovalFailureConvergesAfterExternalRemoval(t *testing.T)
 		t.Fatalf("confirmation re-queued after convergence: %#v", summary)
 	}
 }
+
+// T155：固定时钟下“旧移除成功 → 身份重现 → 同毫秒新移除永久失败”：旧成功不得被误认成后续确认，
+// 契约字段在真正的后续可租约确认前一律拒绝；确认后只解冻一次且旧入站无遗留身份。
+func TestOldSuccessDoesNotCoverSameMillisecondPermanentFailure(t *testing.T) {
+	app := testsupport.New(t)
+	profileID := app.RegisterCompatibleProfile("Primary")
+	const unknown = "xpanel-55555555-1111-4111-8111-555555555555"
+	appear := func() {
+		app.Adapter.Users[testsupport.ProfileTag] = map[string]ports.RemoteUser{
+			testsupport.BootstrapID: {StatisticsID: testsupport.BootstrapID, Present: true, Kind: "bootstrap"},
+			unknown:                 {StatisticsID: unknown, Present: true, Kind: "managed"},
+		}
+	}
+	// 旧成功：时钟固定，本测试中所有记录的 created_at 都是同一毫秒。
+	appear()
+	app.ReconcileOnce()
+	app.Drain()
+	var succeeded int
+	_ = app.Store.DB().Read.QueryRow(`SELECT count(*) FROM drift_removals WHERE statistics_id=? AND state='succeeded'`, unknown).Scan(&succeeded)
+	if succeeded != 1 {
+		t.Fatalf("initial removal succeeded = %d", succeeded)
+	}
+	// 身份重现，新移除在同一毫秒永久失败。
+	appear()
+	if summary := app.ReconcileOnce(); summary.RemovedUnknown != 1 {
+		t.Fatalf("reconcile after reappearance = %#v", summary)
+	}
+	app.Adapter.Failures["remove_user"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorUpstreamRejected, Operation: "remove_user",
+		Retryable: false, SafeSummary: "rejected by Xray"}}}
+	app.Drain()
+	var distinctCreated int
+	_ = app.Store.DB().Read.QueryRow(`SELECT count(DISTINCT created_at) FROM drift_removals WHERE statistics_id=?`, unknown).Scan(&distinctCreated)
+	if distinctCreated != 1 {
+		t.Fatalf("test premise broken: created_at values = %d, want all in the same millisecond", distinctCreated)
+	}
+	var conflict *domain.ConflictError
+	for _, attempt := range []func() error{
+		func() error { return retagProfile(app, profileID, "managed-next") },
+		func() error {
+			record, _ := app.Store.Profile(context.Background(), profileID)
+			p := record.Profile
+			return app.Profiles.UpdateProfile(context.Background(), profileID, application.ProfileInput{Name: p.Name, InboundTag: p.InboundTag, PublicHost: p.PublicHost,
+				PublicPort: p.PublicPort, Method: p.Method, Network: p.Network, BootstrapStatisticsID: "bootstrap-other",
+				ExpectedRevision: p.Revision, RequestID: testsupport.NewID(t), ActorID: app.AdminID})
+		},
+	} {
+		if err := attempt(); !errors.As(err, &conflict) {
+			t.Fatalf("contract change accepted while a permanent failure is unsuperseded: %v", err)
+		}
+	}
+	stale, err := app.Store.StaleDriftRemovals(context.Background(), profileID)
+	if err != nil || len(stale) != 1 || stale[0].StatisticsID != unknown {
+		t.Fatalf("stale removals = %#v, %v", stale, err)
+	}
+	// 真正的后续可租约确认：身份仍在 → 协调器重新排队（显式取代旧失败）→ synchronizer 移除成功。
+	if summary := app.ReconcileOnce(); summary.RemovedUnknown != 1 || summary.ConfirmedAbsent != 0 {
+		t.Fatalf("reconcile for confirmation = %#v", summary)
+	}
+	var supersededBy string
+	_ = app.Store.DB().Read.QueryRow(`SELECT COALESCE(superseded_by,'') FROM drift_removals WHERE statistics_id=? AND state='permanent_failed'`, unknown).Scan(&supersededBy)
+	if supersededBy == "" {
+		t.Fatal("new intent did not explicitly supersede the permanent failure")
+	}
+	if err := retagProfile(app, profileID, "managed-next"); !errors.As(err, &conflict) {
+		t.Fatalf("contract change accepted while the confirming intent is still open: %v", err)
+	}
+	app.Drain()
+	if left := managedOnInbound(app, testsupport.ProfileTag); len(left) != 0 {
+		t.Fatalf("old inbound still has identities: %v", left)
+	}
+	if stale, _ := app.Store.StaleDriftRemovals(context.Background(), profileID); len(stale) != 0 {
+		t.Fatalf("stale removals after confirmation = %#v", stale)
+	}
+	if err := retagProfile(app, profileID, "managed-next"); err != nil {
+		t.Fatalf("retag after confirmation: %v", err)
+	}
+	// 只解冻一次：之后的协调不再重新排队，也没有新的意图记录。
+	var total int
+	_ = app.Store.DB().Read.QueryRow(`SELECT count(*) FROM drift_removals WHERE statistics_id=?`, unknown).Scan(&total)
+	if summary := app.ReconcileOnce(); summary.ConfirmedAbsent != 0 || summary.RemovedUnknown != 0 {
+		t.Fatalf("reconcile after unfreeze = %#v", summary)
+	}
+	var after int
+	_ = app.Store.DB().Read.QueryRow(`SELECT count(*) FROM drift_removals WHERE statistics_id=?`, unknown).Scan(&after)
+	if total != 3 || after != total {
+		t.Fatalf("drift removal rows = %d → %d, want 3 (success, failure, confirmation) with no further intents", total, after)
+	}
+}

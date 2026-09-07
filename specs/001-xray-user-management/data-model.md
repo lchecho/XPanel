@@ -404,8 +404,13 @@ synchronizer 在事务外串行执行、读后写确认、有界退避重试并�
 | `lease_owner` / `lease_expires_at` | text / timestamp nullable | 有限租约 |
 | `last_error_code` / `last_error_summary` | text nullable | 稳定且脱敏 |
 | `created_at` / `completed_at` | timestamp | 后者可空 |
+| `superseded_by` | UUID nullable | 迁移 `00003`：同一 profile/identity 排队新意图时，此前 `permanent_failed` 记录指向新意图的 id（显式因果链） |
 
 部分唯一索引 `(profile_id, statistics_id) WHERE state IN ('pending','leased','retry_wait')` 保证协调重放不产生重复意图。
+
+`permanent_failed` 且 `superseded_by IS NULL` 的记录冻结 profile 契约字段（inbound_tag/method/bootstrap）；
+只有被后续意图显式取代且该意图确认 absent/succeeded 后才解冻。判定不依赖 `created_at` 的时间比较：
+旧的成功记录即使与新失败同毫秒也不能被视为后续确认。
 
 ### AuditEvent
 

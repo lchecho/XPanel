@@ -1,8 +1,9 @@
 {{define "users_list.html"}}{{template "head" .}}
 <body>{{template "nav" .}}<main><h1>用户</h1>{{template "messages" .}}
 <form method="get" action="/users" class="filters" aria-label="搜索与筛选">
-  <label for="q">按名称搜索</label>
-  <input id="q" name="q" value="{{.Data.Query}}">
+  <label for="q">按名称或端口搜索</label>
+  <input id="q" name="q" value="{{.Data.Query}}" aria-describedby="q-hint">
+  <span id="q-hint" class="hint">输入名称的一部分，或输入完整端口号从端口反查用户。</span>
   <label for="status">状态</label>
   <select id="status" name="status">{{$current := .Data.Status}}{{range .Data.Statuses}}<option value="{{.Value}}"{{if eq .Value $current}} selected{{end}}>{{.Label}}</option>{{end}}</select>
   <label><input type="checkbox" name="deleted" value="1"{{if .Data.IncludeDeleted}} checked{{end}}> 包含已删除</label>

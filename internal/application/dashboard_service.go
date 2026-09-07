@@ -39,8 +39,13 @@ type DashboardSummary struct {
 	StuckSync        int
 	Deleted          int
 	AccountedBytes   int64
-	Failed           []ports.FailedOperationRecord
-	GeneratedAt      time.Time
+	// 端口池占用（FR-035）：跨全部未归档模板汇总，Outside 为落在各自池外的既有分配数。
+	PortsCapacity  int
+	PortsAssigned  int
+	PortsRemaining int
+	PortsOutside   int
+	Failed         []ports.FailedOperationRecord
+	GeneratedAt    time.Time
 }
 
 func (s *DashboardService) Summary(ctx context.Context) (DashboardSummary, error) {
@@ -83,6 +88,20 @@ func (s *DashboardService) Summary(ctx context.Context) (DashboardSummary, error
 			}
 		}
 		summary.AccountedBytes += record.Cycle.AccountedUplinkBytes + record.Cycle.AccountedDownlinkBytes
+	}
+	templates, err := s.store.Templates(ctx, false)
+	if err != nil {
+		return summary, err
+	}
+	for _, template := range templates {
+		usage, err := s.store.PortPoolUsage(ctx, template.Template.ID)
+		if err != nil {
+			return summary, err
+		}
+		summary.PortsCapacity += usage.Capacity
+		summary.PortsAssigned += usage.Assigned
+		summary.PortsRemaining += usage.Remaining
+		summary.PortsOutside += len(usage.Outside)
 	}
 	summary.Failed, err = s.store.FailedOperations(ctx, 5)
 	return summary, err

@@ -34,7 +34,9 @@ func NewDashboardView(summary application.DashboardSummary, location *time.Locat
 		LastCollectionAt: views.FormatTime(summary.LastCollectionAt, location), Stale: summary.Stale,
 		GeneratedAt: views.FormatTimeValue(summary.GeneratedAt, location), TotalUsers: summary.TotalUsers, Active: summary.Active,
 		Disabled: summary.Disabled, QuotaExceeded: summary.QuotaExceeded, Pending: summary.Pending, StuckSync: summary.StuckSync, Deleted: summary.Deleted,
-		AccountedText: views.FormatBytes(summary.AccountedBytes), Failed: views.NewFailedOperationViews(summary.Failed, location)}
+		AccountedText: views.FormatBytes(summary.AccountedBytes), PortsCapacity: summary.PortsCapacity, PortsAssigned: summary.PortsAssigned,
+		PortsRemaining: summary.PortsRemaining, PortsOutside: summary.PortsOutside,
+		Failed: views.NewFailedOperationViews(summary.Failed, location)}
 }
 
 // FragmentHandler 提供 HTMX 轮询的只读 fragment；不含布局、不调用 Xray。

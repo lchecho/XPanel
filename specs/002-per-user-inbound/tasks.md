@@ -251,20 +251,20 @@ v1.2.0 追加「面板管理入站时 MUST 追加覆盖端口冲突与端口被�
 
 ### 实现
 
-- [ ] T052 [US4] 更新 `internal/application/dashboard_service.go`：汇总新增端口池已分配数、池容量与
+- [X] T052 [US4] 更新 `internal/application/dashboard_service.go`：汇总新增端口池已分配数、池容量与
   剩余可分配数
-- [ ] T053 [P] [US4] 更新 `internal/persistence/sqlite/store_users.go` 的 `ListUsers` 与
+- [X] T053 [P] [US4] 更新 `internal/persistence/sqlite/store_users.go` 的 `ListUsers` 与
   `internal/ports/store.go` 的 `UserFilter`：支持按端口搜索
-- [ ] T054 [P] [US4] 更新 `internal/web/templates/pages/users_list.html` 与
+- [X] T054 [P] [US4] 更新 `internal/web/templates/pages/users_list.html` 与
   `internal/web/templates/fragments/users-table.html`：新增端口列与监听状态列
-- [ ] T055 [P] [US4] 更新 `internal/web/templates/pages/dashboard.html` 与
+- [X] T055 [P] [US4] 更新 `internal/web/templates/pages/dashboard.html` 与
   `internal/web/templates/fragments/dashboard-summary.html`：展示端口池使用情况
 
 ### 测试
 
-- [ ] T056 [P] [US4] 更新 `internal/web/handlers/users_list_test.go`：按端口搜索与端口列渲染
-- [ ] T057 [P] [US4] 更新 `internal/web/handlers/dashboard_test.go`：端口池使用情况渲染与局部刷新
-- [ ] T058 [US4] 更新 `tests/e2e/dashboard_test.go`：端口维度的可观测性端到端证据
+- [X] T056 [P] [US4] 更新 `internal/web/handlers/users_list_test.go`：按端口搜索与端口列渲染
+- [X] T057 [P] [US4] 更新 `internal/web/handlers/dashboard_test.go`：端口池使用情况渲染与局部刷新
+- [X] T058 [US4] 更新 `tests/e2e/dashboard_test.go`：端口维度的可观测性端到端证据
 
 **Checkpoint**: 管理员可以从界面判断端口分配与入站健康
 

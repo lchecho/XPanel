@@ -106,3 +106,38 @@ func TestFragmentsAreLayoutFreeStaleAwareAndNeverCallXray(t *testing.T) {
 		t.Fatalf("users page does not preserve filters in the fragment URL: %s", body)
 	}
 }
+
+// FR-035：仪表盘展示端口池使用情况，并随创建/删除在局部刷新中更新。
+func TestDashboardShowsPortPoolUsage(t *testing.T) {
+	app := testsupport.New(t)
+	app.Login()
+	_, body := app.Get("/")
+	if !strings.Contains(body, "尚未登记入站模板") {
+		t.Fatalf("zero-state port pool section missing: %s", body)
+	}
+	templateID := app.RegisterTemplateWithPool("Primary", 36000, 36001)
+	record := app.CreateUser("Alice", templateID, nil)
+	app.Drain()
+	_, body = app.Get("/")
+	if !strings.Contains(body, "<dt>池容量</dt><dd>2</dd>") || !strings.Contains(body, "<dt>已分配</dt><dd>1</dd>") ||
+		!strings.Contains(body, "<dt>剩余可分配</dt><dd>1</dd>") {
+		t.Fatalf("port pool usage missing from the dashboard: %s", body)
+	}
+	// 池被占满时局部刷新给出耗尽提示。
+	app.CreateUser("Bob", templateID, nil)
+	app.Drain()
+	_, body = app.Get("/fragments/dashboard-summary")
+	if !strings.Contains(body, "<dt>剩余可分配</dt><dd>0 <span") || !strings.Contains(body, "端口池已耗尽") {
+		t.Fatalf("exhausted pool is not reported in the fragment: %s", body)
+	}
+	// 删除释放端口后剩余数回升。
+	if _, err := app.Users.DeleteUser(context.Background(), application.LifecycleInput{ID: record.User.ID,
+		ExpectedRevision: app.User(record.User.ID).User.Revision, RequestID: testsupport.NewID(t), ActorID: app.AdminID}); err != nil {
+		t.Fatal(err)
+	}
+	app.Drain()
+	_, body = app.Get("/fragments/dashboard-summary")
+	if !strings.Contains(body, "<dt>剩余可分配</dt><dd>1</dd>") || strings.Contains(body, "端口池已耗尽") {
+		t.Fatalf("released port is not reflected in the fragment: %s", body)
+	}
+}

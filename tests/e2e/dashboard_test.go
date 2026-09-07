@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -34,12 +35,27 @@ func TestDashboardEndToEnd(t *testing.T) {
 			t.Fatalf("dashboard missing %q: %s", want, body)
 		}
 	}
-	// 无脚本路径：整页已包含完整汇总与表格数据。
+	// 端口维度的可观测性：池容量、已分配与剩余可分配，三者随分配变化（FR-035）。
+	capacity := testsupport.DefaultPoolEnd - testsupport.DefaultPoolStart + 1
+	for _, want := range []string{"<dt>池容量</dt><dd>" + strconv.Itoa(capacity) + "</dd>", "<dt>已分配</dt><dd>3</dd>",
+		"<dt>剩余可分配</dt><dd>" + strconv.Itoa(capacity-3) + "</dd>"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard port pool missing %q: %s", want, body)
+		}
+	}
+	// 无脚本路径：整页已包含完整汇总与表格数据，含每个用户的端口与监听状态。
 	_, body = app.Get("/users")
-	for _, want := range []string{"Alice", "Bob", "Carol", "配额超限", "手动禁用", "4 KiB"} {
+	alicePort := strconv.Itoa(app.User(alice.User.ID).Inbound.Inbound.Port)
+	for _, want := range []string{"Alice", "Bob", "Carol", "配额超限", "手动禁用", "4 KiB",
+		`<td data-label="端口">` + alicePort + `</td>`, `<td data-label="监听">监听中</td>`, `<td data-label="监听">未监听</td>`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("users page missing %q: %s", want, body)
 		}
+	}
+	// 从端口反查用户。
+	_, body = app.Get("/users?q=" + alicePort)
+	if !strings.Contains(body, "Alice") || strings.Contains(body, ">Bob<") {
+		t.Fatalf("port lookup returned the wrong rows: %s", body)
 	}
 	// 采集失败：最后确认值保留并标记陈旧，最近故障可见。
 	app.Adapter.Available = false

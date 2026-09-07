@@ -24,7 +24,12 @@ type DashboardView struct {
 	StuckSync        int
 	Deleted          int
 	AccountedText    string
-	Failed           []FailedOperationView
+	// 端口池占用（FR-035）：跨全部未归档模板汇总。
+	PortsCapacity  int
+	PortsAssigned  int
+	PortsRemaining int
+	PortsOutside   int
+	Failed         []FailedOperationView
 }
 
 type FailedOperationView struct {

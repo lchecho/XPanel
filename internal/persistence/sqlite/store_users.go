@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -243,14 +244,17 @@ func setBool(target **bool, source sql.NullInt64) {
 }
 
 // ListUsers 按规范化名称模糊匹配并可按派生状态筛选；状态判定在 Go 中完成（≤20 用户）。
+// ListUsers 按名称或端口检索（FR-014）：纯数字的查询同时匹配专属端口，便于从端口反查用户。
 func (s *Store) ListUsers(ctx context.Context, filter ports.UserFilter) ([]ports.UserRecord, error) {
-	query := userSelect + ` WHERE (? = '' OR u.normalized_name LIKE ?) AND (? = 1 OR u.deleted_at IS NULL) ORDER BY u.normalized_name, u.id`
+	query := userSelect + ` WHERE (? = '' OR u.normalized_name LIKE ? OR (? != 0 AND d.port = ?))
+        AND (? = 1 OR u.deleted_at IS NULL) ORDER BY u.normalized_name, u.id`
 	normalized, _ := domain.NormalizeDisplayName(filter.Query)
 	pattern := "%" + strings.ReplaceAll(strings.ReplaceAll(normalized, "%", ""), "_", "") + "%"
 	if strings.TrimSpace(filter.Query) == "" {
 		normalized = ""
 	}
-	rows, err := s.db.Read.QueryContext(ctx, query, normalized, pattern, boolInt(filter.IncludeDeleted))
+	port, _ := strconv.Atoi(strings.TrimSpace(filter.Query))
+	rows, err := s.db.Read.QueryContext(ctx, query, normalized, pattern, port, port, boolInt(filter.IncludeDeleted))
 	if err != nil {
 		return nil, err
 	}

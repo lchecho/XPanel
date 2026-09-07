@@ -20,6 +20,16 @@
   <dt>当期总流量</dt><dd>{{.Data.AccountedText}}</dd>
 </dl>{{end}}
 </section>
+<section aria-labelledby="ports-heading">
+<h2 id="ports-heading">端口池</h2>
+{{if eq .Data.PortsCapacity 0}}<p class="empty">尚未登记入站模板，因此还没有可分配的端口。<a href="/templates/new">登记入站模板</a>。</p>{{else}}
+<dl>
+  <dt>池容量</dt><dd>{{.Data.PortsCapacity}}</dd>
+  <dt>已分配</dt><dd>{{.Data.PortsAssigned}}</dd>
+  <dt>剩余可分配</dt><dd>{{.Data.PortsRemaining}}{{if eq .Data.PortsRemaining 0}} <span class="badge error">端口池已耗尽</span>{{end}}</dd>
+  {{if .Data.PortsOutside}}<dt>池外分配</dt><dd>{{.Data.PortsOutside}} <span class="badge">端口池缩小后仍在使用</span></dd>{{end}}
+</dl>{{end}}
+</section>
 <section aria-labelledby="sync-heading">
 <h2 id="sync-heading">最近同步结果</h2>
 {{if not .Data.Failed}}<p>没有等待重试或失败的同步操作。</p>{{else}}

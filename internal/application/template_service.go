@@ -237,7 +237,8 @@ func (s *TemplateService) RunValidation(ctx context.Context, id domain.ID) error
 			"port pool is exhausted; free a port or widen the range before validating", &observation, now)
 	}
 	capabilities, err := s.adapter.ValidateTemplate(ctx, ports.TemplateProbe{TemplateID: id,
-		ListenAddress: record.Template.ListenAddress, ProbePort: probePort, Method: record.Template.Method})
+		ListenAddress: record.Template.ListenAddress, ProbePort: probePort, Method: record.Template.Method,
+		Network: record.Template.Network})
 	if err != nil {
 		state := domain.CompatibilityIncompatible
 		var adapterErr *ports.AdapterError

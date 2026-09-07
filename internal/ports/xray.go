@@ -50,6 +50,9 @@ type TemplateProbe struct {
 	ListenAddress string
 	ProbePort     int
 	Method        string
+	// Network 必须与模板一致：探针要按模板实际会用的网络能力发送流量，
+	// 否则「tcp_udp 模板只验证了 TCP」这种缺口不会被发现（FR-005）。
+	Network domain.Network
 }
 
 // InboundClient 是专属入站内唯一的受管客户端。

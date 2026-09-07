@@ -56,7 +56,8 @@ func TestKnownSS2022ConfigurationFailuresAndEmptyClientRejection(t *testing.T) {
 func TestLiveTemplateValidationUsesADisposableProbe(t *testing.T) {
 	runtime := startRuntime(t)
 	templateID := testsupport.NewID(t)
-	probe := ports.TemplateProbe{TemplateID: templateID, ListenAddress: listenAddress, ProbePort: freePort(t), Method: security.MethodAES256}
+	probe := ports.TemplateProbe{TemplateID: templateID, ListenAddress: listenAddress, ProbePort: freePort(t),
+		Method: security.MethodAES256, Network: domain.NetworkTCPUDP}
 	capabilities, err := runtime.client.ValidateTemplate(context.Background(), probe)
 	if err != nil || !capabilities.Compatible() {
 		t.Fatalf("template capabilities = %#v, %v\n%s", capabilities, err, runtime.diagnostics())
@@ -80,7 +81,8 @@ func TestLiveTemplateValidationUsesADisposableProbe(t *testing.T) {
 	}
 	// 不支持的加密方法在不接触节点的前提下判为不兼容。
 	unsupported, err := runtime.client.ValidateTemplate(context.Background(),
-		ports.TemplateProbe{TemplateID: templateID, ListenAddress: listenAddress, ProbePort: freePort(t), Method: "aes-128-gcm"})
+		ports.TemplateProbe{TemplateID: templateID, ListenAddress: listenAddress, ProbePort: freePort(t),
+			Method: "aes-128-gcm", Network: domain.NetworkTCPUDP})
 	if err != nil || unsupported.Compatible() || unsupported.MethodSupported {
 		t.Fatalf("unsupported method capabilities = %#v, %v", unsupported, err)
 	}
@@ -99,7 +101,7 @@ func TestLiveTemplateValidationRejectsNodesWithoutUserTrafficStats(t *testing.T)
 	runtime.operator, runtime.operatorPort = operatorAddress, portOf(t, operatorAddress)
 
 	probe := ports.TemplateProbe{TemplateID: testsupport.NewID(t), ListenAddress: listenAddress,
-		ProbePort: freePort(t), Method: security.MethodAES256}
+		ProbePort: freePort(t), Method: security.MethodAES256, Network: domain.NetworkTCPUDP}
 	capabilities, err := runtime.client.ValidateTemplate(context.Background(), probe)
 	if err != nil {
 		t.Fatalf("validation against a node without the policy failed outright: %v\n%s", err, runtime.diagnostics())
@@ -126,5 +128,66 @@ func TestLiveTemplateValidationRejectsNodesWithoutUserTrafficStats(t *testing.T)
 		if inbound.PanelManaged {
 			t.Fatalf("probe inbound survived validation: %#v", inbound)
 		}
+	}
+}
+
+// T088：能力门禁必须按模板实际的加密方式与网络能力做探测，而不是硬编码一种组合。
+// 每个组合都跑「有 policy 通过 / 无 policy 判不兼容 / 重复验证仍然通过」三种情形。
+func TestLiveTemplateValidationMatrixAcrossMethodsAndNetworks(t *testing.T) {
+	for _, method := range []string{security.MethodAES128, security.MethodAES256} {
+		for _, network := range []domain.Network{domain.NetworkTCP, domain.NetworkUDP, domain.NetworkTCPUDP} {
+			t.Run(method+"/"+string(network), func(t *testing.T) {
+				runtime := startRuntime(t)
+				probe := func() ports.TemplateProbe {
+					return ports.TemplateProbe{TemplateID: testsupport.NewID(t), ListenAddress: listenAddress,
+						ProbePort: freePort(t), Method: method, Network: network}
+				}
+				capabilities, err := runtime.client.ValidateTemplate(context.Background(), probe())
+				if err != nil || !capabilities.Compatible() {
+					t.Fatalf("capabilities = %#v, %v\n%s", capabilities, err, runtime.diagnostics())
+				}
+				// 重复验证必须同样通过：探针身份每次都是新的，不会被上一次的残留计数影响，
+				// 也不会因为残留计数而在缺少 policy 时误判为通过。
+				repeat, err := runtime.client.ValidateTemplate(context.Background(), probe())
+				if err != nil || !repeat.Compatible() {
+					t.Fatalf("repeat validation = %#v, %v", repeat, err)
+				}
+				// 探针入站与端口都不残留。
+				inbounds, err := runtime.client.ListInbounds(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, inbound := range inbounds {
+					if inbound.PanelManaged {
+						t.Fatalf("probe inbound survived: %#v", inbound)
+					}
+				}
+			})
+		}
+	}
+}
+
+// T088：缺少 policy 时，每种方法与网络组合都必须判为不兼容——不能因为某个组合没发流量而误通过。
+func TestLiveTemplateValidationMatrixRejectsMissingPolicy(t *testing.T) {
+	for _, network := range []domain.Network{domain.NetworkTCP, domain.NetworkUDP, domain.NetworkTCPUDP} {
+		t.Run(string(network), func(t *testing.T) {
+			apiAddress, operatorAddress := freeAddress(t), freeAddress(t)
+			config := baseConfig(apiAddress, operatorAddress)
+			delete(config, "policy")
+			runtime, err := launchRuntime(t, apiAddress, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime.operator, runtime.operatorPort = operatorAddress, portOf(t, operatorAddress)
+			capabilities, err := runtime.client.ValidateTemplate(context.Background(), ports.TemplateProbe{
+				TemplateID: testsupport.NewID(t), ListenAddress: listenAddress, ProbePort: freePort(t),
+				Method: security.MethodAES256, Network: network})
+			if err != nil {
+				t.Fatalf("validation failed outright: %v\n%s", err, runtime.diagnostics())
+			}
+			if capabilities.TrafficAccounted || capabilities.Compatible() {
+				t.Fatalf("%s without policy reported compatible: %#v", network, capabilities)
+			}
+		})
 	}
 }

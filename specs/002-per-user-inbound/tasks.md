@@ -486,7 +486,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   完整 SS2022 连接信息发起新握手，证明全程端口监听、恢复后旧凭证拒绝、新凭证成功、最终只有原不可变
   统计身份、过渡身份不进入连接信息或计量且历史流量连续，再据此更正 `validation-report.md` 的 T084 证据
   per T084 / US3/AC3 / FR-017 / FR-019 (partial)
-- [ ] T088 修正统计能力探针的方法、网络与计数隔离：把模板的 `Method` 和 `Network` 从
+- [X] T088 修正统计能力探针的方法、网络与计数隔离：把模板的 `Method` 和 `Network` 从
   `ports.TemplateProbe` 一直传到 `internal/adapter/xray/probe.go`，禁止
   `exchangeThroughInbound` 硬编码 `2022-blake3-aes-256-gcm`；按模板网络发送 TCP、UDP 或两者，满足
   T085 的 TCP/UDP 探针要求。每次验证使用不可碰撞的探针统计身份，并在结束时重置/清理其 uplink、

@@ -174,10 +174,17 @@ func (c *Client) ValidateTemplate(ctx context.Context, probe ports.TemplateProbe
 	if keyErr != nil {
 		return capabilities, keyErr
 	}
+	// 每次验证都用全新的探针身份：计数器按统计标识注册且 Xray 没有删除计数器的 API，
+	// 复用同一个标识会让上一次验证的残留计数把这一次「误判为通过」。
+	run, runErr := domain.NewID()
+	if runErr != nil {
+		return capabilities, runErr
+	}
 	tag := fmt.Sprintf("%sprobe-%s", domain.NamespacePrefix, probe.TemplateID.String())
+	probeIdentity := fmt.Sprintf("%sprobe-%s", domain.NamespacePrefix, run.String())
 	command := ports.CreateInboundCommand{InboundTag: tag, ListenAddress: probe.ListenAddress, Port: probe.ProbePort,
 		Method: probe.Method, Network: domain.NetworkTCPUDP, ServerKey: serverKey,
-		Client: ports.InboundClient{StatisticsID: domain.NamespacePrefix + "probe-client", CredentialVersion: 1, UserKey: userKey}}
+		Client: ports.InboundClient{StatisticsID: probeIdentity, CredentialVersion: 1, UserKey: userKey}}
 	_, createErr := c.CreateInbound(ctx, command)
 	// 探针入站无论创建结果如何都必须移除：bind 失败时它仍可能被注册（research.md R-003）。
 	// 移除结果 MUST NOT 被忽略——它本身就是一项被验证的能力。
@@ -213,8 +220,7 @@ func (c *Client) ValidateTemplate(ctx context.Context, probe ports.TemplateProbe
 		capabilities.CompatibilityReason = "node does not satisfy the Shadowsocks 2022 multi-user contract"
 		return capabilities, nil
 	}
-	accounted, reason, trafficErr := c.verifyUserTrafficAccounting(ctx, probe.ListenAddress, probe.ProbePort,
-		serverKey, userKey, command.Client.StatisticsID)
+	accounted, reason, trafficErr := c.verifyUserTrafficAccounting(ctx, probe, serverKey, userKey, command.Client.StatisticsID)
 	if trafficErr != nil {
 		return capabilities, trafficErr
 	}

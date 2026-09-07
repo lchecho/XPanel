@@ -90,6 +90,7 @@ SC-001、SC-002、SC-010 的人工验收（T076）待执行。**
 | T087 轮换故障契约 | 崩溃边界补齐到 5 个（含四次 RPC 全部成功、ConfirmSync 之前）；`tests/contract/xray/rotation_app_test.go` 用真实 service + synchronizer 驱动真实 Xray，在四次变更 RPC 成功后的每个边界崩溃并重放，以真实 SS2022 握手证明新凭证可用、旧凭证被拒 | 通过 |
 | T088 探针方法与网络 | 探针按模板的 Method 与 Network 发送 TCP/UDP 流量，网络取值异常直接报错；每次验证使用全新探针身份并在结束时清零计数。AES-128/AES-256 × tcp/udp/tcp_udp 六组矩阵各断言首次通过、重复通过、探针不残留；三组缺 policy 的回归确保没有组合因未发流量而误通过 | 通过 |
 | T089 能力世代绑定 | 迁移 00007 记录 `validated_boot_epoch`；协调器每轮把纪元不符的兼容模板置回待验证并立即重跑门禁（计入 `Revalidated`）；`CreateUser` 只接受对当前世代验证通过的模板。`tests/integration/capability_generation_test.go` 与 `tests/contract/xray/template_test.go`（同一管理端点重启到缺少 policy 的配置后旧缓存立即失效、新建被拒，恢复后才允许创建） | 通过 |
+| 契约稳定性 | `TestLiveAppUncertainTimeoutConvergesThroughReadAfterWrite` 曾间歇失败：200µs 的「不耐烦客户端」在足够快的机器上有时真的能完成 RPC，导致「必然超时」这个前提不成立。断言改为覆盖两种情形（超时则要求操作处于可恢复状态；完成则直接进入收敛断言），门禁要证明的是「不确定的结果最终收敛且不产生重复」。修正后契约套件连续 6 次 `-count=1` 全绿 | 通过 |
 | T091 依赖决策 | 统计探针直接引用 `sing-shadowsocks`/`sing`：这两个模块本就在 xray-core 依赖图内，改动只是把 `go.mod` 的 `// indirect` 提升为直接依赖，**`go.sum` 零变化**、`go mod tidy -diff` 无差异、`CGO_ENABLED=0 go build ./cmd/xpanel` 通过（单二进制内容不变）。已在 `plan.md` 的 Primary Dependencies、Constitution Check 与 Complexity Tracking 记录必要性、安全边界与版本固定要求 | 通过 |
 
 ### Phase 10（2026-09-07）

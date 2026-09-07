@@ -73,6 +73,7 @@ type Store interface {
 	LeaseDueDriftRemoval(context.Context, string, time.Time, time.Duration) (*DriftRemoval, error)
 	RenewDriftRemovalLease(context.Context, domain.ID, string, time.Time, time.Duration) (bool, error)
 	StaleDriftRemovals(context.Context, domain.ID) ([]DriftRemoval, error)
+	OrphanStaleDriftRemovals(context.Context) ([]DriftRemoval, error)
 	CompleteDriftRemoval(context.Context, domain.ID, string, time.Time, domain.AuditEvent) error
 	RescheduleDriftRemoval(context.Context, domain.ID, string, int, time.Time, string, string) error
 	FailDriftRemoval(context.Context, domain.ID, string, string, string, time.Time, domain.AuditEvent) error

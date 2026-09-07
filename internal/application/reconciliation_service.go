@@ -115,11 +115,10 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 		if _, known := byTag[tag]; known {
 			continue
 		}
-		templateID := anyTemplateID(templates)
-		if !templateID.Valid() {
-			continue // 没有任何模板时无法归属该意图，留待下一轮
-		}
-		created, err := s.store.EnqueueDriftRemoval(ctx, templateID, tag, "inbound", tag, now)
+		// 孤立入站优先挂在一个模板下，以便沿用「未确认的移除冻结契约字段」这条既有规则；
+		// 但没有可挂靠的模板时（一个模板都没有、全部归档或全部不兼容）也必须能排队清理，
+		// 否则孤立入站会永远占着端口（FR-031）。
+		created, err := s.store.EnqueueDriftRemoval(ctx, anyTemplateID(templates), tag, "inbound", tag, now)
 		if err != nil {
 			return summary, err
 		}
@@ -235,6 +234,26 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 			}
 		}
 	}
+	// 没有归属模板的永久失败孤立入站同样要重新排队确认，否则它们会永远留在 Xray 里占着端口。
+	orphans, err := s.store.OrphanStaleDriftRemovals(ctx)
+	if err != nil {
+		return summary, err
+	}
+	for _, removal := range orphans {
+		if remoteInbounds[removal.InboundTag] {
+			continue // 目标仍在：上面的分支已重新排队移除
+		}
+		created, err := s.store.EnqueueDriftRemoval(ctx, "", removal.InboundTag, removal.Kind, removal.StatisticsID, now)
+		if err != nil {
+			return summary, err
+		}
+		if created {
+			summary.ConfirmedAbsent++
+			enqueued = true
+			s.logger.Info("permanently failed orphan inbound removal re-queued for absence confirmation",
+				logging.FieldInboundTag, removal.InboundTag, logging.FieldResult, "queued")
+		}
+	}
 	if enqueued && s.notify != nil {
 		s.notify()
 	}
@@ -259,6 +278,22 @@ func adapterKind(err error) (string, string) {
 	return ports.ErrorInternal, "Xray operation failed"
 }
 
+// anyTemplateID 为孤立入站的移除意图选择一个归属模板：孤立入站不属于任何用户，
+// 意图只需要一个稳定的归属点以复用既有的租约与因果链机制；没有可用模板时返回空，
+// 此时意图以「无归属」持久化，同样可以被领取和执行。
+func anyTemplateID(templates []ports.TemplateRecord) domain.ID {
+	for _, template := range templates {
+		if template.Template.ArchivedAt != nil {
+			continue
+		}
+		if template.Template.Compatibility == domain.CompatibilityCompatible ||
+			template.Template.Compatibility == domain.CompatibilityUnreachable {
+			return template.Template.ID
+		}
+	}
+	return ""
+}
+
 func (s *ReconciliationService) markDegraded(ctx context.Context, cause error) {
 	kind, summary := adapterKind(cause)
 	s.mu.Lock()
@@ -276,16 +311,4 @@ func (s *ReconciliationService) clearDegraded() bool {
 	was := s.degraded
 	s.degraded = false
 	return was
-}
-
-// anyTemplateID 为孤立入站的移除意图选择一个归属模板：孤立入站不属于任何用户，
-// 意图只需要一个稳定的归属点以复用既有的租约与因果链机制。
-func anyTemplateID(templates []ports.TemplateRecord) domain.ID {
-	for _, template := range templates {
-		if template.Template.Compatibility == domain.CompatibilityCompatible ||
-			template.Template.Compatibility == domain.CompatibilityUnreachable {
-			return template.Template.ID
-		}
-	}
-	return ""
 }

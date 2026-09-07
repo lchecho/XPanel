@@ -431,7 +431,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   SQLite 事务中校验池范围与唯一性、更新专属入站端口及同步意图、记录旧/新端口审计，并以 revision
   和请求幂等键防止并发或重复提交产生部分状态；补充 Handler、集成及故障矩阵测试 per US1/AC4 /
   FR-010 (missing)
-- [ ] T081 重构 `internal/application/reconciliation_service.go` 与漂移持久化归属，使面板命名空间内的
+- [X] T081 重构 `internal/application/reconciliation_service.go` 与漂移持久化归属，使面板命名空间内的
   孤立入站在不存在兼容模板、所有模板均归档或模板记录为空时仍能持久化移除意图、完成有界重试、释放
   运行时端口并写入审计；补充零模板和全归档模板场景测试，且保持命名空间外入站不变 per US5/AC4 /
   FR-031 (partial)

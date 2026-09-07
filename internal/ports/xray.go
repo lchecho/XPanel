@@ -141,7 +141,10 @@ type TrafficRound struct {
 // 说明：面板无法通过 API 读取 Xray 的 policy 段，因此「用户级统计是否开启」不可在此处证实，
 // 只能在采集阶段作为健康诊断暴露（见 contracts/config.md 与 research.md R-007 更正记录）。
 type TemplateCapabilities struct {
-	InboundCreatable    bool
+	InboundCreatable bool
+	// InboundRemovable 表示探针入站确实被移除了。面板的整个生命周期依赖「能建也能拆」，
+	// 只能建不能拆的节点会让停用、删除与配额封禁全部无法生效，必须判为不兼容（FR-005）。
+	InboundRemovable    bool
 	ProtocolSupported   bool
 	MethodSupported     bool
 	MultiUserSupported  bool
@@ -149,7 +152,7 @@ type TemplateCapabilities struct {
 }
 
 func (c TemplateCapabilities) Compatible() bool {
-	return c.InboundCreatable && c.ProtocolSupported && c.MethodSupported && c.MultiUserSupported
+	return c.InboundCreatable && c.InboundRemovable && c.ProtocolSupported && c.MethodSupported && c.MultiUserSupported
 }
 
 type AdapterError struct {

@@ -61,6 +61,10 @@ func TestLiveTemplateValidationUsesADisposableProbe(t *testing.T) {
 	if err != nil || !capabilities.Compatible() {
 		t.Fatalf("template capabilities = %#v, %v\n%s", capabilities, err, runtime.diagnostics())
 	}
+	// 「能建」与「能拆」都必须被证实：只能建不能拆的节点无法支持停用、删除与配额封禁（FR-005）。
+	if !capabilities.InboundCreatable || !capabilities.InboundRemovable || !capabilities.MultiUserSupported {
+		t.Fatalf("capabilities did not prove the full inbound lifecycle: %#v", capabilities)
+	}
 	if listening(probe.ProbePort) {
 		t.Fatalf("probe port %d is still listening after validation", probe.ProbePort)
 	}

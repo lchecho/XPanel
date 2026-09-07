@@ -124,8 +124,8 @@ func (a *Adapter) ValidateTemplate(ctx context.Context, probe ports.TemplateProb
 	if result, ok := a.Templates[probe.TemplateID.String()]; ok {
 		return result, nil
 	}
-	return ports.TemplateCapabilities{InboundCreatable: true, ProtocolSupported: true, MethodSupported: true,
-		MultiUserSupported: true}, nil
+	return ports.TemplateCapabilities{InboundCreatable: true, InboundRemovable: true, ProtocolSupported: true,
+		MethodSupported: true, MultiUserSupported: true}, nil
 }
 
 func (a *Adapter) ListInbounds(_ context.Context) ([]ports.RemoteInbound, error) {

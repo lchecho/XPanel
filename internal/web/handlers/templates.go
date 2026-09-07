@@ -85,6 +85,9 @@ func (h *TemplateHandler) Detail(w http.ResponseWriter, r *http.Request) {
 	if usage, err := h.Service.PortUsage(r.Context(), id); err == nil {
 		view.PortsAssigned, view.PortsRemaining, view.PortsOutside = usage.Assigned, usage.Remaining, usage.Outside
 	}
+	if suspect, err := h.Service.StatsSuspect(r.Context(), id); err == nil {
+		view.StatsSuspect = suspect
+	}
 	page.Data = view
 	h.Renderer.Page(w, http.StatusOK, "template_detail.html", page)
 }

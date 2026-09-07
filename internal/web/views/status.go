@@ -1,6 +1,7 @@
 package views
 
 import (
+	"strings"
 	"xpanel/internal/domain"
 	"xpanel/internal/ports"
 )
@@ -38,6 +39,30 @@ func CompatibilityLabel(state domain.CompatibilityState) string {
 	default:
 		return "待验证"
 	}
+}
+
+// compatibilityReasons 把适配器产生的稳定英文原因翻译成面向管理员的中文说明。
+// 未收录的原因原样展示（仍然是脱敏摘要），不隐藏信息。
+var compatibilityReasons = map[string]string{
+	"unsupported Shadowsocks 2022 method":                            "节点不支持所选的 Shadowsocks 2022 加密方式",
+	"node does not satisfy the Shadowsocks 2022 multi-user contract": "节点不支持 Shadowsocks 2022 多用户身份，无法为每个用户下发独立密钥",
+	"node created the probe inbound but could not remove it":         "节点能创建入站但无法移除：停用、删除与配额封禁都将无法生效，请检查 Xray 的 HandlerService 权限",
+	"template validation failed":                                     "入站模板校验失败，请稍后重试或检查节点状态",
+}
+
+// CompatibilityReasonSentence 返回可直接展示给管理员的中文不兼容原因。
+func CompatibilityReasonSentence(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	if translated, ok := compatibilityReasons[reason]; ok {
+		return translated
+	}
+	const probePrefix = "node could not create a probe inbound: "
+	if strings.HasPrefix(reason, probePrefix) {
+		return "节点无法创建探针入站：" + strings.TrimPrefix(reason, probePrefix)
+	}
+	return reason
 }
 
 func HealthLabel(state string) string {

@@ -110,8 +110,8 @@ func TestTemplateRegistrationAndValidation(t *testing.T) {
 		t.Fatalf("usage = %#v, %v", usage, err)
 	}
 	// 节点不兼容时模板被标记为 incompatible 并附可理解原因。
-	fixture.adapter.Templates[id.String()] = ports.TemplateCapabilities{InboundCreatable: true, ProtocolSupported: true,
-		MethodSupported: true, MultiUserSupported: false, CompatibilityReason: "node does not support multi-user"}
+	fixture.adapter.Templates[id.String()] = ports.TemplateCapabilities{InboundCreatable: true, InboundRemovable: true,
+		ProtocolSupported: true, MethodSupported: true, MultiUserSupported: false, CompatibilityReason: "node does not support multi-user"}
 	if _, err := fixture.templates.Revalidate(context.Background(), RevalidateInput{ID: id,
 		ExpectedRevision: record.Template.Revision, RequestID: appID(t), ActorID: appID(t)}); err != nil {
 		t.Fatal(err)
@@ -122,5 +122,22 @@ func TestTemplateRegistrationAndValidation(t *testing.T) {
 	after, _ := fixture.store.Template(context.Background(), id)
 	if after.Template.Compatibility != domain.CompatibilityIncompatible || after.Template.CompatibilityReason == "" {
 		t.Fatalf("incompatible template = %#v", after.Template)
+	}
+	// 只能建不能拆的节点同样不兼容：停用、删除与配额封禁都依赖移除入站的能力（FR-005）。
+	fixture.adapter.Templates[id.String()] = ports.TemplateCapabilities{InboundCreatable: true, InboundRemovable: false,
+		ProtocolSupported: true, MethodSupported: true, MultiUserSupported: true,
+		CompatibilityReason: "node created the probe inbound but could not remove it"}
+	stale, _ := fixture.store.Template(context.Background(), id)
+	if _, err := fixture.templates.Revalidate(context.Background(), RevalidateInput{ID: id,
+		ExpectedRevision: stale.Template.Revision, RequestID: appID(t), ActorID: appID(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.templates.RunValidation(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	unremovable, _ := fixture.store.Template(context.Background(), id)
+	if unremovable.Template.Compatibility != domain.CompatibilityIncompatible ||
+		unremovable.Template.CompatibilityReason != "node created the probe inbound but could not remove it" {
+		t.Fatalf("template with an unremovable probe = %#v", unremovable.Template)
 	}
 }

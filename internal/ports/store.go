@@ -32,6 +32,7 @@ type Store interface {
 	PanelInbounds(context.Context) ([]domain.DedicatedInbound, error)
 	ConfirmInboundPresence(context.Context, domain.ID, bool, time.Time) error
 	PortPoolUsage(context.Context, domain.ID) (PortPoolUsage, error)
+	TemplateCounterEvidence(context.Context, domain.ID) (int, int, error)
 	CreateUser(context.Context, UserCreateRecord) (domain.ID, bool, error)
 	User(context.Context, domain.ID) (UserRecord, error)
 	ListUsers(context.Context, UserFilter) ([]UserRecord, error)

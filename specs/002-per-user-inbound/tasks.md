@@ -421,7 +421,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   RPC 失败、进程崩溃、租约回收和协调器重放的每个持久阶段都不会保留零受管客户端的专属入站，
   同时保持原端口监听、不可变统计身份和历史流量归属，并使旧凭证在成功后失效 per
   Constitution II / FR-017 / FR-019 (contradicts)
-- [ ] T079 扩展 `internal/ports/xray.go`、`internal/adapter/xray/inbound.go` 与
+- [X] T079 扩展 `internal/ports/xray.go`、`internal/adapter/xray/inbound.go` 与
   `internal/application/template_service.go` 的入站模板能力门禁，显式验证探针入站能够成功移除且
   用户级上下行统计可用；不得忽略探针清理失败，缺少 HandlerService 移除能力或
   `statsUserUplink`/`statsUserDownlink` 时必须以安全中文原因标记模板不兼容，并增加固定 Xray 契约与

@@ -29,6 +29,8 @@ type TemplateView struct {
 	PortsAssigned  int
 	PortsRemaining int
 	PortsOutside   []int
+	// StatsSuspect：已有在监听的用户却从未读到用户级计数，提示检查 Xray 的 policy 配置。
+	StatsSuspect bool
 }
 
 func NewTemplateView(record ports.TemplateRecord, location *time.Location) TemplateView {
@@ -37,7 +39,7 @@ func NewTemplateView(record ports.TemplateRecord, location *time.Location) Templ
 		PortPoolStart: t.Pool.Start, PortPoolEnd: t.Pool.End, PortPoolCapacity: t.Pool.Capacity(),
 		Method: t.Method, Network: string(t.Network),
 		Compatibility: string(t.Compatibility), CompatibilityLabel: CompatibilityLabel(t.Compatibility),
-		Compatible: t.Compatibility == domain.CompatibilityCompatible, Reason: t.CompatibilityReason,
+		Compatible: t.Compatibility == domain.CompatibilityCompatible, Reason: CompatibilityReasonSentence(t.CompatibilityReason),
 		LastValidatedAt: FormatTime(t.LastValidatedAt, location), Revision: int64(t.Revision), Archived: t.ArchivedAt != nil}
 }
 

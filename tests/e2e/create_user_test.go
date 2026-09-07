@@ -142,8 +142,9 @@ func TestCreateUserRejectsIncompatibleTemplate(t *testing.T) {
 	app := newHarness(t)
 	app.Login()
 	templateID, templatePath := registerTemplateViaBrowser(t, app, "Single")
-	app.Adapter.Templates[templateID.String()] = ports.TemplateCapabilities{InboundCreatable: true, ProtocolSupported: true,
-		MethodSupported: true, MultiUserSupported: false, CompatibilityReason: "node does not satisfy the SS2022 multi-user contract"}
+	app.Adapter.Templates[templateID.String()] = ports.TemplateCapabilities{InboundCreatable: true, InboundRemovable: true,
+		ProtocolSupported: true, MethodSupported: true, MultiUserSupported: false,
+		CompatibilityReason: "node does not satisfy the SS2022 multi-user contract"}
 	if err := app.Validator.ValidateNow(context.Background(), templateID); err != nil {
 		t.Fatal(err)
 	}

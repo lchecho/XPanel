@@ -153,22 +153,28 @@ func (c *Client) ListInbounds(ctx context.Context) ([]ports.RemoteInbound, error
 	return result, nil
 }
 
-// ValidateTemplate 用一条一次性探针入站证明实例支持运行时入站管理与 SS2022 多用户身份；探针无论成败都会移除。
-// 用户级统计是否开启无法经 API 证实，只能在采集阶段作为健康诊断暴露（contracts/config.md）。
-func (c *Client) ValidateTemplate(ctx context.Context, probe ports.TemplateProbe) (ports.TemplateCapabilities, error) {
-	capabilities := ports.TemplateCapabilities{ProtocolSupported: true}
+// ValidateTemplate 用一条一次性探针入站证明实例支持运行时入站管理与 SS2022 多用户身份。
+//
+// 硬性验证三项：能创建入站、入站带得动多用户身份、**探针能被移除**。
+// 移除能力不可省略：只能建不能拆的节点会让停用、删除与配额封禁全部无法生效（FR-005）。
+//
+// 用户级统计（policy.levels."0".statsUserUplink/statsUserDownlink）无法在此证实：
+// 实测表明无论该 policy 是否开启，在没有任何流量之前用户计数器一律返回 NotFound，两种配置不可区分
+// （research.md C-005）。它只能作为部署前置条件，并在采集阶段作为健康诊断暴露。
+func (c *Client) ValidateTemplate(ctx context.Context, probe ports.TemplateProbe) (capabilities ports.TemplateCapabilities, err error) {
+	capabilities = ports.TemplateCapabilities{ProtocolSupported: true}
 	capabilities.MethodSupported = probe.Method == security.MethodAES128 || probe.Method == security.MethodAES256
 	if !capabilities.MethodSupported {
 		capabilities.CompatibilityReason = "unsupported Shadowsocks 2022 method"
 		return capabilities, nil
 	}
-	serverKey, err := security.GenerateUserKey(probe.Method)
-	if err != nil {
-		return capabilities, err
+	serverKey, keyErr := security.GenerateUserKey(probe.Method)
+	if keyErr != nil {
+		return capabilities, keyErr
 	}
-	userKey, err := security.GenerateUserKey(probe.Method)
-	if err != nil {
-		return capabilities, err
+	userKey, keyErr := security.GenerateUserKey(probe.Method)
+	if keyErr != nil {
+		return capabilities, keyErr
 	}
 	tag := fmt.Sprintf("%sprobe-%s", domain.NamespacePrefix, probe.TemplateID.String())
 	command := ports.CreateInboundCommand{InboundTag: tag, ListenAddress: probe.ListenAddress, Port: probe.ProbePort,
@@ -176,8 +182,18 @@ func (c *Client) ValidateTemplate(ctx context.Context, probe ports.TemplateProbe
 		Client: ports.InboundClient{StatisticsID: domain.NamespacePrefix + "probe-client", CredentialVersion: 1, UserKey: userKey}}
 	_, createErr := c.CreateInbound(ctx, command)
 	// 探针入站无论创建结果如何都必须移除：bind 失败时它仍可能被注册（research.md R-003）。
+	// 移除结果 MUST NOT 被忽略——它本身就是一项被验证的能力。
 	defer func() {
-		_, _ = c.RemoveInbound(context.WithoutCancel(ctx), ports.RemoveInboundCommand{InboundTag: tag})
+		removed := true
+		if _, removeErr := c.RemoveInbound(context.WithoutCancel(ctx), ports.RemoveInboundCommand{InboundTag: tag}); removeErr != nil {
+			var adapterErr *ports.AdapterError
+			// 本就不存在（创建失败且未注册）不算移除能力缺失。
+			removed = errors.As(removeErr, &adapterErr) && adapterErr.Kind == ports.ErrorInboundNotFound
+		}
+		capabilities.InboundRemovable = removed
+		if capabilities.InboundCreatable && !removed {
+			capabilities.CompatibilityReason = "node created the probe inbound but could not remove it"
+		}
 	}()
 	if createErr != nil {
 		var adapterErr *ports.AdapterError
@@ -190,12 +206,12 @@ func (c *Client) ValidateTemplate(ctx context.Context, probe ports.TemplateProbe
 	capabilities.InboundCreatable = true
 	callCtx, cancel := c.deadline(ctx)
 	defer cancel()
-	count, err := c.handler.GetInboundUsersCount(callCtx, &handlercommand.GetInboundUserRequest{Tag: tag})
-	if err != nil {
-		return capabilities, mapError("validate_template", err)
+	count, countErr := c.handler.GetInboundUsersCount(callCtx, &handlercommand.GetInboundUserRequest{Tag: tag})
+	if countErr != nil {
+		return capabilities, mapError("validate_template", countErr)
 	}
 	capabilities.MultiUserSupported = count.GetCount() > 0
-	if !capabilities.Compatible() {
+	if !capabilities.MultiUserSupported {
 		capabilities.CompatibilityReason = "node does not satisfy the Shadowsocks 2022 multi-user contract"
 	}
 	return capabilities, nil

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"xpanel/internal/domain"
+	"xpanel/internal/ports"
 	"xpanel/internal/security"
 	"xpanel/internal/testsupport"
 )
@@ -98,5 +99,42 @@ func TestTemplateFormValidationConflictAndRevalidate(t *testing.T) {
 	response, _ = app.PostForm(location+"/revalidate", location, url.Values{"_version": {"1"}})
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("revalidate status=%d", response.StatusCode)
+	}
+}
+
+// FR-005：模板详情要把「只能建不能拆」的不兼容原因讲清楚；用户级统计缺失只能作为提示（research.md C-005）。
+func TestTemplateDetailExplainsCapabilityGapsInChinese(t *testing.T) {
+	app := testsupport.New(t)
+	app.Login()
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	path := "/templates/" + templateID.String()
+
+	// 有用户在监听但从未读到计数：给出 policy 提示，且不改变兼容状态。
+	record := app.CreateUser("Alice", templateID, nil)
+	app.Drain()
+	_, body := app.Get(path)
+	if !strings.Contains(body, "statsUserUplink") || !strings.Contains(body, "从未从节点读到任何用户级流量计数") {
+		t.Fatalf("template detail does not hint at the missing policy: %s", body)
+	}
+	if !strings.Contains(body, "兼容") || strings.Contains(body, "不兼容") {
+		t.Fatalf("the hint must not change compatibility: %s", body)
+	}
+	// 读到计数之后提示消失。
+	app.SetTraffic(record, 4096, 4096)
+	app.Collect()
+	if _, body = app.Get(path); strings.Contains(body, "statsUserUplink") {
+		t.Fatalf("the hint survived after counters were observed: %s", body)
+	}
+
+	// 只能建不能拆的节点：不兼容，且原因是中文。
+	app.Adapter.Templates[templateID.String()] = ports.TemplateCapabilities{InboundCreatable: true, InboundRemovable: false,
+		ProtocolSupported: true, MethodSupported: true, MultiUserSupported: true,
+		CompatibilityReason: "node created the probe inbound but could not remove it"}
+	if err := app.Validator.ValidateNow(context.Background(), templateID); err != nil {
+		t.Fatal(err)
+	}
+	_, body = app.Get(path)
+	if !strings.Contains(body, "不兼容") || !strings.Contains(body, "节点能创建入站但无法移除") {
+		t.Fatalf("unremovable probe reason is not explained in Chinese: %s", body)
 	}
 }

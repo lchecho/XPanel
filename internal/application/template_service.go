@@ -105,6 +105,17 @@ func (s *TemplateService) Get(ctx context.Context, id domain.ID) (ports.Template
 	return s.store.Template(ctx, id)
 }
 
+// StatsSuspect 判定某模板是否「已有在监听的用户，却从未读到任何用户级计数」。
+// 这是漏配 policy.levels."0".statsUserUplink/statsUserDownlink 的典型特征，但也可能只是还没人用过，
+// 因此只作为提示，不改变模板的兼容状态（research.md C-005）。
+func (s *TemplateService) StatsSuspect(ctx context.Context, id domain.ID) (bool, error) {
+	listening, observed, err := s.store.TemplateCounterEvidence(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	return listening > 0 && observed == 0, nil
+}
+
 // PortUsage 返回某模板的端口池占用情况，供界面展示与端口分配判断。
 func (s *TemplateService) PortUsage(ctx context.Context, id domain.ID) (ports.PortPoolUsage, error) {
 	return s.store.PortPoolUsage(ctx, id)

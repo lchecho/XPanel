@@ -163,3 +163,23 @@ func (s *Store) PortPoolUsage(ctx context.Context, templateID domain.ID) (ports.
 	}
 	return usage, nil
 }
+
+// TemplateCounterEvidence 统计某模板下「当前应当监听的分配数」与「历史上真正读到过用户级计数的分配数」。
+//
+// 用途：用户级统计依赖 Xray 配置里的 policy.levels."0".statsUserUplink/statsUserDownlink，
+// 面板无法经 API 证实该配置（research.md C-005）。若一个模板下已经有在监听的用户，却从来没有
+// 读到过任何计数，那大概率是漏配了 policy——界面据此给出提示，而不是把模板判为不兼容
+// （全新安装、用户尚未使用时也是同一现象）。
+func (s *Store) TemplateCounterEvidence(ctx context.Context, templateID domain.ID) (listening int, observed int, err error) {
+	row := s.db.Read.QueryRowContext(ctx, `SELECT
+        COALESCE(SUM(CASE WHEN d.observed_present=1 THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN c.uplink_counter IS NOT NULL OR c.downlink_counter IS NOT NULL THEN 1 ELSE 0 END),0)
+        FROM access_allocations a
+        JOIN dedicated_inbounds d ON d.allocation_id=a.id AND d.released_at IS NULL
+        LEFT JOIN traffic_cursors c ON c.allocation_id=a.id
+        WHERE a.template_id=?`, templateID.String())
+	if err := row.Scan(&listening, &observed); err != nil {
+		return 0, 0, err
+	}
+	return listening, observed, nil
+}

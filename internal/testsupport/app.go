@@ -244,9 +244,15 @@ func (a *App) Login() {
 // RegisterCompatibleTemplate 通过服务层登记入站模板并同步验证为 compatible。
 func (a *App) RegisterCompatibleTemplate(name string) domain.ID {
 	a.T.Helper()
+	return a.RegisterTemplateWithPool(name, DefaultPoolStart, DefaultPoolEnd)
+}
+
+// RegisterTemplateWithPool 登记一个指定端口池区间的兼容入站模板，用于端口分配与池耗尽测试。
+func (a *App) RegisterTemplateWithPool(name string, poolStart, poolEnd int) domain.ID {
+	a.T.Helper()
 	id, err := a.Templates.RegisterTemplate(context.Background(), application.TemplateInput{Name: name,
-		PublicHost: "vpn.example.com", ListenAddress: DefaultListenAddress, PortPoolStart: DefaultPoolStart,
-		PortPoolEnd: DefaultPoolEnd, Method: security.MethodAES256, Network: domain.NetworkTCPUDP,
+		PublicHost: "vpn.example.com", ListenAddress: DefaultListenAddress, PortPoolStart: poolStart,
+		PortPoolEnd: poolEnd, Method: security.MethodAES256, Network: domain.NetworkTCPUDP,
 		RequestID: NewID(a.T), ActorID: NewID(a.T)})
 	if err != nil {
 		a.T.Fatal(err)
@@ -279,6 +285,16 @@ func (a *App) CreateUser(name string, templateID domain.ID, limit *int64) ports.
 		a.T.Fatal(err)
 	}
 	return a.User(id)
+}
+
+// ListUsers 返回全部未删除用户，按创建顺序，供端口分配等测试核对总量。
+func (a *App) ListUsers() []ports.UserRecord {
+	a.T.Helper()
+	records, err := a.Store.ListUsers(context.Background(), ports.UserFilter{})
+	if err != nil {
+		a.T.Fatal(err)
+	}
+	return records
 }
 
 func (a *App) User(id domain.ID) ports.UserRecord {

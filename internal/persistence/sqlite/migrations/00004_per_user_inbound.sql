@@ -118,27 +118,21 @@ CREATE INDEX dedicated_inbounds_template_idx ON dedicated_inbounds(template_id) 
 
 -- +goose Down
 -- 回滚只恢复结构，不恢复数据：端口分配与专属入站信息无法还原。
-ALTER TABLE drift_removals DROP COLUMN kind;
-ALTER TABLE drift_removals DROP COLUMN inbound_tag;
-ALTER TABLE drift_removals RENAME COLUMN template_id TO profile_id;
-ALTER TABLE access_allocations RENAME COLUMN template_id TO profile_id;
+--
+-- 顺序要求：必须先把 inbound_templates 改名回 access_profiles，SQLite 才会把其它表里指向它的外键
+-- 引用一并改回来（legacy_alter_table 默认关闭）。先删表再改名会留下悬空外键，导致后续迁移失败。
 DROP INDEX dedicated_inbounds_template_idx;
 DROP INDEX dedicated_inbounds_port_idx;
 DROP TABLE dedicated_inbounds;
 
-CREATE TABLE xray_user_identities_old (
-    id TEXT PRIMARY KEY,
-    instance_id TEXT NOT NULL REFERENCES managed_xray_instances(id),
-    profile_id TEXT NOT NULL REFERENCES inbound_templates(id),
-    statistics_id TEXT NOT NULL CHECK (length(statistics_id) > 0 AND instr(statistics_id, '>>>') = 0),
-    kind TEXT NOT NULL CHECK (kind IN ('bootstrap','managed')),
-    created_at INTEGER NOT NULL,
-    UNIQUE(instance_id, statistics_id)
-) STRICT;
-DROP TABLE xray_user_identities;
-ALTER TABLE xray_user_identities_old RENAME TO xray_user_identities;
+ALTER TABLE drift_removals DROP COLUMN kind;
+ALTER TABLE drift_removals DROP COLUMN inbound_tag;
+ALTER TABLE drift_removals RENAME COLUMN template_id TO profile_id;
+ALTER TABLE access_allocations RENAME COLUMN template_id TO profile_id;
 
 DROP INDEX inbound_templates_active_name_idx;
+ALTER TABLE inbound_templates RENAME TO access_profiles;
+
 CREATE TABLE access_profiles_old (
     id TEXT PRIMARY KEY,
     instance_id TEXT NOT NULL REFERENCES managed_xray_instances(id),
@@ -162,6 +156,18 @@ CREATE TABLE access_profiles_old (
     updated_at INTEGER NOT NULL,
     UNIQUE(instance_id, inbound_tag)
 ) STRICT;
-DROP TABLE inbound_templates;
+DROP TABLE access_profiles;
 ALTER TABLE access_profiles_old RENAME TO access_profiles;
 CREATE UNIQUE INDEX access_profiles_active_name_idx ON access_profiles(normalized_name) WHERE archived_at IS NULL;
+
+CREATE TABLE xray_user_identities_old (
+    id TEXT PRIMARY KEY,
+    instance_id TEXT NOT NULL REFERENCES managed_xray_instances(id),
+    profile_id TEXT NOT NULL REFERENCES access_profiles(id),
+    statistics_id TEXT NOT NULL CHECK (length(statistics_id) > 0 AND instr(statistics_id, '>>>') = 0),
+    kind TEXT NOT NULL CHECK (kind IN ('bootstrap','managed')),
+    created_at INTEGER NOT NULL,
+    UNIQUE(instance_id, statistics_id)
+) STRICT;
+DROP TABLE xray_user_identities;
+ALTER TABLE xray_user_identities_old RENAME TO xray_user_identities;

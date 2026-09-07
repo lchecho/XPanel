@@ -101,7 +101,7 @@ v1.2.0 追加「面板管理入站时 MUST 追加覆盖端口冲突与端口被�
   删除服务端密钥列、`bootstrap_statistics_id`、`public_port`）；新建 `dedicated_inbounds` 表；
   建立 `UNIQUE(inbound_tag)` 与部分唯一索引 `(listen_address, port) WHERE released_at IS NULL`；
   清理 `kind='bootstrap'` 身份；提供可回滚的 `-- +goose Down`
-- [ ] T015 更新 `internal/persistence/sqlite/migrations_test.go`：覆盖 00004 的 up/down、部分唯一索引
+- [X] T015 更新 `internal/persistence/sqlite/migrations_test.go`：覆盖 00004 的 up/down、部分唯一索引
   确实拒绝重复 `(listen_address, port)`、`released_at` 非空后同端口可再次分配
 - [X] T016 新建 `internal/persistence/sqlite/store_inbounds.go`：专属入站与端口分配的事务写入——
   分配端口（依赖唯一索引拒绝冲突而非应用层判断）、释放端口、确认监听状态、按模板统计端口池使用量
@@ -135,40 +135,40 @@ v1.2.0 追加「面板管理入站时 MUST 追加覆盖端口冲突与端口被�
 
 ### 实现
 
-- [ ] T022 [US1] 更新 `internal/application/user_service.go` 的 `CreateUser`：在同一事务内分配端口、
+- [X] T022 [US1] 更新 `internal/application/user_service.go` 的 `CreateUser`：在同一事务内分配端口、
   生成该入站的服务端密钥与用户密钥、写入专属入站与 `create` 同步操作；端口冲突由数据库约束拒绝并
   转换为 409，端口池耗尽与池外端口分别返回明确错误
-- [ ] T023 [US1] 新建 `internal/application/inbound_service.go`：专属入站期望状态的编排入口，
+- [X] T023 [US1] 新建 `internal/application/inbound_service.go`：专属入站期望状态的编排入口，
   供用户、配额与协调路径统一调用，避免各处重复派生规则
-- [ ] T024 [US1] 更新 `internal/worker/synchronizer.go`：`create_inbound` 与 `remove_inbound` 两个新
+- [X] T024 [US1] 更新 `internal/worker/synchronizer.go`：`create_inbound` 与 `remove_inbound` 两个新
   阶段的处理；`CreateInbound` 失败一律按「可能已部分生效」处理——先 `ListInbounds` 读后写确认，
   已注册但未监听时补偿 `RemoveInbound` 再按有界退避重试 【重试/协调】
-- [ ] T025 [US1] 更新 `internal/application/connection_service.go`：连接信息使用该用户的专属端口与
+- [X] T025 [US1] 更新 `internal/application/connection_service.go`：连接信息使用该用户的专属端口与
   该入站的服务端密钥，组合密钥格式不变
-- [ ] T026 [P] [US1] 更新 `internal/web/handlers/profiles.go` → `templates.go` 与
+- [X] T026 [P] [US1] 更新 `internal/web/handlers/profiles.go` → `templates.go` 与
   `internal/web/templates/pages/profile_{form,detail}.html`、`profiles_list.html`：路由改为
   `/templates`，表单移除服务端密钥与 bootstrap，新增监听地址与端口池区间及字段级校验提示
-- [ ] T027 [P] [US1] 更新 `internal/web/handlers/users.go` 与
+- [X] T027 [P] [US1] 更新 `internal/web/handlers/users.go` 与
   `internal/web/templates/pages/user_form.html`：创建表单新增可选端口字段，留空表示自动分配；
   按 contracts/http.md 渲染端口超范围 422、端口冲突 409、端口池耗尽 409 的稳定文案
-- [ ] T028 [US1] 更新 `internal/web/templates/pages/user_detail.html` 与
+- [X] T028 [US1] 更新 `internal/web/templates/pages/user_detail.html` 与
   `internal/web/handlers/users.go`：详情页展示端口、入站标签与监听状态（监听中 / 未监听 / 待同步）
-- [ ] T029 [US1] 更新 `internal/logging` 调用点与 `internal/worker/synchronizer.go` 日志字段：
+- [X] T029 [US1] 更新 `internal/logging` 调用点与 `internal/worker/synchronizer.go` 日志字段：
   入站创建/移除与端口分配/释放写入结构化日志，包含端口与入站标签，禁止输出任何密钥 【可观测性】【安全】
 
 ### 测试
 
-- [ ] T030 [P] [US1] 新建 `tests/contract/xray/inbound_test.go` 【Xray 契约】：覆盖
+- [X] T030 [P] [US1] 新建 `tests/contract/xray/inbound_test.go` 【Xray 契约】：覆盖
   contracts/xray-adapter.md 门禁 2–4——运行时创建 SS2022 入站、端口在返回后立即监听、
   `GetInboundUsersCount > 0`、可在其上增删用户、Adapter 在构建期拒绝空客户端
-- [ ] T031 [P] [US1] 新建 `tests/contract/xray/inbound_failure_test.go` 【Xray 契约】：覆盖门禁 8——
+- [X] T031 [P] [US1] 新建 `tests/contract/xray/inbound_failure_test.go` 【Xray 契约】：覆盖门禁 8——
   端口被外部进程占用时 `CreateInbound` 报错且入站仍被注册，补偿移除后换端口可收敛
-- [ ] T032 [P] [US1] 新建 `tests/integration/port_allocation_test.go`：端口自动分配唯一性（含并发创建）、
+- [X] T032 [P] [US1] 新建 `tests/integration/port_allocation_test.go`：端口自动分配唯一性（含并发创建）、
   指定池内空闲端口、指定已占用端口 409、池外端口 422、端口池耗尽 409，全部断言无部分状态
-- [ ] T033 [P] [US1] 新建 `internal/web/handlers/templates_test.go` 与更新
+- [X] T033 [P] [US1] 新建 `internal/web/handlers/templates_test.go` 与更新
   `internal/web/handlers/users_create_test.go`：模板表单不出现服务端密钥字段、端口字段校验、
   创建成功后详情页展示端口与监听状态
-- [ ] T034 [US1] 更新 `tests/e2e/create_user_test.go`：从创建到连接信息可复制的完整路径，断言两个用户
+- [X] T034 [US1] 更新 `tests/e2e/create_user_test.go`：从创建到连接信息可复制的完整路径，断言两个用户
   获得不同端口且互不影响
 
 **Checkpoint**: US1 完成后，创建用户即得专属入站与端口，连接信息可直接交付

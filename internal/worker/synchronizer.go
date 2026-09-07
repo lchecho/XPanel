@@ -172,7 +172,7 @@ func (s *Synchronizer) handleDriftRemoval(ctx context.Context, removal *ports.Dr
 	defer s.node.Unlock()
 	now := s.clock.Now()
 	logger := s.logger.With("drift_removal_id", removal.ID.String(), "template_id", removal.TemplateID.String(),
-		"drift_kind", removal.Kind, logging.FieldTargetState, "absent")
+		"drift_kind", removal.Kind, logging.FieldInboundTag, removal.InboundTag, logging.FieldTargetState, "absent")
 	inbound := ports.RuntimeInbound{TemplateID: removal.TemplateID, InboundTag: removal.InboundTag}
 	if held, err := s.fenceDrift(ctx, removal, logger); err != nil || !held {
 		return err
@@ -276,8 +276,8 @@ func (s *Synchronizer) handle(ctx context.Context, work *ports.SyncWork) error {
 		targetState = "present"
 	}
 	logger := s.logger.With(logging.FieldAllocationID, work.Allocation.ID.String(), logging.FieldOperationID, op.ID.String(),
-		logging.FieldTargetState, targetState, "port", work.Inbound.Inbound.Port,
-		logging.FieldNodeID, work.Template.Template.InstanceID.String())
+		logging.FieldTargetState, targetState, logging.FieldPort, work.Inbound.Inbound.Port,
+		logging.FieldInboundTag, inbound.InboundTag, logging.FieldNodeID, work.Template.Template.InstanceID.String())
 
 	// 1) 期望不监听：移除整条入站。
 	if !op.DesiredPresence {

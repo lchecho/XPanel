@@ -4,10 +4,13 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"xpanel/internal/application"
 
 	"xpanel/internal/domain"
 	"xpanel/internal/ports"
@@ -77,6 +80,63 @@ func TestCreateUserEndToEnd(t *testing.T) {
 		t.Fatalf("audit events = %d, %v", audits, err)
 	}
 }
+
+// 两个用户各得一条专属入站与不同端口，互不影响：这是 002 的核心交付价值（SC-012）。
+func TestTwoUsersGetIndependentPortsAndDoNotInterfere(t *testing.T) {
+	app := newHarness(t)
+	app.Login()
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	first := app.CreateUser("Alice", templateID, nil)
+	second := app.CreateUser("Bob", templateID, nil)
+	app.Drain()
+
+	firstPort := app.User(first.User.ID).Inbound.Inbound.Port
+	secondPort := app.User(second.User.ID).Inbound.Inbound.Port
+	if firstPort == secondPort {
+		t.Fatalf("both users were assigned port %d", firstPort)
+	}
+	if !app.Listening(firstPort) || !app.Listening(secondPort) {
+		t.Fatalf("ports not listening: first=%v second=%v", app.Listening(firstPort), app.Listening(secondPort))
+	}
+	// 连接信息各自携带自己的端口，且两份口令不同。
+	firstInfo := connectionOf(t, app, first.User.ID.String())
+	secondInfo := connectionOf(t, app, second.User.ID.String())
+	if !strings.Contains(firstInfo, strconv.Itoa(firstPort)) || !strings.Contains(secondInfo, strconv.Itoa(secondPort)) {
+		t.Fatal("connection information does not carry the user's own port")
+	}
+	if firstInfo == secondInfo {
+		t.Fatal("two users received identical connection information")
+	}
+
+	// 停用第一个用户：其端口停止监听，第二个用户完全不受影响。
+	if _, err := app.Users.SetAdminEnabled(context.Background(), application.SetEnabledInput{ID: first.User.ID, Enabled: false,
+		ExpectedRevision: app.User(first.User.ID).User.Revision, RequestID: testsupport.NewID(t), ActorID: app.AdminID}); err != nil {
+		t.Fatal(err)
+	}
+	app.Drain()
+	if app.Listening(firstPort) {
+		t.Fatalf("port %d kept listening after the user was disabled", firstPort)
+	}
+	if !app.Listening(secondPort) || app.User(second.User.ID).Allocation.PendingSync() {
+		t.Fatal("disabling one user disturbed the other")
+	}
+	if connectionOf(t, app, second.User.ID.String()) != secondInfo {
+		t.Fatal("the other user's connection information changed")
+	}
+}
+
+// connectionOf 读取某用户连接信息页面中的 ss:// URI。
+func connectionOf(t *testing.T, app *testsupport.App, userID string) string {
+	t.Helper()
+	_, body := app.Get("/users/" + userID + "/connection")
+	match := connectionPattern.FindStringSubmatch(body)
+	if len(match) != 2 {
+		t.Fatalf("no connection URI for %s: %s", userID, body)
+	}
+	return match[1]
+}
+
+var connectionPattern = regexp.MustCompile(`(ss://[^<\s"]+)`)
 
 func TestCreateUserRejectsIncompatibleTemplate(t *testing.T) {
 	app := newHarness(t)

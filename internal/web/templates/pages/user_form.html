@@ -8,11 +8,11 @@
   <input id="display_name" name="display_name" value="{{index .Values "display_name"}}" required maxlength="64" aria-describedby="display_name-error">
   <span id="display_name-error" class="field-error">{{index .FieldErrors "display_name"}}</span>
   <label for="template_id">入站模板</label>
-  <select id="template_id" name="template_id" required aria-describedby="template_id-error">{{$selected := index .Values "template_id"}}{{range .Data.Templates}}<option value="{{.ID}}"{{if eq .ID $selected}} selected{{end}}>{{.Name}}（{{.PublicHost}}，端口池剩余 {{.PortsRemaining}}）</option>{{end}}</select>
+  <select id="template_id" name="template_id" required aria-describedby="template_id-error">{{$selected := index .Values "template_id"}}{{range .Data.Templates}}<option value="{{.ID}}"{{if eq .ID $selected}} selected{{end}}>{{.Name}}（{{.PublicHost}}，端口池 {{.PortPoolStart}}–{{.PortPoolEnd}}，剩余 {{.PortsRemaining}}）</option>{{end}}</select>
   <span id="template_id-error" class="field-error">{{index .FieldErrors "template_id"}}</span>
   <label for="port">专属端口（可选）</label>
   <input id="port" name="port" type="number" min="1024" max="65535" value="{{index .Values "port"}}" aria-describedby="port-hint port-error">
-  <span id="port-hint" class="hint">留空表示由面板从端口池自动分配；填写时必须位于端口池内且未被其他用户占用。</span>
+  <span id="port-hint" class="hint">留空表示由面板从端口池自动分配；填写时必须位于所选模板的端口池区间内（见上方选项中的范围）且未被其他用户占用。</span>
   <span id="port-error" class="field-error">{{index .FieldErrors "port"}}</span>
   <fieldset><legend>月度流量配额</legend>
     <label for="quota_value">配额数值</label>

@@ -127,6 +127,13 @@ func (s *Store) ConfirmInboundPresence(ctx context.Context, allocationID domain.
 	return err
 }
 
+// confirmInboundPresence 是同一语义的事务内版本，供同步确认事务使用（已释放端口的历史行不再更新）。
+func confirmInboundPresence(ctx context.Context, tx *sql.Tx, allocationID string, present bool, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `UPDATE dedicated_inbounds SET observed_present=?,last_sync_at=?,updated_at=?
+        WHERE allocation_id=? AND released_at IS NULL`, boolInt(present), millis(now), millis(now), allocationID)
+	return err
+}
+
 // PortPoolUsage 汇总某模板的端口池占用情况；Outside 为落在池外的既有分配（缩小端口池后可能出现）。
 func (s *Store) PortPoolUsage(ctx context.Context, templateID domain.ID) (ports.PortPoolUsage, error) {
 	var usage ports.PortPoolUsage

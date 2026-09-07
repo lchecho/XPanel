@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 )
 
@@ -84,4 +85,55 @@ func TestDedicatedInboundPortUniqueness(t *testing.T) {
 	if _, err := db.Write.ExecContext(ctx, `UPDATE dedicated_inbounds SET listen_address='0.0.0.0' WHERE allocation_id='a'`); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// T015：00004 是破坏性迁移，回滚只恢复结构不恢复数据；up → down → up 必须都能干净跑完，
+// 且 down 之后 001 的结构回到位、up 之后 002 的结构再次可用。
+func TestPerUserInboundMigrationRollsBackAndForward(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := Migrate(ctx, db.Write); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateDownTo(ctx, db.Write, 3); err != nil {
+		t.Fatal(err)
+	}
+	// 回滚后 001 的结构回来：access_profiles 带服务端密钥列，dedicated_inbounds 不存在。
+	if !tableExists(t, db.Write, "access_profiles") || tableExists(t, db.Write, "dedicated_inbounds") ||
+		tableExists(t, db.Write, "inbound_templates") {
+		t.Fatal("down migration did not restore the 001 schema")
+	}
+	if !columnExists(t, db.Write, "access_profiles", "server_key_ciphertext") ||
+		!columnExists(t, db.Write, "access_allocations", "profile_id") {
+		t.Fatal("down migration did not restore the 001 columns")
+	}
+	if err := Migrate(ctx, db.Write); err != nil {
+		t.Fatalf("re-applying 00004 after rollback: %v", err)
+	}
+	if !tableExists(t, db.Write, "dedicated_inbounds") || !tableExists(t, db.Write, "inbound_templates") ||
+		tableExists(t, db.Write, "access_profiles") {
+		t.Fatal("re-applied migration did not restore the 002 schema")
+	}
+	var violations int
+	if err := db.Write.QueryRowContext(ctx, `SELECT count(*) FROM pragma_foreign_key_check`).Scan(&violations); err != nil || violations != 0 {
+		t.Fatalf("foreign key violations after the round trip = %d, %v", violations, err)
+	}
+}
+
+func tableExists(t *testing.T, db *sql.DB, name string) bool {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(context.Background(), `SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count > 0
+}
+
+func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(context.Background(), `SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, table, column).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count > 0
 }

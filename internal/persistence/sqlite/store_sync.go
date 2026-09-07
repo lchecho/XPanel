@@ -10,7 +10,14 @@ import (
 	"xpanel/internal/ports"
 )
 
+// insertOperation 写入一条同步意图，并在同一事务内把专属入站的期望监听状态对齐到该意图。
+//
+// AI-LOCK：所有改变访问权的路径（用户生命周期、配额封禁、周期恢复、协调）都经此函数入队，
+// 因此这里是「入站是否应当监听」在库中的唯一写入点，任何新的决策路径都必须走这里（FR-019）。
 func insertOperation(ctx context.Context, tx *sql.Tx, operation domain.SynchronizationOperation) error {
+	if err := setInboundDesired(ctx, tx, operation.AllocationID.String(), operation.DesiredPresence, operation.CreatedAt); err != nil {
+		return err
+	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO synchronization_operations
         (id,allocation_id,desired_revision,desired_presence,desired_credential_version,reason,phase,state,
          idempotency_key,attempt_count,next_attempt_at,lease_owner,lease_expires_at,last_error_code,last_error_summary,
@@ -193,7 +200,14 @@ func (s *Store) ConfirmSync(ctx context.Context, operationID domain.ID, owner st
                 key_encryption_version=NULL,retired_at=? WHERE allocation_id=? AND state!='destroyed'`, millis(now), allocationID); err != nil {
 				return false, err
 			}
+			// 端口只在「整条入站确认已不监听」之后才回到池中，避免新用户拿到仍在监听的端口（FR-018）。
+			if err := releaseInboundPort(ctx, tx, allocationID, now); err != nil {
+				return false, err
+			}
 		}
+	}
+	if err := confirmInboundPresence(ctx, tx, allocationID, present, now); err != nil {
+		return false, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE access_allocations SET projection_state=?,observed_present=?,synced_revision=?,
         synced_credential_version=?,last_sync_at=?,last_sync_error_code=NULL,last_sync_error_summary=NULL,updated_at=? WHERE id=?`,

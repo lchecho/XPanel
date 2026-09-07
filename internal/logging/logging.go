@@ -16,6 +16,9 @@ const (
 	FieldResult       = "result"
 	FieldDurationMS   = "duration_ms"
 	FieldErrorKind    = "error_kind"
+	// FieldPort / FieldInboundTag 用于专属入站的生命周期日志；两者都不含任何密钥材料。
+	FieldPort       = "port"
+	FieldInboundTag = "inbound_tag"
 )
 
 func New(w io.Writer, level slog.Leveler) *slog.Logger {

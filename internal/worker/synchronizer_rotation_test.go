@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -119,35 +120,37 @@ func TestRotationNeverPersistsAnEmptyInbound(t *testing.T) {
 	f.assertNoEmptyInbound(t, "after rotation drain")
 }
 
-// 加回新凭证失败时必须补偿移除整条入站，而不是留下没有受管客户端的入站；重试按原端口重建。
-func TestRotationCompensatesWhenTheNewCredentialCannotBeAdded(t *testing.T) {
+// 加回新凭证失败时：入站里必须仍有受管客户端（过渡客户端守着），端口不中断；
+// 故障解除后轮换补完，最终只剩期望身份（FR-017/FR-019）。
+func TestRotationKeepsTheInboundAliveWhenTheNewCredentialCannotBeAdded(t *testing.T) {
 	f := newSyncFixture(t)
 	record := f.createUser(t, "Alice")
 	if _, err := f.sync.Drain(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	tag, port := f.tagOf(record), record.Inbound.Inbound.Port
+	safety := domain.RotationSafetyID(record.Identity.StatisticsID)
 	f.rotate(t, record)
 
-	// 不可重试的失败：新客户端加不进去。
-	f.adapter.Failures["add_user"] = []xrayfake.Failure{{Err: &ports.AdapterError{Kind: ports.ErrorUpstreamRejected,
-		Operation: "add_user", Retryable: false, SafeSummary: "rejected"}}}
+	// 第一次 add_user 是过渡客户端（放行并生效），第二次是加回期望凭证（失败）：
+	// 此时入站里只剩过渡客户端，它必须守住这条入站。
+	f.adapter.Failures["add_user"] = []xrayfake.Failure{{Applied: true},
+		{Err: &ports.AdapterError{Kind: ports.ErrorUpstreamRejected, Operation: "add_user", Retryable: false, SafeSummary: "rejected"}}}
 	if _, err := f.sync.Drain(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	f.assertNoEmptyInbound(t, "after failed rotation")
-	if _, present := f.adapter.Inbounds[tag]; present {
-		t.Fatal("the inbound survived a failed rotation without a managed client")
+	f.assertNoEmptyInbound(t, "after a failed rotation")
+	if _, present := f.adapter.Inbounds[tag]; !present {
+		t.Fatal("the inbound was torn down instead of being held by the transition client")
 	}
-	if f.adapter.Listening(port) {
-		t.Fatalf("port %d still listening after the compensating removal", port)
+	if !f.adapter.Listening(port) {
+		t.Fatalf("port %d stopped listening during a failed rotation", port)
 	}
-	after, _ := f.store.User(context.Background(), record.User.ID)
-	if after.Inbound.Inbound.ObservedPresent == nil || *after.Inbound.Inbound.ObservedPresent {
-		t.Fatalf("the panel still reports the inbound as listening: %#v", after.Inbound.Inbound)
+	if _, held := f.adapter.Users[tag][safety]; !held {
+		t.Fatalf("the transition client is not holding the inbound: %#v", f.adapter.Users[tag])
 	}
 
-	// 恢复后：协调器或重试按原端口整体重建，且带着期望凭证。
+	// 故障解除后重试补完轮换，过渡客户端被清理，只剩期望身份。
 	delete(f.adapter.Failures, "add_user")
 	_, _, next := f.operationState(t, record.Allocation.ID)
 	if next.After(f.clock.Now()) {
@@ -156,15 +159,21 @@ func TestRotationCompensatesWhenTheNewCredentialCannotBeAdded(t *testing.T) {
 	if _, err := f.sync.Drain(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	rebuilt, _ := f.store.User(context.Background(), record.User.ID)
-	if rebuilt.Inbound.Inbound.Port != port || !f.adapter.Listening(port) {
-		t.Fatalf("rebuilt port = %d want %d listening", rebuilt.Inbound.Inbound.Port, port)
+	f.assertNoEmptyInbound(t, "after the retry")
+	after, _ := f.store.User(context.Background(), record.User.ID)
+	if after.Allocation.PendingSync() || after.Inbound.Inbound.Port != port {
+		t.Fatalf("allocation after the retry = %#v", after.Allocation)
+	}
+	if got := f.adapter.Users[tag]; len(got) != 1 {
+		t.Fatalf("inbound holds %d clients after rotation, want exactly the managed one: %#v", len(got), got)
 	}
 	remote := f.adapter.Users[tag][record.Identity.StatisticsID]
-	if remote.CredentialVersion != rebuilt.Allocation.DesiredCredentialVersion {
-		t.Fatalf("rebuilt credential version = %d want %d", remote.CredentialVersion, rebuilt.Allocation.DesiredCredentialVersion)
+	if remote.CredentialVersion != after.Allocation.DesiredCredentialVersion {
+		t.Fatalf("credential version = %d want %d", remote.CredentialVersion, after.Allocation.DesiredCredentialVersion)
 	}
-	f.assertNoEmptyInbound(t, "after rebuild")
+	if !f.adapter.Listening(port) {
+		t.Fatalf("port %d is not listening after the rotation completed", port)
+	}
 }
 
 // 进程在两次 RPC 之间崩溃（旧客户端已移除、新客户端未加入）：
@@ -241,5 +250,126 @@ func TestReconcileDoesNotConfirmAnInboundWithoutItsManagedClient(t *testing.T) {
 	}
 	if !f.adapter.Listening(port) {
 		t.Fatalf("port %d is not listening after the rebuild", port)
+	}
+}
+
+// T084：在轮换的每一个 RPC 边界注入进程崩溃，断言入站的受管客户端数从不为 0、端口持续监听，
+// 恢复后最终只剩原统计身份对应的新凭证，且流量历史归属不变。
+func TestRotationSurvivesACrashAtEveryRPCBoundary(t *testing.T) {
+	// 一次成功轮换的 RPC 序列：list_users(读) → add_user(过渡) → remove_user(旧) → add_user(新) → remove_user(过渡)。
+	for boundary := 0; boundary < 5; boundary++ {
+		t.Run(fmt.Sprintf("crash_before_rpc_%d", boundary), func(t *testing.T) {
+			f := newSyncFixture(t)
+			record := f.createUser(t, "Alice")
+			if _, err := f.sync.Drain(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			tag, port := f.tagOf(record), record.Inbound.Inbound.Port
+			// 轮换前先积累流量，确认历史归属在轮换后仍然连续。
+			f.adapter.SetCounter(record.Identity.StatisticsID, ports.Uplink, 4096)
+			f.adapter.SetCounter(record.Identity.StatisticsID, ports.Downlink, 8192)
+			f.rotate(t, record)
+
+			// 在第 boundary 次变更类 RPC 之前崩溃；每次调用前都检查不变量。
+			// 钩子被 fake 取用后即清空，必须每次重新挂上，否则只有第一次调用会被拦截。
+			calls, crashed := 0, false
+			var crash func()
+			crash = func() {
+				f.assertNoEmptyInbound(t, fmt.Sprintf("before rpc %d", calls))
+				if !f.adapter.Listening(port) {
+					t.Fatalf("port %d stopped listening before rpc %d", port, calls)
+				}
+				if calls == boundary {
+					crashed = true
+					panic("crash")
+				}
+				calls++
+				f.adapter.OnAddUser, f.adapter.OnRemoveUser = crash, crash
+			}
+			f.adapter.OnAddUser, f.adapter.OnRemoveUser = crash, crash
+			func() {
+				defer func() { _ = recover() }()
+				_, _ = f.sync.Drain(context.Background())
+			}()
+			// boundary 0–3 对应四次变更 RPC，必须真的崩在那一步；boundary 4 之后没有更多 RPC。
+			if boundary < 4 && !crashed {
+				t.Fatalf("boundary %d was never reached: only %d mutation RPCs happened", boundary, calls)
+			}
+			f.assertNoEmptyInbound(t, "right after the crash")
+			if !f.adapter.Listening(port) {
+				t.Fatalf("port %d stopped listening after the crash", port)
+			}
+
+			// 租约到期后恢复：同一操作续上，最终状态是「恰好一个受管客户端且是期望身份」。
+			f.adapter.OnAddUser, f.adapter.OnRemoveUser = nil, nil
+			f.clock.Time = f.clock.Time.Add(11 * time.Second)
+			if _, err := f.sync.Drain(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			f.assertNoEmptyInbound(t, "after recovery")
+			after, _ := f.store.User(context.Background(), record.User.ID)
+			if after.Allocation.PendingSync() {
+				t.Fatalf("allocation still pending after recovery: %#v", after.Allocation)
+			}
+			if got := f.adapter.Users[tag]; len(got) != 1 {
+				t.Fatalf("inbound holds %d clients, want exactly one: %#v", len(got), got)
+			}
+			remote, ok := f.adapter.Users[tag][record.Identity.StatisticsID]
+			if !ok || remote.CredentialVersion != after.Allocation.DesiredCredentialVersion {
+				t.Fatalf("final client = %#v, want the managed identity at version %d", remote,
+					after.Allocation.DesiredCredentialVersion)
+			}
+			if after.Identity.StatisticsID != record.Identity.StatisticsID {
+				t.Fatal("rotation changed the immutable statistics identity")
+			}
+			if !f.adapter.Listening(port) || after.Inbound.Inbound.Port != port {
+				t.Fatalf("port moved or stopped: %d", after.Inbound.Inbound.Port)
+			}
+			// 过渡身份不得残留，也不得进入连接信息。
+			if _, leftover := f.adapter.Users[tag][domain.RotationSafetyID(record.Identity.StatisticsID)]; leftover {
+				t.Fatal("the transition client survived the rotation")
+			}
+			// 流量计数按原统计身份继续累计：历史归属不变。
+			if f.adapter.Counters[record.Identity.StatisticsID][ports.Uplink] != 4096 {
+				t.Fatalf("traffic history was lost: %#v", f.adapter.Counters[record.Identity.StatisticsID])
+			}
+		})
+	}
+}
+
+// 过渡身份是面板内部状态：它不得出现在连接信息，也不得进入流量采集目标。
+func TestRotationTransitionClientNeverLeaksIntoUserFacingState(t *testing.T) {
+	f := newSyncFixture(t)
+	record := f.createUser(t, "Alice")
+	if _, err := f.sync.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	tag := f.tagOf(record)
+	safety := domain.RotationSafetyID(record.Identity.StatisticsID)
+	// 让轮换停在「过渡客户端已就位」的中间态。
+	f.rotate(t, record)
+	f.adapter.Failures["add_user"] = []xrayfake.Failure{{Applied: true},
+		{Err: &ports.AdapterError{Kind: ports.ErrorUpstreamRejected, Operation: "add_user", Retryable: false, SafeSummary: "rejected"}}}
+	if _, err := f.sync.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, held := f.adapter.Users[tag][safety]; !held {
+		t.Fatal("the transition client is not present in the intermediate state")
+	}
+	// 采集目标里只有真实身份。
+	targets, err := f.store.CollectionTargets(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range targets {
+		if domain.IsRotationSafetyID(target.Identity.StatisticsID) {
+			t.Fatalf("the transition identity entered traffic collection: %#v", target)
+		}
+	}
+	// 库里没有为过渡身份登记任何身份行。
+	var registered int
+	_ = f.store.DB().Read.QueryRow(`SELECT count(*) FROM xray_user_identities WHERE statistics_id=?`, safety).Scan(&registered)
+	if registered != 0 {
+		t.Fatalf("the transition identity was persisted %d times", registered)
 	}
 }

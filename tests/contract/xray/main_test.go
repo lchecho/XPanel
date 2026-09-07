@@ -224,16 +224,28 @@ func writeRuntimeConfig(t *testing.T, config map[string]any) string {
 	return path
 }
 
+// startRuntime 启动受控的真实 Xray；地址被别的进程抢走时换一组地址重试。
+//
+// freeAddress 只能证明「刚才那一刻端口是空的」，内核随后可能把同一个临时端口分给别人
+// （契约套件同时在起停多个进程，撞车并不罕见）。因此就绪失败不是断言失败，而是重来一次。
 func startRuntime(t *testing.T) *liveRuntime {
 	t.Helper()
-	apiAddress, operatorAddress := freeAddress(t), freeAddress(t)
-	runtime := launchRuntime(t, apiAddress, baseConfig(apiAddress, operatorAddress))
-	runtime.operator, runtime.operatorPort = operatorAddress, portOf(t, operatorAddress)
-	return runtime
+	for attempt := 0; ; attempt++ {
+		apiAddress, operatorAddress := freeAddress(t), freeAddress(t)
+		runtime, err := launchRuntime(t, apiAddress, baseConfig(apiAddress, operatorAddress))
+		if err == nil {
+			runtime.operator, runtime.operatorPort = operatorAddress, portOf(t, operatorAddress)
+			return runtime
+		}
+		if attempt == 2 {
+			t.Fatalf("Xray runtime did not start after %d attempts: %v", attempt+1, err)
+		}
+		t.Logf("retrying Xray runtime start on fresh addresses: %v", err)
+	}
 }
 
-// launchRuntime 写入配置、启动进程并等待 API 就绪；失败时输出脱敏诊断。
-func launchRuntime(t *testing.T, apiAddress string, config map[string]any) *liveRuntime {
+// launchRuntime 写入配置、启动进程并等待 API 就绪；就绪失败返回错误（含脱敏诊断）供调用方重试。
+func launchRuntime(t *testing.T, apiAddress string, config map[string]any) (*liveRuntime, error) {
 	t.Helper()
 	bin := contractBinary(t)
 	path := writeRuntimeConfig(t, config)
@@ -243,16 +255,16 @@ func launchRuntime(t *testing.T, apiAddress string, config map[string]any) *live
 	command.Stdout, command.Stderr = output, output
 	if err := command.Start(); err != nil {
 		cancel()
-		t.Fatalf("start Xray runtime: %v", err)
+		return nil, fmt.Errorf("start Xray runtime: %w", err)
 	}
 	target := ports.InstanceTarget{APIEndpoint: apiAddress, ExpectedVersion: wantRuntime, RPCTimeout: 500 * time.Millisecond}
 	client, err := xrayadapter.New(target)
 	if err != nil {
 		cancel()
 		_ = command.Wait()
-		t.Fatal(err)
+		return nil, err
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if _, err = client.Probe(context.Background(), target); err == nil {
 			break
@@ -261,7 +273,7 @@ func launchRuntime(t *testing.T, apiAddress string, config map[string]any) *live
 			_ = client.Close()
 			cancel()
 			_ = command.Wait()
-			t.Fatalf("Xray API did not become ready: %v\n%s", err, sanitize(output.Bytes()))
+			return nil, fmt.Errorf("Xray API did not become ready: %w\n%s", err, sanitize(output.Bytes()))
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -272,7 +284,7 @@ func launchRuntime(t *testing.T, apiAddress string, config map[string]any) *live
 		runtime.cancel()
 		_ = runtime.command.Wait()
 	})
-	return runtime
+	return runtime, nil
 }
 
 func runConfigCheck(t *testing.T, bin string, config map[string]any) error {

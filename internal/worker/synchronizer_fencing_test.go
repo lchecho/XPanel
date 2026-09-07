@@ -66,9 +66,16 @@ func TestLostLeaseWorkerNeitherCallsNorConfirmsAfterReclaim(t *testing.T) {
 	if reclaimed != 1 {
 		t.Fatalf("second worker processed %d operations, want 1", reclaimed)
 	}
-	// 入站只在创建时建立 1 次；轮换的 add_user 只由回收者 B 执行 1 次，A 丢失租约后没有进入 add 阶段。
-	if f.calls("create_inbound") != 1 || f.calls("add_user") != 1 {
-		t.Fatalf("create_inbound=%d add_user=%d, want 1/1", f.calls("create_inbound"), f.calls("add_user"))
+	// 入站只建立 1 次；轮换本身不创建入站，最后的移除来自 B 在钩子里提交的禁用意图。
+	if f.calls("create_inbound") != 1 {
+		t.Fatalf("create_inbound=%d, want 1", f.calls("create_inbound"))
+	}
+	// 关键不变量：A 在丢失租约后即便有在途的移除 RPC，也不得把入站清空——
+	// 适配器的「不移除最后一个受管客户端」守卫是最终防线（FR-019）。
+	for tag, users := range f.adapter.Users {
+		if _, exists := f.adapter.Inbounds[tag]; exists && len(users) == 0 {
+			t.Fatalf("inbound %s was emptied by a stale in-flight removal", tag)
+		}
 	}
 	if n := countAudits(t, f, domain.ActionSyncSucceeded, rotateOp); n != 1 {
 		t.Fatalf("rotation confirmed %d times, want exactly once (by the reclaiming worker)", n)

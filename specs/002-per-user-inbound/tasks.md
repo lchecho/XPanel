@@ -444,3 +444,25 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   临时 `port_unavailable` 不会令 21 用户批量采集断言偶发只看到 20 个目标；重复运行完整
   `XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 make check` 并记录稳定通过证据 per
   plan: Testing / T073-T074 (partial)
+
+---
+
+## Phase 10: Convergence
+
+- [X] T084 **CRITICAL** 修正 `internal/worker/synchronizer.go` 仍会在凭证轮换的两次非原子 RPC 之间留下
+  空客户端入站的问题：为固定 Xray v26.3.27 设计并持久化可重放的轮换过渡状态（例如不对外暴露、使用
+  独立临时身份与密钥的有界 safety client），使 `RemoveUser` 前、旧客户端移除后、期望客户端加入后及
+  清理过渡身份后的每个进程崩溃、租约丢失和 RPC 失败边界都满足入站客户端数从不为 0、端口持续监听，
+  最终只保留原不可变统计身份对应的新凭证且旧凭证失效；过渡凭证不得进入连接信息或造成流量归属遗漏。
+  同步更新 `spec.md`、`research.md`、`contracts/xray-adapter.md` 对“一个逻辑用户、稳态恰好一个客户端、
+  轮换时允许有界内部过渡客户端”的明确约束，并在 `internal/worker/synchronizer_rotation_test.go` 与真实
+  Xray 契约中逐个 RPC 边界注入崩溃，断言客户端数始终大于 0、端口可连接、最终客户端数为 1、统计历史
+  连续；不得再以“单个租约步骤内未持久化”代替故障安全，也不得用移除整条入站造成监听中断 per
+  US3/AC3 / FR-017 / FR-019 / T078 (contradicts)
+- [ ] T085 完成 FR-005 的用户级统计前置门禁：扩展 `ports.TemplateCapabilities`、
+  `adapter/xray.ValidateTemplate` 与模板验证流程，在一次性探针入站上产生经过 SS2022 身份认证的最小
+  TCP/UDP 流量并验证该探针身份的 uplink/downlink 两个计数器均可读取，随后可靠移除探针及清理计数；
+  缺少 `StatsService`、`statsUserUplink` 或 `statsUserDownlink` 时必须在创建任何用户前把模板标为不兼容
+  并展示安全中文原因，不能仅显示事后 `StatsSuspect` 提示。为启用/缺失 policy 的固定 Xray 配置分别增加
+  真实契约和应用回归测试，并更正 `research.md`、`contracts/config.md`、
+  `validation-report.md` 中与最终可验证语义不一致或提前宣称通过的内容 per FR-005 / T079 (contradicts)

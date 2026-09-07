@@ -88,10 +88,33 @@ func methodFromKey(encoded string) string {
 	return security.MethodAES256
 }
 
-// RemoveUser 移除面板专属入站内的一个客户端；同样限定在面板命名空间内。
+// RemoveUser 移除面板专属入站内的一个客户端；限定在面板命名空间内，且不得移除最后一个客户端。
+//
+// AI-LOCK：入站的受管客户端数在任何时刻都不得为 0（FR-019）。停止访问要移除整条入站，
+// 轮换要先放过渡客户端；因此「移除会清空入站」一定是竞态或调用错误，必须在发起 RPC 之前拒绝。
+// 这条守卫是该不变量的最终防线：即便租约竞态让一个过期的移除请求漏到这里，它也不会生效。
 func (c *Client) RemoveUser(ctx context.Context, command ports.RemoveUserCommand) (ports.MutationReceipt, error) {
 	if err := guardPanelInbound("remove_user", command.InboundTag); err != nil {
 		return ports.MutationReceipt{}, err
+	}
+	// 精确判定：只有「目标确实在，且它是唯一的客户端」才拒绝；移除本就不存在的客户端不改变数量，
+	// 应当照常返回 user_not_found，让调用方按已收敛处理。
+	listCtx, listCancel := c.deadline(ctx)
+	list, listErr := c.handler.GetInboundUsers(listCtx, &handlercommand.GetInboundUserRequest{Tag: command.InboundTag})
+	listCancel()
+	if listErr != nil {
+		return ports.MutationReceipt{}, mapError("remove_user", listErr)
+	}
+	present := false
+	for _, user := range list.GetUsers() {
+		if user.GetEmail() == command.StatisticsID {
+			present = true
+			break
+		}
+	}
+	if present && len(list.GetUsers()) <= 1 {
+		return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorLastManagedClient, Operation: "remove_user",
+			Retryable: false, SafeSummary: "refusing to remove the last managed client of an inbound"}
 	}
 	operation := &handlercommand.RemoveUserOperation{Email: command.StatisticsID}
 	callCtx, cancel := c.deadline(ctx)

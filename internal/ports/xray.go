@@ -179,8 +179,10 @@ const (
 	ErrorPortUnavailable      = "port_unavailable"
 	ErrorInboundAlreadyExists = "inbound_already_exists"
 	ErrorInboundNotFound      = "inbound_not_found"
-	ErrorStatsNotFound        = "stats_not_found"
-	ErrorVersionMismatch      = "version_mismatch"
-	ErrorUpstreamRejected     = "upstream_rejected"
-	ErrorInternal             = "internal"
+	// ErrorLastManagedClient：该移除会让入站失去最后一个受管客户端，被适配器在发起 RPC 前拒绝。
+	ErrorLastManagedClient = "last_managed_client"
+	ErrorStatsNotFound     = "stats_not_found"
+	ErrorVersionMismatch   = "version_mismatch"
+	ErrorUpstreamRejected  = "upstream_rejected"
+	ErrorInternal          = "internal"
 )

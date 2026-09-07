@@ -281,6 +281,13 @@ func (a *Adapter) RemoveUser(ctx context.Context, command ports.RemoveUserComman
 		return ports.MutationReceipt{}, err
 	}
 	failure, fails := a.failure("remove_user")
+	// 复刻真实适配器的最终防线：移除不得让入站失去最后一个受管客户端（FR-019）。
+	if _, exists := a.Inbounds[command.InboundTag]; exists && len(a.Users[command.InboundTag]) <= 1 && !fails {
+		if _, target := a.Users[command.InboundTag][command.StatisticsID]; target {
+			return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorLastManagedClient, Operation: "remove_user",
+				Retryable: false, SafeSummary: "refusing to remove the last managed client of an inbound"}
+		}
+	}
 	if _, exists := a.Inbounds[command.InboundTag]; !exists && !fails {
 		// 入站整体不在时，真实 Xray 的 AlterInbound 报的是「找不到该入站」而不是「找不到用户」。
 		return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorInboundNotFound, Operation: "remove_user",

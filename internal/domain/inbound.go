@@ -63,7 +63,26 @@ func InboundDesiredPresent(lifecycle LifecycleState, adminEnabled bool, quota Qu
 	return lifecycle == LifecycleActive && adminEnabled && quota == QuotaWithinLimit
 }
 
-// InboundClientCount 是每条专属入站允许的受管客户端数量。
+// RotationSuffix 标记「轮换过渡客户端」：它是面板内部的临时身份，只在一次凭证轮换期间存在。
+//
+// 存在理由：Xray 不允许原地替换同一 email 的密钥（实测 user_already_exists），只能先删后加；
+// 若不先放一个过渡客户端，两次 RPC 之间该入站会短暂没有任何受管客户端，违反 FR-019。
+// AI-LOCK：过渡身份的密钥随机生成、只存在于内存、MUST NOT 进入连接信息或任何页面；
+// 它的流量计数器不进入任何用户的计量口径。
+const RotationSuffix = "-rotate"
+
+// RotationSafetyID 由该用户的统计标识派生出轮换期间的过渡身份，稳定且可识别。
+func RotationSafetyID(statisticsID string) string { return statisticsID + RotationSuffix }
+
+// IsRotationSafetyID 判定某统计标识是否为轮换过渡身份。
+func IsRotationSafetyID(value string) bool {
+	return IsPanelNamespace(value) && strings.HasSuffix(value, RotationSuffix)
+}
+
+// InboundClientCount 是每条专属入站在稳态下的受管客户端数量。
+//
+// 稳态恰好一个：一个逻辑用户一条入站一个客户端。轮换期间允许短暂存在第二个「过渡客户端」，
+// 那是有界的内部状态，不改变稳态约束（FR-017/FR-019）。
 //
 // AI-LOCK：必须恰好为 1。0 会让 SS2022 入站退化为服务端密钥可直接连接的单用户模式（实测见
 // research.md R-005）；>1 会破坏“一个用户一条入站”的隔离前提。

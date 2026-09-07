@@ -142,6 +142,14 @@ func (s *AuthService) Logout(ctx context.Context, admin ports.AdministratorRecor
 	return s.audit(ctx, admin, domain.ActionLogout, domain.AuditSucceeded, "administrator logout succeeded")
 }
 
+// RevokeSessions 撤销管理员的全部会话：登录审计失败且当前会话撤销也失败时的最终补偿，确保不留下可用的部分认证状态。
+func (s *AuthService) RevokeSessions(ctx context.Context, administratorID domain.ID) error {
+	now := s.clock.Now()
+	return s.store.WithWriteTx(ctx, func(tx ports.WriteTx) error {
+		return tx.RevokeAllSessions(ctx, administratorID, now)
+	})
+}
+
 // LogoutFailed 记录会话撤销失败的登出：审计结果为 failed，不得留下“登出成功但会话仍有效”的状态。
 func (s *AuthService) LogoutFailed(ctx context.Context, admin ports.AdministratorRecord, summary string) error {
 	return s.audit(ctx, admin, domain.ActionLogout, domain.AuditFailed, summary)

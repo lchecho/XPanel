@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -16,10 +17,21 @@ import (
 	"xpanel/internal/web/views"
 )
 
+// 功能入口：AuthHandler 实现登录/登出的单一可判定结果协议（T148）：
+// 登录 = 认证 → 会话显式提交并写 cookie → succeeded 审计；任一步失败则撤回 cookie、撤销会话、记录 failed 并返回 500。
+// 登出 = 撤销会话 → succeeded 审计；撤销失败记录 failed 并返回 500。会话在每个请求中至多提交一次（middleware.LoadAndSave）。
 type AuthHandler struct {
 	Service  *application.AuthService
 	Sessions *scs.SessionManager
 	Renderer Renderer
+	Logger   *slog.Logger
+}
+
+func (h *AuthHandler) logger() *slog.Logger {
+	if h.Logger == nil {
+		return slog.Default()
+	}
+	return h.Logger
 }
 
 func (h *AuthHandler) LoginPage(w http.ResponseWriter, r *http.Request) {
@@ -69,13 +81,21 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Sessions.Put(r.Context(), webmiddleware.SessionAdministratorID, admin.ID.String())
 	h.Sessions.Put(r.Context(), webmiddleware.SessionPasswordVersion, admin.PasswordVersion)
-	if _, _, err := h.Sessions.Commit(r.Context()); err != nil {
+	if err := webmiddleware.EstablishSession(r.Context(), h.Sessions, w); err != nil {
+		// 提交失败：数据库中没有会话行，销毁内存会话即可（中间件随后只写过期 cookie）。
 		_ = h.Sessions.Destroy(r.Context())
 		h.loginNotEstablished(w, r, "login failed: session could not be persisted")
 		return
 	}
 	if err := h.Service.RecordLogin(r.Context(), *admin); err != nil {
-		_ = h.Sessions.Destroy(r.Context())
+		// 补偿：撤回已写入响应的会话 cookie，并撤销已持久化的会话；撤销失败再撤销该管理员全部会话，仍失败则记录错误。
+		webmiddleware.WithdrawSessionCookie(w, h.Sessions)
+		if destroyErr := h.Sessions.Destroy(r.Context()); destroyErr != nil {
+			if revokeErr := h.Service.RevokeSessions(r.Context(), admin.ID); revokeErr != nil {
+				h.logger().Error("login compensation failed: persisted session could not be revoked", "error_kind", "internal")
+			}
+		}
+		_ = h.Service.RecordLoginFailure(r.Context(), "login failed: audit could not be written; session revoked")
 		h.Renderer.Error(w, http.StatusInternalServerError, "登录暂时无法完成", NewRequestID())
 		return
 	}

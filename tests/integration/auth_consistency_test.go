@@ -2,8 +2,10 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -213,4 +215,78 @@ func TestLogoutAuditFailureDoesNotReportSuccess(t *testing.T) {
 		t.Fatal("succeeded logout audited although the write failed")
 	}
 	assertNoCredentialLeak(t, app)
+}
+
+func hasSessionCookie(app *testsupport.App, response *http.Response) bool {
+	for _, value := range response.Header.Values("Set-Cookie") {
+		if strings.HasPrefix(value, app.Sessions.Cookie.Name+"=") && !strings.Contains(value, "Max-Age=-1") && !strings.Contains(value, "Max-Age=0") {
+			return true
+		}
+	}
+	return false
+}
+
+// T148：登录后的普通请求由中间件提交会话（写 flash）；提交失败返回 500、不写会话 cookie，此前已建立的会话保持可用。
+func TestMiddlewareSessionCommitFailureLeavesNoPartialState(t *testing.T) {
+	app, _, sessions := newFaultyAuthApp(t)
+	app.Login()
+	settings, _ := app.Store.Settings(context.Background())
+	// scs 在配置了 idle timeout 时每次加载都会重新提交会话（滑动过期），因此先取 CSRF 令牌再注入提交故障。
+	csrf := app.CSRF("/settings")
+	sessions.FailNextCommit()
+	response, _ := app.PostForm("/settings", "/settings", url.Values{"quota_timezone": {"Asia/Tokyo"}, "_version": {fmt.Sprint(settings.Revision)}, "_csrf": {csrf}})
+	if response.StatusCode != http.StatusInternalServerError || hasSessionCookie(app, response) {
+		t.Fatalf("middleware commit failure status=%d cookie=%v", response.StatusCode, hasSessionCookie(app, response))
+	}
+	if !loggedIn(app) {
+		t.Fatal("previously established session lost after a failed middleware commit")
+	}
+	settings, _ = app.Store.Settings(context.Background())
+	response, _ = app.PostForm("/settings", "/settings", url.Values{"quota_timezone": {"Asia/Seoul"}, "_version": {fmt.Sprint(settings.Revision)}})
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("retry status=%d", response.StatusCode)
+	}
+}
+
+// T148：成功登录的审计写入失败且当前会话撤销也失败：cookie 被撤回、管理员全部会话被撤销、响应 500、无 succeeded 审计。
+func TestLoginAuditFailureWithSessionDeleteFailureRevokesEverything(t *testing.T) {
+	app, auth, sessions := newFaultyAuthApp(t)
+	auth.FailNextWrite()
+	sessions.FailNextDelete()
+	response, _ := app.PostForm("/login", "/login", url.Values{"username": {app.Username}, "password": {app.Password}})
+	if response.StatusCode != http.StatusInternalServerError || hasSessionCookie(app, response) {
+		t.Fatalf("login status=%d cookie=%v", response.StatusCode, hasSessionCookie(app, response))
+	}
+	if loggedIn(app) {
+		t.Fatal("client holds a usable session after failed login")
+	}
+	var live int
+	_ = app.Store.DB().Read.QueryRow(`SELECT count(*) FROM admin_sessions WHERE revoked_at IS NULL AND data LIKE '%administrator_id%'`).Scan(&live)
+	if live != 0 {
+		t.Fatalf("live authenticated sessions = %d, want 0 (compensation must revoke)", live)
+	}
+	if auditCount(t, app, domain.ActionLogin, domain.AuditSucceeded) != 0 || auditCount(t, app, domain.ActionLogin, domain.AuditFailed) != 1 {
+		t.Fatalf("login audits succeeded=%d failed=%d", auditCount(t, app, domain.ActionLogin, domain.AuditSucceeded), auditCount(t, app, domain.ActionLogin, domain.AuditFailed))
+	}
+	app.Login()
+	if !loggedIn(app) || auditCount(t, app, domain.ActionLogin, domain.AuditSucceeded) != 1 {
+		t.Fatal("subsequent login did not establish exactly one audited session")
+	}
+	assertNoCredentialLeak(t, app)
+}
+
+// T148：每次成功登录/登出的响应都伴随恰好一条 succeeded 审计，且会话可用性与之一致（协议可判定）。
+func TestLoginLogoutProtocolIsDecidable(t *testing.T) {
+	app, _, _ := newFaultyAuthApp(t)
+	response, _ := app.PostForm("/login", "/login", url.Values{"username": {app.Username}, "password": {app.Password}})
+	if response.StatusCode != http.StatusSeeOther || !hasSessionCookie(app, response) || !loggedIn(app) {
+		t.Fatalf("login status=%d cookie=%v", response.StatusCode, hasSessionCookie(app, response))
+	}
+	if auditCount(t, app, domain.ActionLogin, domain.AuditSucceeded) != 1 {
+		t.Fatal("successful login must be audited exactly once")
+	}
+	response, _ = app.PostForm("/logout", "/", nil)
+	if response.StatusCode != http.StatusSeeOther || loggedIn(app) || auditCount(t, app, domain.ActionLogout, domain.AuditSucceeded) != 1 {
+		t.Fatalf("logout status=%d loggedIn=%v", response.StatusCode, loggedIn(app))
+	}
 }

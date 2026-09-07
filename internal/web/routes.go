@@ -38,7 +38,7 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 		return nil, err
 	}
 	renderer := handlers.Renderer{Templates: templates}
-	auth := &handlers.AuthHandler{Service: deps.Auth, Sessions: deps.Sessions, Renderer: renderer}
+	auth := &handlers.AuthHandler{Service: deps.Auth, Sessions: deps.Sessions, Renderer: renderer, Logger: deps.Logger}
 
 	public := http.NewServeMux()
 	public.Handle("GET /static/", manifest.Handler())
@@ -116,6 +116,6 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 	public.Handle("/", webmiddleware.RequireAuth(deps.Sessions, deps.Auth.SessionValid, protected))
 
 	stack := webmiddleware.CSRF(deps.CSRFKey, deps.Secure, public)
-	stack = deps.Sessions.LoadAndSave(stack)
+	stack = webmiddleware.LoadAndSave(deps.Sessions, stack)
 	return webmiddleware.SecurityHeaders(stack), nil
 }

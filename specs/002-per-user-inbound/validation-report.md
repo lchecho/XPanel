@@ -48,6 +48,7 @@ SC-001、SC-002、SC-010 的人工验收（T076）待执行。**
 | 1 版本双向一致、管理端点仅回环 | `TestPinnedRuntimeAndModule` | 通过 |
 | 2 运行时创建 SS2022 入站、返回后立即监听 | `TestLiveInboundLifecycleContract`（AddInbound 返回后即可 TCP 连接） | 通过 |
 | 3 `GetInboundUsersCount > 0` 且可增删用户 | `TestLiveInboundLifecycleContract`、`TestLiveUserMutationContractOnADedicatedInbound` | 通过 |
+| 3b 用户级统计能力前置门禁 | `TestLiveTemplateValidationUsesADisposableProbe`（开启 policy 时四项能力全部证实）、`TestLiveTemplateValidationRejectsNodesWithoutUserTrafficStats`（未配置 policy 时判为不兼容并给出中文原因，探针照常清理） | 通过 |
 | 4 空 `Users` 在构建期被拒 | `TestKnownSS2022ConfigurationFailuresAndEmptyClientRejection`（请求不到达 Xray） | 通过 |
 | 5 真实 TCP/UDP 流量与两方向计数 | `TestLiveTrafficCountersAndInboundRemovalSemantics`（第二个 xray 进程扮演客户端，64KiB TCP 回显 + UDP 回显） | 通过 |
 | 6 移除后新握手被拒、端口释放、既有连接可继续 | 同上 | 通过 |
@@ -68,18 +69,28 @@ SC-001、SC-002、SC-010 的人工验收（T076）待执行。**
 | 运维文档 | `docs/operations.md` §6（入站与端口运维预期）、§6.1（端口池扩容流程）、§7（00004 破坏性说明与备份演练顺序） | 已更新 |
 | 上手文档 | `README.md`：入站模板 → 兼容性验证 → 创建用户 → 交付连接信息的最小路径 | 已更新 |
 
-## 5. 收敛轮次（Phase 9，2026-09-07）
+## 5. 收敛轮次
+
+### Phase 9（2026-09-07）
 
 | 任务 | 证据 | 结果 |
 |---|---|---|
-| T078 轮换状态机 | 轮换改为单阶段意图（先读实际状态再决策），加回失败时补偿移除整条入站并有界重试；`internal/worker/synchronizer_rotation_test.go` 五个用例（正常轮换、单阶段、补偿、崩溃恢复、坏入站不被误判收敛）每个都断言「不存在没有受管客户端的面板入站」；`tests/contract/xray/rotation_test.go` 在真实节点上证明同 email 无法原地换密钥、先删后加期间端口持续监听、补偿移除后可用同一端口重建 | 通过 |
-| T079 能力门禁 | `ValidateTemplate` 不再忽略探针移除结果，新增 InboundRemovable 硬门禁；不兼容原因经 `views.CompatibilityReasonSentence` 中文化；用户级统计经实测无法在校验期证实（research.md C-005），改为基于证据的提示（有在监听的用户却从未读到计数）。`internal/application/template_service_test.go`、`internal/web/handlers/templates_test.go`、契约 `TestLiveTemplateValidationUsesADisposableProbe` | 通过 |
+| T078 轮换状态机 | 轮换改为单阶段意图（先读实际状态再决策）。**该结论已被 Phase 10 的 T084 推翻并替换**：单阶段仍会在两次 RPC 之间留下空客户端入站，见 research.md C-006 | 已被 T084 取代 |
+| T079 能力门禁 | `ValidateTemplate` 不再忽略探针移除结果，新增 InboundRemovable 硬门禁；不兼容原因经 `views.CompatibilityReasonSentence` 中文化。**其中「用户级统计无法在校验期证实」的判断已被 Phase 10 的 T085 推翻**（research.md C-007），统计现在也是硬门禁；InboundRemovable 与中文化部分继续有效 | 部分被 T085 取代 |
 | T080 更换端口 | 迁移 00005（新增 port_change 原因，补回 00004 丢失的 idempotency_key 唯一与 UNIQUE(allocation_id, desired_revision)）；`Store.ChangeInboundPort` 单事务完成校验、改端口、写意图与审计；`tests/integration/port_change_test.go` 覆盖成功、三类拒绝无部分状态、重复提交只产生一条意图、并发抢同一端口只有一个成功；handler 测试覆盖 422/409/成功；故障矩阵新增 port_change 列（8×8=64 格全绿） | 通过 |
 | T081 无归属漂移 | 迁移 00006（template_id 可空 + COALESCE 归组的唯一索引）；协调器优先挂模板、无模板时以「无归属」持久化；LeaseDueDriftRemoval 改 LEFT JOIN 且兼容性只约束 identity 类；新增 OrphanStaleDriftRemovals 重排队。`tests/integration/inbound_drift_test.go` 覆盖「零模板」「全归档」两种场景与永久失败后的重排队 | 通过 |
 | T083 契约稳定性 | 端口池基址改到临时端口范围之下并逐个绑定校验，采集断言前用 `convergeAll` 等待全部分配收敛；`XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 go test ./tests/contract/xray -count=1` 连续 5 次全绿，随后整条 `make check` `exit=0`，运行后连续三次 `pgrep` 均无残留 Xray 进程 | 通过 |
 
-实测更正记录见 `research.md` C-004（移除唯一客户端不会让入站退化为服务端密钥可直连）与
-C-005（用户级统计无法在模板校验期证实）。
+### Phase 10（2026-09-07）
+
+| 任务 | 证据 | 结果 |
+|---|---|---|
+| T084 轮换过渡客户端 | 轮换改为四步过渡（加过渡 → 删旧 → 加新 → 删过渡），全程客户端数为 1 或 2；适配器新增「不移除最后一个受管客户端」守卫（`last_managed_client`）作为与租约无关的最终防线。`internal/worker/synchronizer_rotation_test.go` 在四个变更 RPC 边界逐个注入崩溃（并断言每个边界确实被命中），每步断言客户端数不为 0、端口可连接、恢复后恰好一个期望身份、统计身份与流量历史不变；`tests/contract/xray/rotation_test.go` 在真实节点上逐步验证四步过渡、从「只剩过渡客户端」续跑、以及守卫拒绝清空入站 | 通过 |
+| T085 统计能力前置门禁 | `ValidateTemplate` 在探针入站上用进程内 SS2022 客户端产生一次认证回显流量并回读两个方向的计数器；漏配 policy 的节点在创建任何用户之前即判为不兼容，中文原因直接指向要改的配置键。实测证据见 research.md C-007（开启 policy 时两个计数器均为 23 字节，未配置时始终 NotFound） | 通过 |
+
+实测更正记录见 `research.md` C-004（移除唯一客户端不会让入站退化为服务端密钥可直连）、
+C-006（轮换必须用过渡客户端，「未持久化的空窗」不算故障安全，修正 T078 的判断）与
+C-007（产生一次认证流量后用户级统计能力可以被证实，修正 C-005 的过窄结论）。
 
 ## 6. 人工验收（T076 / T082，待执行）
 

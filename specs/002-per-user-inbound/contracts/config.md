@@ -22,8 +22,10 @@ MUST NOT 写入配置文件。
 
 - `api.tag` MUST 非空，否则 Xray 拒绝启动（`API tag can't be empty`）。
 - `policy.levels."0".statsUserUplink/statsUserDownlink` MUST 为 `true`，否则面板创建的入站不会
-  产生用户级计数器，配额将永远不触发（research.md R-007）。入站模板的兼容性校验 MUST 检出该缺失
-  并标记为不兼容。
+  产生用户级计数器，配额将永远不触发（research.md R-007）。入站模板的兼容性校验 MUST 在创建任何
+  用户之前检出该缺失并标记为不兼容：面板读不到 Xray 的 policy 段，因此校验的做法是在一次性探针
+  入站上产生一次经过 SS2022 身份认证的最小回显流量，再回读该探针身份的上行与下行计数器
+  （research.md C-007）。两个计数器都读到才算通过。
 - `inbounds` MAY 为空，也 MAY 保留运维自有入站；面板只操作自己命名空间内的入站。
 - 管理端点 MUST 仅监听回环地址。
 

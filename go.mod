@@ -6,6 +6,8 @@ require (
 	github.com/alexedwards/scs/v2 v2.9.0
 	github.com/gorilla/csrf v1.7.3
 	github.com/pressly/goose/v3 v3.28.0
+	github.com/sagernet/sing v0.5.1
+	github.com/sagernet/sing-shadowsocks v0.2.7
 	github.com/xtls/xray-core v1.260327.0
 	golang.org/x/crypto v0.56.0
 	golang.org/x/sys v0.47.0
@@ -32,8 +34,6 @@ require (
 	github.com/pires/go-proxyproto v0.11.0 // indirect
 	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/sagernet/sing v0.5.1 // indirect
-	github.com/sagernet/sing-shadowsocks v0.2.7 // indirect
 	github.com/sethvargo/go-retry v0.4.0 // indirect
 	github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f // indirect
 	go.uber.org/multierr v1.11.0 // indirect

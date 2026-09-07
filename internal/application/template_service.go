@@ -106,8 +106,10 @@ func (s *TemplateService) Get(ctx context.Context, id domain.ID) (ports.Template
 }
 
 // StatsSuspect 判定某模板是否「已有在监听的用户，却从未读到任何用户级计数」。
-// 这是漏配 policy.levels."0".statsUserUplink/statsUserDownlink 的典型特征，但也可能只是还没人用过，
-// 因此只作为提示，不改变模板的兼容状态（research.md C-005）。
+//
+// 主门禁在模板校验期：探针入站上跑一次认证流量并回读计数器，漏配 policy 的节点根本无法通过校验
+// （research.md C-007）。本提示覆盖的是「校验通过之后运维又把 policy 关掉并重启节点」这种后续漂移，
+// 它也可能只是还没人用过，因此只作为提示，不改变模板的兼容状态。
 func (s *TemplateService) StatsSuspect(ctx context.Context, id domain.ID) (bool, error) {
 	listening, observed, err := s.store.TemplateCounterEvidence(ctx, id)
 	if err != nil {

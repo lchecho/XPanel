@@ -138,21 +138,26 @@ type TrafficRound struct {
 
 // TemplateCapabilities 是入站模板兼容性校验的结果。
 //
-// 说明：面板无法通过 API 读取 Xray 的 policy 段，因此「用户级统计是否开启」不可在此处证实，
-// 只能在采集阶段作为健康诊断暴露（见 contracts/config.md 与 research.md R-007 更正记录）。
+// 四项硬性能力：能创建入站、能移除入站、支持 SS2022 多用户身份、用户级流量统计可读。
+// 最后一项无法通过读配置证实（面板读不到 Xray 的 policy 段），只能在一次性探针入站上
+// 产生经过身份认证的最小流量后回读计数器（research.md C-007）。
 type TemplateCapabilities struct {
 	InboundCreatable bool
 	// InboundRemovable 表示探针入站确实被移除了。面板的整个生命周期依赖「能建也能拆」，
 	// 只能建不能拆的节点会让停用、删除与配额封禁全部无法生效，必须判为不兼容（FR-005）。
-	InboundRemovable    bool
-	ProtocolSupported   bool
-	MethodSupported     bool
-	MultiUserSupported  bool
+	InboundRemovable   bool
+	ProtocolSupported  bool
+	MethodSupported    bool
+	MultiUserSupported bool
+	// TrafficAccounted 表示探针身份的上行与下行计数器都读到了：节点确实开启了用户级统计。
+	// 这是 FR-005 的第四项能力，只能通过在探针入站上产生真实流量来证实（research.md C-007）。
+	TrafficAccounted    bool
 	CompatibilityReason string
 }
 
 func (c TemplateCapabilities) Compatible() bool {
-	return c.InboundCreatable && c.InboundRemovable && c.ProtocolSupported && c.MethodSupported && c.MultiUserSupported
+	return c.InboundCreatable && c.InboundRemovable && c.ProtocolSupported && c.MethodSupported &&
+		c.MultiUserSupported && c.TrafficAccounted
 }
 
 type AdapterError struct {

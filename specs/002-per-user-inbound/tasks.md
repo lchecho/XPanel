@@ -459,7 +459,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   Xray 契约中逐个 RPC 边界注入崩溃，断言客户端数始终大于 0、端口可连接、最终客户端数为 1、统计历史
   连续；不得再以“单个租约步骤内未持久化”代替故障安全，也不得用移除整条入站造成监听中断 per
   US3/AC3 / FR-017 / FR-019 / T078 (contradicts)
-- [ ] T085 完成 FR-005 的用户级统计前置门禁：扩展 `ports.TemplateCapabilities`、
+- [X] T085 完成 FR-005 的用户级统计前置门禁：扩展 `ports.TemplateCapabilities`、
   `adapter/xray.ValidateTemplate` 与模板验证流程，在一次性探针入站上产生经过 SS2022 身份认证的最小
   TCP/UDP 流量并验证该探针身份的 uplink/downlink 两个计数器均可读取，随后可靠移除探针及清理计数；
   缺少 `StatsService`、`statsUserUplink` 或 `statsUserDownlink` 时必须在创建任何用户前把模板标为不兼容

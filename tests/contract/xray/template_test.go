@@ -61,9 +61,10 @@ func TestLiveTemplateValidationUsesADisposableProbe(t *testing.T) {
 	if err != nil || !capabilities.Compatible() {
 		t.Fatalf("template capabilities = %#v, %v\n%s", capabilities, err, runtime.diagnostics())
 	}
-	// 「能建」与「能拆」都必须被证实：只能建不能拆的节点无法支持停用、删除与配额封禁（FR-005）。
-	if !capabilities.InboundCreatable || !capabilities.InboundRemovable || !capabilities.MultiUserSupported {
-		t.Fatalf("capabilities did not prove the full inbound lifecycle: %#v", capabilities)
+	// 四项能力都必须被证实：能建、能拆、多用户身份、用户级统计可读（FR-005）。
+	if !capabilities.InboundCreatable || !capabilities.InboundRemovable || !capabilities.MultiUserSupported ||
+		!capabilities.TrafficAccounted {
+		t.Fatalf("capabilities did not prove the full contract: %#v", capabilities)
 	}
 	if listening(probe.ProbePort) {
 		t.Fatalf("probe port %d is still listening after validation", probe.ProbePort)
@@ -82,5 +83,48 @@ func TestLiveTemplateValidationUsesADisposableProbe(t *testing.T) {
 		ports.TemplateProbe{TemplateID: templateID, ListenAddress: listenAddress, ProbePort: freePort(t), Method: "aes-128-gcm"})
 	if err != nil || unsupported.Compatible() || unsupported.MethodSupported {
 		t.Fatalf("unsupported method capabilities = %#v, %v", unsupported, err)
+	}
+}
+
+// 契约门禁 5（前置）：漏配 policy.levels."0".statsUserUplink/statsUserDownlink 的节点
+// MUST 在创建任何用户之前就被判为不兼容——否则所有用户的用量恒为零，配额形同虚设（FR-005）。
+func TestLiveTemplateValidationRejectsNodesWithoutUserTrafficStats(t *testing.T) {
+	apiAddress, operatorAddress := freeAddress(t), freeAddress(t)
+	config := baseConfig(apiAddress, operatorAddress)
+	delete(config, "policy") // 保留 stats 与 API，只去掉用户级统计策略
+	runtime, err := launchRuntime(t, apiAddress, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.operator, runtime.operatorPort = operatorAddress, portOf(t, operatorAddress)
+
+	probe := ports.TemplateProbe{TemplateID: testsupport.NewID(t), ListenAddress: listenAddress,
+		ProbePort: freePort(t), Method: security.MethodAES256}
+	capabilities, err := runtime.client.ValidateTemplate(context.Background(), probe)
+	if err != nil {
+		t.Fatalf("validation against a node without the policy failed outright: %v\n%s", err, runtime.diagnostics())
+	}
+	// 入站生命周期与多用户身份都没问题，唯独统计不可读。
+	if !capabilities.InboundCreatable || !capabilities.InboundRemovable || !capabilities.MultiUserSupported {
+		t.Fatalf("capabilities = %#v", capabilities)
+	}
+	if capabilities.TrafficAccounted || capabilities.Compatible() {
+		t.Fatalf("a node without user traffic stats was reported compatible: %#v", capabilities)
+	}
+	if capabilities.CompatibilityReason == "" {
+		t.Fatal("no reason was reported for the missing traffic statistics")
+	}
+	// 探针照常被清理，不留下任何面板入站。
+	if listening(probe.ProbePort) {
+		t.Fatalf("probe port %d is still listening", probe.ProbePort)
+	}
+	inbounds, err := runtime.client.ListInbounds(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inbound := range inbounds {
+		if inbound.PanelManaged {
+			t.Fatalf("probe inbound survived validation: %#v", inbound)
+		}
 	}
 }

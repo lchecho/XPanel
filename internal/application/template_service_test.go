@@ -123,6 +123,25 @@ func TestTemplateRegistrationAndValidation(t *testing.T) {
 	if after.Template.Compatibility != domain.CompatibilityIncompatible || after.Template.CompatibilityReason == "" {
 		t.Fatalf("incompatible template = %#v", after.Template)
 	}
+	// 缺少用户级统计 policy 的节点必须在创建任何用户之前就判为不兼容（FR-005）：
+	// 否则所有用户的用量恒为零，配额形同虚设。
+	fixture.adapter.Templates[id.String()] = ports.TemplateCapabilities{InboundCreatable: true, InboundRemovable: true,
+		ProtocolSupported: true, MethodSupported: true, MultiUserSupported: true, TrafficAccounted: false,
+		CompatibilityReason: "node does not report per-user traffic counters; enable statsUserUplink and statsUserDownlink"}
+	noStats, _ := fixture.store.Template(context.Background(), id)
+	if _, err := fixture.templates.Revalidate(context.Background(), RevalidateInput{ID: id,
+		ExpectedRevision: noStats.Template.Revision, RequestID: appID(t), ActorID: appID(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.templates.RunValidation(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	blocked, _ := fixture.store.Template(context.Background(), id)
+	if blocked.Template.Compatibility != domain.CompatibilityIncompatible ||
+		blocked.Template.CompatibilityReason != "node does not report per-user traffic counters; enable statsUserUplink and statsUserDownlink" {
+		t.Fatalf("template without user traffic stats = %#v", blocked.Template)
+	}
+
 	// 只能建不能拆的节点同样不兼容：停用、删除与配额封禁都依赖移除入站的能力（FR-005）。
 	fixture.adapter.Templates[id.String()] = ports.TemplateCapabilities{InboundCreatable: true, InboundRemovable: false,
 		ProtocolSupported: true, MethodSupported: true, MultiUserSupported: true,

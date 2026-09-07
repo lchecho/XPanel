@@ -155,12 +155,10 @@ func (c *Client) ListInbounds(ctx context.Context) ([]ports.RemoteInbound, error
 
 // ValidateTemplate 用一条一次性探针入站证明实例支持运行时入站管理与 SS2022 多用户身份。
 //
-// 硬性验证三项：能创建入站、入站带得动多用户身份、**探针能被移除**。
+// 硬性验证四项：能创建入站、入站带得动多用户身份、探针能被移除、用户级流量统计可读。
 // 移除能力不可省略：只能建不能拆的节点会让停用、删除与配额封禁全部无法生效（FR-005）。
-//
-// 用户级统计（policy.levels."0".statsUserUplink/statsUserDownlink）无法在此证实：
-// 实测表明无论该 policy 是否开启，在没有任何流量之前用户计数器一律返回 NotFound，两种配置不可区分
-// （research.md C-005）。它只能作为部署前置条件，并在采集阶段作为健康诊断暴露。
+// 统计能力同样不可省略：漏配 policy 的节点会让所有用户的用量恒为零，配额形同虚设；
+// 它只能通过在探针入站上产生经过 SS2022 身份认证的最小流量再回读计数器来证实（research.md C-007）。
 func (c *Client) ValidateTemplate(ctx context.Context, probe ports.TemplateProbe) (capabilities ports.TemplateCapabilities, err error) {
 	capabilities = ports.TemplateCapabilities{ProtocolSupported: true}
 	capabilities.MethodSupported = probe.Method == security.MethodAES128 || probe.Method == security.MethodAES256
@@ -213,6 +211,16 @@ func (c *Client) ValidateTemplate(ctx context.Context, probe ports.TemplateProbe
 	capabilities.MultiUserSupported = count.GetCount() > 0
 	if !capabilities.MultiUserSupported {
 		capabilities.CompatibilityReason = "node does not satisfy the Shadowsocks 2022 multi-user contract"
+		return capabilities, nil
+	}
+	accounted, reason, trafficErr := c.verifyUserTrafficAccounting(ctx, probe.ListenAddress, probe.ProbePort,
+		serverKey, userKey, command.Client.StatisticsID)
+	if trafficErr != nil {
+		return capabilities, trafficErr
+	}
+	capabilities.TrafficAccounted = accounted
+	if !accounted {
+		capabilities.CompatibilityReason = reason
 	}
 	return capabilities, nil
 }

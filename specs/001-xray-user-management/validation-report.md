@@ -31,6 +31,15 @@ Phase 10（2026-09-05，第二轮 converge）补充的收敛证据：
 | T146 分批一致性 | `internal/application/batch_consistency_test.go`：25 分配两批之间重启整轮丢弃（无状态变化/事件/封禁），下一轮确认重启后越界全部封禁；计数缺失期间保留 boot epoch | 通过 |
 | T147 认证语义 | `tests/integration/auth_consistency_test.go`、`internal/persistence/sqlite/sessions_test.go`：审计写入、会话提交与撤销故障注入下 HTTP 不返回成功，会话可用性与 succeeded/failed 审计一致，已撤销令牌不被迟到提交复活 | 通过 |
 
+Phase 11（2026-09-05，第三轮 converge）补充的收敛证据：
+
+| 任务 | 证据 | 结果 |
+|---|---|---|
+| T148 会话/审计单一协议 | `internal/web/middleware/session.go`（自有 LoadAndSave：每请求至多提交一次）、`tests/integration/auth_consistency_test.go`：中间件提交失败无部分状态、成功审计失败叠加会话撤销失败仍撤销全部会话、登录/登出协议可判定 | 通过 |
+| T149 永久失败漂移移除 | `tests/integration/profile_guard_test.go`：未知身份移除永久失败 → 改 tag 被拒 → Xray 恢复重新移除 → 改 tag 成功，旧入站无遗留 `xpanel-` 身份 | 通过 |
+| T150 uptime 量化抖动 | `internal/application/batch_consistency_test.go`（一秒抖动不判重启、>1s 或 uptime 下降判重启）、`tests/contract/xray/app_test.go`：固定 Xray 下 21 分配分两批三轮可提交，两批之间真实重启整轮丢弃且游标不变 | 通过（真实 Xray） |
+| T151 漂移移除外部去重 | `internal/worker/synchronizer_fencing_test.go`：RPC 成功后崩溃、租约到期回收重放，外部移除/完成/审计各恰好一次；所有构造路径租约 ≥ 3×RPC 超时 | 通过 |
+
 ## 2. 发布门禁（T127）
 
 | 步骤 | 命令 | 结果 |
@@ -39,7 +48,7 @@ Phase 10（2026-09-05，第二轮 converge）补充的收敛证据：
 | 静态检查 | `make vet` | 通过（2026-09-04；2026-09-05 复跑通过） |
 | 全量测试 | `make test` | 通过（2026-09-04；2026-09-05 复跑通过，12 个包，含 42 格故障矩阵、CLI 二进制测试与真实 Xray 契约套件） |
 | 竞态检测 | `make test-race` | 通过（2026-09-04；2026-09-05 复跑通过，契约套件在 `-race` 下同样通过） |
-| 固定 Xray 契约套件 | `XRAY_BIN=<path> XPANEL_REQUIRE_CONTRACT=1 make check` | 通过（2026-09-05，`XRAY_BIN` 指向从 `github.com/xtls/xray-core@v1.260327.0` 构建的 `Xray 26.3.27`；`tests/contract/xray` 8 个测试全部通过，`exit=0`；Phase 10 完成后复跑整条门禁再次 `exit=0`） |
+| 固定 Xray 契约套件 | `XRAY_BIN=<path> XPANEL_REQUIRE_CONTRACT=1 make check` | 通过（2026-09-05，`XRAY_BIN` 指向从 `github.com/xtls/xray-core@v1.260327.0` 构建的 `Xray 26.3.27`；`tests/contract/xray` 9 个测试全部通过，`exit=0`；Phase 10、Phase 11 完成后各复跑整条门禁均 `exit=0`） |
 
 ## 3. 真实 Xray 人工验收（T126，待执行）
 

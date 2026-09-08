@@ -140,18 +140,25 @@ func TestRotationTransitionIdentityIsExemptOnlyWhileTheIntentIsOpen(t *testing.T
 	}
 }
 
-// T092：入站标签与该入站的期望统计标识由同一个分配标识派生，因此恒等。
-// 适配器的最后客户端守卫依赖这条恒等式在不查库的情况下认出「这条入站真正的受管身份」。
-func TestInboundTagAndExpectedIdentityAreDerivedFromTheSameAllocation(t *testing.T) {
+// T097：期望身份必须由调用方显式给出——缺少它时适配器直接拒绝，不能退化成「凭标签猜」。
+func TestRemoveUserRequiresTheExplicitExpectedIdentity(t *testing.T) {
 	app := testsupport.New(t)
 	templateID := app.RegisterCompatibleTemplate("Primary")
 	record := app.CreateUser("Alice", templateID, nil)
+	app.Drain()
 	tag := record.Inbound.Inbound.InboundTag
-	if got := domain.ExpectedIdentityForInbound(tag); got != record.Identity.StatisticsID {
-		t.Fatalf("expected identity for %s = %q, but the allocation uses %q", tag, got, record.Identity.StatisticsID)
+	app.Adapter.InjectClient(tag, "intruder-without-prefix")
+
+	_, err := app.Adapter.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+		StatisticsID: "intruder-without-prefix"})
+	var adapterErr *ports.AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Kind != ports.ErrorInvalidArgument {
+		t.Fatalf("remove_user without the expected identity = %v", err)
 	}
-	if tag != domain.InboundTag(record.Allocation.ID) {
-		t.Fatalf("inbound tag %q is not derived from allocation %s", tag, record.Allocation.ID)
+	// 显式给出后同一次清理是允许的。
+	if _, err := app.Adapter.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+		StatisticsID: "intruder-without-prefix", ExpectedStatisticsID: record.Identity.StatisticsID}); err != nil {
+		t.Fatalf("cleaning the intruder with the expected identity given: %v", err)
 	}
 }
 
@@ -196,21 +203,22 @@ func TestOnlyTheExactExpectedOrTransitionIdentityCountsAsASurvivor(t *testing.T)
 
 	for _, leftover := range []string{"intruder-without-prefix", domain.NamespacePrefix + "someone-else"} {
 		app.Adapter.InjectClient(tag, leftover)
-		_, err := app.Adapter.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag, StatisticsID: expected})
+		_, err := app.Adapter.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+			StatisticsID: expected, ExpectedStatisticsID: expected})
 		var adapterErr *ports.AdapterError
 		if !errors.As(err, &adapterErr) || adapterErr.Kind != ports.ErrorLastManagedClient {
 			t.Fatalf("removing the expected identity while %q remains = %v", leftover, err)
 		}
 		// 清理未知身份是允许的：期望身份还在。
 		if _, err := app.Adapter.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
-			StatisticsID: leftover}); err != nil {
+			StatisticsID: leftover, ExpectedStatisticsID: expected}); err != nil {
 			t.Fatalf("cleaning %q while the expected identity is present: %v", leftover, err)
 		}
 	}
 	// 轮换过渡身份是唯一被认可的后继。
 	app.Adapter.InjectClient(tag, domain.RotationSafetyID(expected))
 	if _, err := app.Adapter.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
-		StatisticsID: expected}); err != nil {
+		StatisticsID: expected, ExpectedStatisticsID: expected}); err != nil {
 		t.Fatalf("removing the expected identity while its transition identity remains: %v", err)
 	}
 	if len(app.Adapter.Users[tag]) != 1 {

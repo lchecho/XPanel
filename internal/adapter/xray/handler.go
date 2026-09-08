@@ -99,6 +99,12 @@ func (c *Client) RemoveUser(ctx context.Context, command ports.RemoveUserCommand
 	if err := guardPanelInbound("remove_user", command.InboundTag); err != nil {
 		return ports.MutationReceipt{}, err
 	}
+	// 缺少期望身份是调用方的错误：没有它就无法判断「移除后是否还留有受管客户端」，
+	// 只能拒绝，不能退化成「凭标签猜」或「不检查」（T097）。
+	if command.ExpectedStatisticsID == "" {
+		return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorInvalidArgument, Operation: "remove_user",
+			SafeSummary: "remove_user requires the inbound's expected managed identity"}
+	}
 	// 精确判定：只有「目标确实在，且移除后不再有任何受管客户端」才拒绝。
 	// 移除本就不存在的客户端不改变任何数量，照常返回 user_not_found 让调用方按已收敛处理。
 	listCtx, listCancel := c.deadline(ctx)
@@ -107,9 +113,10 @@ func (c *Client) RemoveUser(ctx context.Context, command ports.RemoveUserCommand
 	if listErr != nil {
 		return ports.MutationReceipt{}, mapError("remove_user", listErr)
 	}
-	// 有效后继只有两个：这条入站的期望身份，以及它的轮换过渡身份。任意带 xpanel- 前缀的身份
-	// 都不算——那可能是别的分配的身份或残留的未知身份，把它当成「还有人」等于放任入站被顶替（T092）。
-	expected := domain.ExpectedIdentityForInbound(command.InboundTag)
+	// 有效后继只有两个：命令显式给出的期望身份，以及由它派生的轮换过渡身份。
+	// 任意带 xpanel- 前缀的身份都不算——那可能是别的分配的身份或残留的未知身份，
+	// 把它当成「还有人」等于放任入站被顶替（T092/T097）。
+	expected := command.ExpectedStatisticsID
 	safety := domain.RotationSafetyID(expected)
 	present, survivor := false, false
 	for _, user := range list.GetUsers() {

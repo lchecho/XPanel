@@ -30,7 +30,8 @@ func TestLiveRotationSemanticsWithinOneInbound(t *testing.T) {
 
 	// 2) 直接删掉唯一的受管客户端被适配器拒绝——这条守卫是 FR-019 的最终防线，
 	//    它保证任何路径（包括租约竞态下的过期请求）都无法把入站清空。
-	_, err = runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag, StatisticsID: statisticsID})
+	_, err = runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+		StatisticsID: statisticsID, ExpectedStatisticsID: statisticsID})
 	if !errors.As(err, &adapterErr) || adapterErr.Kind != ports.ErrorLastManagedClient {
 		t.Fatalf("removing the only client = %v (want last_managed_client)", err)
 	}
@@ -89,7 +90,8 @@ func TestLiveRotationTransitionKeepsAtLeastOneClientAtEveryBoundary(t *testing.T
 		}
 	}
 	remove := func(step, id string) {
-		if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag, StatisticsID: id}); err != nil {
+		if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+			StatisticsID: id, ExpectedStatisticsID: expected}); err != nil {
 			t.Fatalf("%s: %v", step, err)
 		}
 	}

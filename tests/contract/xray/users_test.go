@@ -15,6 +15,7 @@ func TestLiveUserMutationContractOnADedicatedInbound(t *testing.T) {
 	tag, port := panelTag("users"), freePort(t)
 	createInbound(t, runtime, tag, port, testKey('u'))
 	inbound := ports.RuntimeInbound{InboundTag: tag, Method: security.MethodAES256}
+	owner := panelTag("users-client") // createInbound 建立的受管客户端，即这条入站的归属身份
 
 	users, err := runtime.client.ListUsers(context.Background(), inbound)
 	if err != nil || len(users) != 1 || users[0].Kind != "managed" {
@@ -29,12 +30,18 @@ func TestLiveUserMutationContractOnADedicatedInbound(t *testing.T) {
 	if _, err := runtime.client.AddUser(context.Background(), command); !errors.As(err, &adapterErr) || adapterErr.Kind != ports.ErrorUserAlreadyExists {
 		t.Fatalf("duplicate add = %v", err)
 	}
-	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag, StatisticsID: command.StatisticsID}); err != nil {
+	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag, StatisticsID: command.StatisticsID, ExpectedStatisticsID: owner}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag, StatisticsID: command.StatisticsID}); !errors.As(err, &adapterErr) || adapterErr.Kind != ports.ErrorUserNotFound {
+	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag, StatisticsID: command.StatisticsID, ExpectedStatisticsID: owner}); !errors.As(err, &adapterErr) || adapterErr.Kind != ports.ErrorUserNotFound {
 		t.Fatalf("missing-user removal = %v", err)
 	}
+	// 缺少期望身份的调用必须被前置拒绝：没有它就无法判断移除后是否还留有受管客户端。
+	if _, err := runtime.client.RemoveUser(context.Background(), ports.RemoveUserCommand{InboundTag: tag,
+		StatisticsID: command.StatisticsID}); !errors.As(err, &adapterErr) || adapterErr.Kind != ports.ErrorInvalidArgument {
+		t.Fatalf("remove_user without the expected identity = %v", err)
+	}
+
 	// 命名空间之外的入站不接受面板的客户端变更。
 	if _, err := runtime.client.AddUser(context.Background(), ports.AddUserCommand{InboundTag: operatorInboundTag,
 		StatisticsID: panelTag("intruder"), CredentialVersion: 1, UserKey: security.NewRedactedString(testKey('z'))}); err == nil {

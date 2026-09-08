@@ -444,6 +444,9 @@ type DriftRemoval struct {
 	State         domain.SyncState
 	AttemptCount  int
 	NextAttemptAt time.Time
+	// ExpectedStatisticsID 是该入站归属用户的统计身份，领取时按入站标签查出（孤立入站为空）。
+	// 它让 RemoveUser 的最后客户端守卫无需从标签推断归属（T097）。
+	ExpectedStatisticsID string
 	// Reclaimed 表示本次领取回收了另一个 worker 的过期租约：其 RemoveUser 可能已生效，执行前必须先读实际身份。
 	Reclaimed bool
 }

@@ -550,3 +550,27 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   决策描述为 `go.mod` 零变化或无新增直接依赖的陈述，再运行 `go mod tidy -diff`、
   `CGO_ENABLED=0 go build ./cmd/xpanel` 与完整发布门禁并更新验证证据 per
   plan: Primary Dependencies / plan: Constitution Check / plan: Complexity Tracking / T091 (contradicts)
+
+---
+
+## Phase 13: Convergence
+
+- [X] T097 **CRITICAL** 修复 T092 引入的 `RemoveUser` 契约回归：不得继续通过
+  `domain.ExpectedIdentityForInbound(inboundTag) == inboundTag` 猜测该入站的期望统计身份；扩展
+  `ports.RemoveUserCommand` 显式携带期望统计身份（或提供同等强度且可验证的 Adapter 契约），并更新
+  `internal/worker/synchronizer.go` 的未知身份清理与轮换调用、真实 Xray Adapter、fake 及全部契约调用点。
+  最后客户端守卫必须只认可命令指定的期望身份和由它派生的精确 safety identity，同时允许在期望身份仍在时
+  移除任意前缀内/外未知身份。不得通过删除既有契约或强行令所有测试夹具的 tag 与 identity 相等来掩盖接口
+  歧义；恢复 `TestLiveInboundLifecycleContract`、`TestLiveUnknownIdentityInsideAPanelInboundCanBeCleanedSafely`、
+  `TestLiveRotationTransitionKeepsAtLeastOneClientAtEveryBoundary`、
+  `TestLiveUserMutationContractOnADedicatedInbound`，并补充缺失期望身份参数的前置拒绝测试 per
+  Constitution II / Constitution: 开发流程与质量门禁 / FR-019 / T092 (partial)
+- [ ] T098 **CRITICAL** 修复 T094 的能力世代仍会漏检真实重启且与既定重连语义相反的问题：能力世代推进
+  除带一秒容差的 boot epoch 外，还必须使用持久化的 uptime 单调性、已观察到的 unavailable→reachable
+  重连或其它不会被秒级量化吞掉的可靠信号；固定 Xray 在相邻启动 epoch 相同或仅差一秒时重启，旧模板证据
+  也必须立即失效，新建用户在当前世代门禁完成前被拒绝。按 T089/T094 原文，已被协调器明确观察到的断线重连
+  必须触发保守重新验证，不能由 `TestReconnectWithoutRestartKeepsCapabilityEvidence` 锁定为保持 compatible；
+  同时更新 `TestLiveAppRestartReconcilesActiveUsersOnly` 以断言稳定的 capability generation 前进，不再要求
+  量化 boot epoch 字符串必然变大。覆盖快速重启、同 epoch 重启、显式重连、±1 秒无重启抖动和缺失/恢复
+  policy，并更正 `validation-report.md` 后重跑固定 Xray v26.3.27 的完整 `make check` per
+  FR-005 / FR-029 / T089 / T094 / Constitution: 开发流程与质量门禁 (contradicts)

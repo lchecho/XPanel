@@ -196,7 +196,8 @@ func (s *Synchronizer) handleDriftRemoval(ctx context.Context, removal *ports.Dr
 	if removal.Kind == "inbound" {
 		_, err = s.adapter.RemoveInbound(ctx, ports.RemoveInboundCommand{OperationID: removal.ID, InboundTag: removal.InboundTag})
 	} else {
-		_, err = s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: removal.ID, InboundTag: removal.InboundTag, StatisticsID: removal.StatisticsID})
+		_, err = s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: removal.ID, InboundTag: removal.InboundTag,
+			StatisticsID: removal.StatisticsID, ExpectedStatisticsID: removal.ExpectedStatisticsID})
 	}
 	summary := "removed unknown " + removal.Kind + " from the managed namespace"
 	if err != nil {
@@ -488,7 +489,7 @@ func (s *Synchronizer) rotateWithinInbound(ctx context.Context, work *ports.Sync
 			return fenceErr
 		}
 		if _, removeErr := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: op.ID,
-			InboundTag: inbound.InboundTag, StatisticsID: statisticsID}); removeErr != nil {
+			InboundTag: inbound.InboundTag, StatisticsID: statisticsID, ExpectedStatisticsID: statisticsID}); removeErr != nil {
 			kind, _ := describe(removeErr)
 			switch kind {
 			case ports.ErrorInboundNotFound:
@@ -537,7 +538,7 @@ func (s *Synchronizer) rotateWithinInbound(ctx context.Context, work *ports.Sync
 		return fenceErr
 	}
 	if _, removeErr := s.adapter.RemoveUser(ctx, ports.RemoveUserCommand{OperationID: op.ID,
-		InboundTag: inbound.InboundTag, StatisticsID: safetyID}); removeErr != nil {
+		InboundTag: inbound.InboundTag, StatisticsID: safetyID, ExpectedStatisticsID: statisticsID}); removeErr != nil {
 		if kind, _ := describe(removeErr); kind != ports.ErrorUserNotFound && kind != ports.ErrorInboundNotFound {
 			logger.Warn("rotation transition client could not be removed yet", logging.FieldErrorKind, kind,
 				logging.FieldResult, "retry_wait")

@@ -103,10 +103,16 @@ type AddUserCommand struct {
 	UserKey           security.RedactedString
 }
 
+// RemoveUserCommand 移除某条专属入站内的一个客户端。
+//
+// ExpectedStatisticsID 是该入站**归属用户**的统计身份，必须由调用方显式给出：适配器据此判断
+// 「移除之后这条入站是否还留有它真正的受管客户端」。它不能由入站标签推断——那是把两个各自演进的
+// 命名规则绑死成隐式契约，一旦其中之一变化，守卫就会在没有任何测试报警的情况下失效（T097）。
 type RemoveUserCommand struct {
-	OperationID  domain.ID
-	InboundTag   string
-	StatisticsID string
+	OperationID          domain.ID
+	InboundTag           string
+	StatisticsID         string
+	ExpectedStatisticsID string
 }
 
 type MutationReceipt struct {

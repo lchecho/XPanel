@@ -57,13 +57,21 @@ func (s *Store) LeaseDueDriftRemoval(ctx context.Context, owner string, now time
 	var next int64
 	var previousOwner sql.NullString
 	// 孤立入站（kind='inbound'）不归属模板，因此用 LEFT JOIN，且模板兼容性只约束身份类意图。
-	var templateID sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT d.id,d.template_id,d.inbound_tag,d.kind,d.statistics_id,d.state,d.attempt_count,d.next_attempt_at,d.lease_owner
-        FROM drift_removals d LEFT JOIN inbound_templates t ON t.id=d.template_id
+	// 顺带查出该入站归属用户的统计身份：清理未知客户端时，适配器要靠它判断
+	// 「移除之后是否还留有这条入站真正的受管客户端」，不能从标签推断（T097）。孤立入站没有归属，留空。
+	var templateID, expectedIdentity sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT d.id,d.template_id,d.inbound_tag,d.kind,d.statistics_id,d.state,d.attempt_count,
+            d.next_attempt_at,d.lease_owner,i.statistics_id
+        FROM drift_removals d
+        LEFT JOIN inbound_templates t ON t.id=d.template_id
+        LEFT JOIN dedicated_inbounds di ON di.inbound_tag=d.inbound_tag AND di.released_at IS NULL
+        LEFT JOIN access_allocations a ON a.id=di.allocation_id
+        LEFT JOIN xray_user_identities i ON i.id=a.identity_id
         WHERE ((d.state IN ('pending','retry_wait') AND d.next_attempt_at<=?) OR (d.state='leased' AND d.lease_expires_at<=?))
           AND (d.kind='inbound' OR t.compatibility_state <> 'incompatible')
         ORDER BY d.next_attempt_at,d.created_at LIMIT 1`, millis(now), millis(now)).Scan(
-		&id, &templateID, &removal.InboundTag, &removal.Kind, &removal.StatisticsID, &previousState, &removal.AttemptCount, &next, &previousOwner)
+		&id, &templateID, &removal.InboundTag, &removal.Kind, &removal.StatisticsID, &previousState, &removal.AttemptCount,
+		&next, &previousOwner, &expectedIdentity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -84,6 +92,7 @@ func (s *Store) LeaseDueDriftRemoval(ctx context.Context, owner string, now time
 		return nil, err
 	}
 	removal.ID, removal.TemplateID, removal.NextAttemptAt, removal.State = domain.ID(id), domain.ID(templateID.String), fromMillis(next), domain.SyncLeased
+	removal.ExpectedStatisticsID = expectedIdentity.String
 	removal.Reclaimed = previousState == string(domain.SyncLeased)
 	return &removal, nil
 }

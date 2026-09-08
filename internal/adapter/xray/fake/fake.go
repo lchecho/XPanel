@@ -280,13 +280,17 @@ func (a *Adapter) RemoveUser(ctx context.Context, command ports.RemoveUserComman
 	if err := guardPanelInbound("remove_user", command.InboundTag); err != nil {
 		return ports.MutationReceipt{}, err
 	}
+	if command.ExpectedStatisticsID == "" {
+		return ports.MutationReceipt{}, &ports.AdapterError{Kind: ports.ErrorInvalidArgument, Operation: "remove_user",
+			SafeSummary: "remove_user requires the inbound's expected managed identity"}
+	}
 	failure, fails := a.failure("remove_user")
 	// 复刻真实适配器的最终防线：移除不得让入站失去它**真正的**受管客户端（FR-019）。
 	// 有效后继只有该入站的期望身份与它的轮换过渡身份——其它 xpanel- 身份和外部身份都不算，
 	// 否则一条被顶替的入站会被误判为「还有人」（T086/T092）。
 	if _, exists := a.Inbounds[command.InboundTag]; exists && !fails {
 		if _, target := a.Users[command.InboundTag][command.StatisticsID]; target {
-			expected := domain.ExpectedIdentityForInbound(command.InboundTag)
+			expected := command.ExpectedStatisticsID
 			safety := domain.RotationSafetyID(expected)
 			survivors := 0
 			for id, user := range a.Users[command.InboundTag] {

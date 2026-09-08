@@ -23,8 +23,11 @@ root.key
 xpanel.json
 !deploy/xpanel.example.json
 
-# Local tooling
-.claude/settings.local.json
+# Local tooling (spec-kit / AI agent scaffolding stays local, never committed)
+.agent/
+.agents/
+.claude/
+.specify/
 .env*
 *.log
 

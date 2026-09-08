@@ -12,7 +12,7 @@ func filesystemIsLocal(path string) (bool, string, error) {
 	switch uint64(stat.Type) {
 	case unix.NFS_SUPER_MAGIC:
 		return false, "nfs", nil
-	case unix.CIFS_MAGIC_NUMBER:
+	case unix.CIFS_SUPER_MAGIC:
 		return false, "cifs", nil
 	case unix.FUSE_SUPER_MAGIC:
 		return false, "fuse", nil

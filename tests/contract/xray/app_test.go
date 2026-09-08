@@ -270,10 +270,11 @@ func TestLiveAppRestartReconcilesActiveUsersOnly(t *testing.T) {
 	summary := app.ReconcileOnce()
 	app.Drain()
 	after, _ := app.Store.ManagedInstance(context.Background())
-	beforeEpoch, _ := time.Parse(time.RFC3339, before.BootEpoch)
-	afterEpoch, err := time.Parse(time.RFC3339, after.BootEpoch)
-	if err != nil || !afterEpoch.After(beforeEpoch) {
-		t.Fatalf("boot epoch not advanced: before=%q after=%q", before.BootEpoch, after.BootEpoch)
+	// 断言稳定的能力世代前进，而不是要求量化到整秒的 boot epoch 字符串必然变大：
+	// epoch 由整秒 uptime 推算，快速重启前后它完全可能相同（T098）。
+	if after.CapabilityGeneration <= before.CapabilityGeneration {
+		t.Fatalf("capability generation did not advance across the restart: before=%d after=%d (epochs %q → %q)",
+			before.CapabilityGeneration, after.CapabilityGeneration, before.BootEpoch, after.BootEpoch)
 	}
 	if summary.Drift != 1 {
 		t.Fatalf("reconciler drift = %d, want 1 (only the active user)", summary.Drift)

@@ -82,6 +82,17 @@ SC-001、SC-002、SC-010 的人工验收（T076）待执行。**
 | T087 轮换故障契约 | `internal/worker/synchronizer_rotation_test.go` 覆盖 5 个边界：四次变更 RPC 之前各一次崩溃，外加「四次 RPC 全部成功、ConfirmSync 之前崩溃」（用 store 包装器注入），每个边界都断言确实被命中。`tests/contract/xray/rotation_app_test.go` 用真实 service + synchronizer 驱动真实 Xray，在四次变更 RPC **成功之后**的每个边界崩溃、回收租约、重放：每次 RPC 后校验端口在听且入站有客户端，恢复后以真实 SS2022 握手证明新凭证可用、旧凭证被拒，最终只剩原不可变统计身份、过渡身份不进连接信息、上行计数不回退 | 通过 |
 | T083 契约稳定性 | 端口池基址改到临时端口范围之下并逐个绑定校验，采集断言前用 `convergeAll` 等待全部分配收敛；`XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 go test ./tests/contract/xray -count=1` 连续 5 次全绿，随后整条 `make check` `exit=0`，运行后连续三次 `pgrep` 均无残留 Xray 进程 | 通过 |
 
+### Phase 13（2026-09-07）
+
+| 任务 | 证据 | 结果 |
+|---|---|---|
+| T097 显式期望身份 | `ports.RemoveUserCommand` 新增 ExpectedStatisticsID，由调用方显式给出；缺失时适配器与 fake 都在发起 RPC 前以 invalid_argument 拒绝；守卫只认「命令给出的期望身份 + 由它派生的过渡身份」。删除了 T092 的 `ExpectedIdentityForInbound` 推断与为它写的 tag==identity 不变量测试。漂移清理在领取意图时按入站标签左连接查出归属身份（孤立入站为空）。四个被 T092 打断的契约测试恢复原本的自然夹具（标签≠身份）并全部转绿 | 通过 |
+| T098 能力世代信号 | 迁移 00009 持久化 last_uptime_seconds；世代推进改为三选一：epoch 差值超容差、uptime 回落、或「面板确知可能换过进程」（断线重连、本应监听的面板入站全部消失）。按 T089/T094 原文，观察到的断线重连改为**触发**保守重新验证（原 `TestReconnectWithoutRestartKeepsCapabilityEvidence` 的结论被推翻并重写）；`TestLiveAppRestartReconcilesActiveUsersOnly` 改为断言稳定世代前进，不再要求量化 epoch 字符串变大。新增真实 Xray 的「刚启动就重启」契约 | 通过 |
+| 连带修复 | 孤立入站的归属点原本只挑 compatible/unreachable 模板；能力世代前进会让模板在 compatible/unverified 之间切换，归属点随之改变，从而绕开「同一归属+身份只允许一条未完成意图」的去重。改为只跳过已归档模板 | 通过 |
+
+**证据修正**：Phase 12 报告曾称门禁通过，实际依据的是缓存的契约结果——T092 之后
+`TestLiveInboundLifecycleContract` 等四个契约测试已经是红的。本轮以 `-count=1` 真实复跑确认全绿。
+
 ### Phase 12（2026-09-07）
 
 | 任务 | 证据 | 结果 |

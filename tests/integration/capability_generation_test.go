@@ -151,11 +151,13 @@ func TestQuantizationJitterDoesNotInvalidateCapabilityEvidence(t *testing.T) {
 	}
 }
 
-// 断线重连但节点没重启：世代不变，模板证据保持有效。
-func TestReconnectWithoutRestartKeepsCapabilityEvidence(t *testing.T) {
+// T098：协调器明确观察到的断线重连必须触发保守重新验证——重连期间节点可能已经重启并换了配置，
+// 面板对此一无所知，不能假设它还是原来那个进程。
+func TestObservedReconnectTriggersConservativeRevalidation(t *testing.T) {
 	app := testsupport.New(t)
 	templateID := app.RegisterCompatibleTemplate("Primary")
 	before, _ := app.Store.Template(context.Background(), templateID)
+	beforeInstance, _ := app.Store.ManagedInstance(context.Background())
 
 	app.Adapter.Available = false
 	if _, err := app.Reconcile.ReconcileOnce(context.Background()); err == nil {
@@ -167,12 +169,56 @@ func TestReconnectWithoutRestartKeepsCapabilityEvidence(t *testing.T) {
 	if !summary.Reconnected {
 		t.Fatalf("reconnect was not detected: %#v", summary)
 	}
-	if summary.Revalidated != 0 {
-		t.Fatalf("a reconnect without a restart invalidated the evidence: %#v", summary)
+	if summary.Revalidated != 1 {
+		t.Fatalf("an observed reconnect did not trigger revalidation: %#v", summary)
 	}
+	instance, _ := app.Store.ManagedInstance(context.Background())
+	if instance.CapabilityGeneration <= beforeInstance.CapabilityGeneration {
+		t.Fatalf("generation did not advance across a reconnect: %d → %d",
+			beforeInstance.CapabilityGeneration, instance.CapabilityGeneration)
+	}
+	// 重新验证在同一轮内完成，模板重新绑定到新世代。
 	after, _ := app.Store.Template(context.Background(), templateID)
 	if after.Template.Compatibility != domain.CompatibilityCompatible ||
-		after.Template.ValidatedGeneration != before.Template.ValidatedGeneration {
-		t.Fatalf("template changed across a reconnect: %#v", after.Template)
+		after.Template.ValidatedGeneration != instance.CapabilityGeneration ||
+		after.Template.ValidatedGeneration == before.Template.ValidatedGeneration {
+		t.Fatalf("template evidence after the reconnect = %#v (instance generation %d)",
+			after.Template, instance.CapabilityGeneration)
+	}
+}
+
+// T098：uptime 回落是不会被整秒量化吞掉的重启信号——即使前后 boot epoch 完全相同，
+// 「快速重启」也必须让旧证据立即失效。
+func TestSameEpochRestartIsCaughtByVanishedInbounds(t *testing.T) {
+	app := testsupport.New(t)
+	templateID := app.RegisterCompatibleTemplate("Primary")
+	app.CreateUser("Alice", templateID, nil)
+	app.Drain()
+	// 先跑几轮让锚点与 uptime 稳定下来。
+	for i := 0; i < 3; i++ {
+		app.Clock.Advance(15 * time.Second)
+		if summary := app.ReconcileOnce(); summary.Revalidated != 0 {
+			t.Fatalf("round %d invalidated without a restart: %#v", i, summary)
+		}
+	}
+	before, _ := app.Store.Template(context.Background(), templateID)
+
+	// 重启但把 boot epoch 与 uptime 都保持原样：epoch 差值和 uptime 单调性两个信号都被吞掉，
+	// 只剩「本应监听的面板入站全部消失」能暴露它。
+	epoch := app.Adapter.BootEpoch
+	app.Adapter.Restart()
+	app.Adapter.BootEpoch = epoch
+	instanceBefore, _ := app.Store.ManagedInstance(context.Background())
+	if summary := app.ReconcileOnce(); summary.Revalidated != 1 {
+		t.Fatalf("a same-epoch restart was not detected: %#v", summary)
+	}
+	instance, _ := app.Store.ManagedInstance(context.Background())
+	if instance.CapabilityGeneration <= instanceBefore.CapabilityGeneration {
+		t.Fatalf("generation did not advance across a same-epoch restart: %d → %d",
+			instanceBefore.CapabilityGeneration, instance.CapabilityGeneration)
+	}
+	after, _ := app.Store.Template(context.Background(), templateID)
+	if after.Template.ValidatedGeneration == before.Template.ValidatedGeneration {
+		t.Fatalf("template evidence survived a same-epoch restart: %#v", after.Template)
 	}
 }

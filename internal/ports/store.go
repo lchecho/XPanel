@@ -25,7 +25,7 @@ type Store interface {
 	ArchiveTemplate(context.Context, domain.ID, domain.Revision, time.Time) error
 	SetTemplateCompatibility(context.Context, domain.ID, domain.CompatibilityState, string, time.Time) error
 	CompleteTemplateValidation(context.Context, ValidationOutcome) (bool, error)
-	AdvanceCapabilityGeneration(context.Context, time.Time, bool, time.Duration, time.Time) (int64, bool, error)
+	AdvanceCapabilityGeneration(context.Context, CapabilitySignal, time.Duration, time.Time) (int64, bool, error)
 	InvalidateStaleCapabilityEvidence(context.Context, int64, time.Time) ([]domain.ID, error)
 	RequestRevalidation(context.Context, domain.ID, domain.Revision, domain.DomainCommand, domain.AuditEvent) (bool, error)
 	// 专属入站与端口分配（data-model.md §dedicated_inbounds）
@@ -157,6 +157,20 @@ type ManagedInstanceRecord struct {
 	LastErrorCode        string
 	LastErrorSummary     string
 	UpdatedAt            time.Time
+}
+
+// CapabilitySignal 汇集判定「Xray 是否换了一个进程」的全部信号。
+//
+// 单靠 boot epoch 差值不够：epoch 由整秒 uptime 推算，快速重启或前后 epoch 恰好相同的重启会被
+// 量化吞掉。因此还要看 uptime 是否回落，以及面板从别的渠道确知的「可能换过进程」（T098）。
+type CapabilitySignal struct {
+	BootEpoch     time.Time
+	UptimeSeconds uint32
+	Known         bool
+	// SuspectedRestart 汇集不会被秒级量化吞掉的旁证：刚经历一次断线重连（重连期间发生过什么
+	// 面板并不知道），或者所有本应监听的面板入站同时消失（重启会清空运行时入站）。
+	// 这两种情况一律保守按「换过进程」处理——重新跑一次能力门禁的代价远小于放行一个能力已变的节点。
+	SuspectedRestart bool
 }
 
 // TemplateRecord 是入站模板的持久化表示。模板不再持有服务端密钥——每条专属入站独立生成（FR-004）。

@@ -565,7 +565,7 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   `TestLiveRotationTransitionKeepsAtLeastOneClientAtEveryBoundary`、
   `TestLiveUserMutationContractOnADedicatedInbound`，并补充缺失期望身份参数的前置拒绝测试 per
   Constitution II / Constitution: 开发流程与质量门禁 / FR-019 / T092 (partial)
-- [ ] T098 **CRITICAL** 修复 T094 的能力世代仍会漏检真实重启且与既定重连语义相反的问题：能力世代推进
+- [X] T098 **CRITICAL** 修复 T094 的能力世代仍会漏检真实重启且与既定重连语义相反的问题：能力世代推进
   除带一秒容差的 boot epoch 外，还必须使用持久化的 uptime 单调性、已观察到的 unavailable→reachable
   重连或其它不会被秒级量化吞掉的可靠信号；固定 Xray 在相邻启动 epoch 相同或仅差一秒时重启，旧模板证据
   也必须立即失效，新建用户在当前世代门禁完成前被拒绝。按 T089/T094 原文，已被协调器明确观察到的断线重连

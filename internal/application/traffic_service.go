@@ -212,7 +212,9 @@ func (s *TrafficService) recordInconsistency(ctx context.Context, cause *Inconsi
 	// 批次之间的重启同样是「已确认的重启」：推进能力世代并把锚点移到最新观测，
 	// 否则实例诊断会一直显示旧纪元，模板的能力证据也不会失效。
 	if observed, err := time.Parse(time.RFC3339, cause.LastEpoch); err == nil {
-		if _, _, err := s.store.AdvanceCapabilityGeneration(ctx, observed, true, domain.CapabilityGenerationTolerance, s.clock.Now()); err != nil {
+		// 批次之间的重启是已确认的换进程事件：即便 epoch 差值被量化吞掉，也按重连信号强制推进。
+		if _, _, err := s.store.AdvanceCapabilityGeneration(ctx, ports.CapabilitySignal{BootEpoch: observed,
+			Known: true, SuspectedRestart: true}, domain.CapabilityGenerationTolerance, s.clock.Now()); err != nil {
 			s.logger.Warn("advance capability generation", logging.FieldErrorKind, "internal")
 		}
 	}
@@ -344,7 +346,8 @@ func (s *TrafficService) recordFailure(ctx context.Context, cause error) {
 // advanceGeneration 让采集路径也参与能力世代推进：它每 5 秒跑一次，比协调周期更早发现重启，
 // 实例的锚点 epoch 因此能及时反映真实状态（锚点由 AdvanceCapabilityGeneration 独占维护）。
 func (s *TrafficService) advanceGeneration(ctx context.Context, observation ports.InstanceObservation) error {
-	_, _, err := s.store.AdvanceCapabilityGeneration(ctx, observation.BootEpoch, observation.BootEpochKnown,
+	_, _, err := s.store.AdvanceCapabilityGeneration(ctx, ports.CapabilitySignal{
+		BootEpoch: observation.BootEpoch, UptimeSeconds: observation.UptimeSeconds, Known: observation.BootEpochKnown},
 		domain.CapabilityGenerationTolerance, s.clock.Now())
 	return err
 }

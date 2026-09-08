@@ -76,30 +76,6 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 	}
 	summary.Reconnected = s.clearDegraded()
 	now := s.clock.Now()
-	// 先推进能力世代（它独占维护锚点 epoch），再记录健康状态，否则健康写入会把锚点覆盖成本轮观测值，
-	// 让「与锚点比较」永远得不出重启结论。
-	generation, _, err := s.store.AdvanceCapabilityGeneration(ctx, observation.BootEpoch, observation.BootEpochKnown, domain.CapabilityGenerationTolerance, now)
-	if err != nil {
-		return summary, err
-	}
-	if err := s.store.MarkInstanceHealthy(ctx, epochString(observation), now); err != nil {
-		return summary, err
-	}
-	// 能力证据绑定能力世代：世代只在**确认的**重启后前进（uptime 一秒容差），
-	// 因此同一进程的量化抖动不会让模板反复失效；一旦前进，旧的 compatible 结论即失效，
-	// 必须先置回待验证并重跑门禁，再进入后续对账（FR-005/FR-029、T094）。
-	if stale, err := s.store.InvalidateStaleCapabilityEvidence(ctx, generation, now); err != nil {
-		return summary, err
-	} else if len(stale) > 0 {
-		summary.Revalidated = len(stale)
-		for _, id := range stale {
-			s.logger.Warn("capability evidence is stale for the current Xray generation; template set back to unverified",
-				"template_id", id.String(), logging.FieldResult, "queued")
-			if s.revalidate != nil {
-				_ = s.revalidate(ctx, id)
-			}
-		}
-	}
 	templates, err := s.store.Templates(ctx, false)
 	if err != nil {
 		return summary, err
@@ -117,6 +93,47 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 	for _, inbound := range inbounds {
 		if inbound.PanelManaged {
 			remoteInbounds[inbound.InboundTag] = true
+		}
+	}
+
+	// 「本应监听的面板入站全部消失」是换进程的强信号：重启会清空全部运行时入站，
+	// 而这个信号不会被 boot epoch 的秒级量化吞掉（T098）。外部误删也会命中它，
+	// 但那同样值得重跑一次能力门禁，代价很小。
+	expectedListening, actuallyListening := 0, 0
+	for _, record := range users {
+		if !record.Allocation.DesiredPresent(record.User) {
+			continue
+		}
+		expectedListening++
+		if remoteInbounds[record.Inbound.Inbound.InboundTag] {
+			actuallyListening++
+		}
+	}
+	vanished := expectedListening > 0 && actuallyListening == 0
+	// 先推进能力世代（它独占维护锚点 epoch），再记录健康状态，否则健康写入会把锚点覆盖成本轮观测值，
+	// 让「与锚点比较」永远得不出重启结论。
+	generation, _, err := s.store.AdvanceCapabilityGeneration(ctx, ports.CapabilitySignal{
+		BootEpoch: observation.BootEpoch, UptimeSeconds: observation.UptimeSeconds,
+		Known: observation.BootEpochKnown, SuspectedRestart: summary.Reconnected || vanished},
+		domain.CapabilityGenerationTolerance, now)
+	if err != nil {
+		return summary, err
+	}
+	if err := s.store.MarkInstanceHealthy(ctx, epochString(observation), now); err != nil {
+		return summary, err
+	}
+	// 能力证据绑定能力世代：一旦世代前进，旧的 compatible 结论即失效，
+	// 必须先置回待验证并重跑门禁，再进入后续对账（FR-005/FR-029、T094）。
+	if stale, err := s.store.InvalidateStaleCapabilityEvidence(ctx, generation, now); err != nil {
+		return summary, err
+	} else if len(stale) > 0 {
+		summary.Revalidated = len(stale)
+		for _, id := range stale {
+			s.logger.Warn("capability evidence is stale for the current Xray generation; template set back to unverified",
+				"template_id", id.String(), logging.FieldResult, "queued")
+			if s.revalidate != nil {
+				_ = s.revalidate(ctx, id)
+			}
 		}
 	}
 	byTag := make(map[string]ports.UserRecord, len(users))
@@ -317,13 +334,12 @@ func adapterKind(err error) (string, string) {
 // anyTemplateID 为孤立入站的移除意图选择一个归属模板：孤立入站不属于任何用户，
 // 意图只需要一个稳定的归属点以复用既有的租约与因果链机制；没有可用模板时返回空，
 // 此时意图以「无归属」持久化，同样可以被领取和执行。
+// 归属点 MUST NOT 随模板的兼容状态变化：它只是意图的挂靠点，而兼容状态会因为能力世代前进
+// 反复在 compatible/unverified 之间切换。若把它算进筛选条件，同一条孤立入站会在状态切换后
+// 换一个归属点，从而绕开「同一归属+身份只允许一条未完成意图」的去重（T098 发现）。
 func anyTemplateID(templates []ports.TemplateRecord) domain.ID {
 	for _, template := range templates {
-		if template.Template.ArchivedAt != nil {
-			continue
-		}
-		if template.Template.Compatibility == domain.CompatibilityCompatible ||
-			template.Template.Compatibility == domain.CompatibilityUnreachable {
+		if template.Template.ArchivedAt == nil {
 			return template.Template.ID
 		}
 	}

@@ -297,3 +297,46 @@ func TestLiveCapabilityEvidenceExpiresWhenTheNodeRestartsWithoutStatsPolicy(t *t
 		t.Fatalf("creation after restoring the policy: %v", err)
 	}
 }
+
+// T098 契约：真实 Xray 在「刚启动就重启」时，前后 boot epoch 可能相同或只差一秒——
+// 秒级量化会吞掉 epoch 差值，能力世代仍必须前进、旧证据必须立即失效、新建用户被拒绝。
+func TestLiveFastRestartStillExpiresCapabilityEvidence(t *testing.T) {
+	apiAddress, operatorAddress := freeAddress(t), freeAddress(t)
+	config := baseConfig(apiAddress, operatorAddress)
+	runtime, err := launchRuntime(t, apiAddress, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.operator, runtime.operatorPort = operatorAddress, portOf(t, operatorAddress)
+	target := ports.InstanceTarget{APIEndpoint: runtime.api, ExpectedVersion: wantRuntime, RPCTimeout: 500 * time.Millisecond}
+	app := testsupport.NewWith(t, testsupport.Options{Adapter: runtime.client, Target: &target})
+	app.Clock.Set(time.Now().UTC())
+
+	templateID := registerLiveTemplate(t, app, "Primary", 6)
+	record := app.CreateUser("First", templateID, nil)
+	convergeAll(t, app, []ports.UserRecord{record})
+	before, _ := app.Store.ManagedInstance(context.Background())
+
+	// 立刻重启：新进程 uptime 归零，两次观测的 epoch 差值可能小到被量化吞掉。
+	runtime.restartWith(t, contractBinary(t), config)
+	app.Clock.Set(app.Clock.Now().Add(time.Minute))
+
+	summary := app.ReconcileOnce()
+	if summary.Revalidated != 1 {
+		t.Fatalf("a fast restart did not expire the capability evidence: %#v", summary)
+	}
+	after, _ := app.Store.ManagedInstance(context.Background())
+	if after.CapabilityGeneration <= before.CapabilityGeneration {
+		t.Fatalf("capability generation did not advance: %d → %d (epochs %q → %q)",
+			before.CapabilityGeneration, after.CapabilityGeneration, before.BootEpoch, after.BootEpoch)
+	}
+	// 重新验证在同一轮内完成并绑定新世代，之后才允许创建用户。
+	template, _ := app.Store.Template(context.Background(), templateID)
+	if template.Template.ValidatedGeneration != after.CapabilityGeneration {
+		t.Fatalf("template evidence not rebound to the current generation: %#v", template.Template)
+	}
+	if _, _, err := app.Users.CreateUser(context.Background(), application.CreateUserInput{DisplayName: "Second",
+		TemplateID: templateID, ResetDay: 1, RequestID: testsupport.NewID(t), ActorID: app.AdminID}); err != nil {
+		t.Fatalf("creation after revalidation: %v", err)
+	}
+}

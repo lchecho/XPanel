@@ -345,41 +345,59 @@ func (s *Store) RequestRevalidation(ctx context.Context, id domain.ID, expected 
 	return replay, err
 }
 
-// AdvanceCapabilityGeneration 按「已确认的重启」推进能力世代，并返回当前世代与是否刚刚前进。
+// AdvanceCapabilityGeneration 按「Xray 是否换了一个进程」推进能力世代，返回当前世代与是否刚刚前进。
 //
-// 只有 domain.RestartConfirmed（uptime 一秒容差）成立时才推进：boot epoch 由 uint32 整秒 uptime 推算，
-// 同一进程相邻两次探测就会有 ±1 秒抖动，用字符串精确不等判定重启会让模板反复失效（T094）。
-// 未确认重启时**不覆盖**已存的锚点 epoch，避免抖动逐轮累积。
-func (s *Store) AdvanceCapabilityGeneration(ctx context.Context, observed time.Time, known bool,
+// 三个信号任一成立即视为换了进程（T098）：
+//  1. boot epoch 与锚点相差超过容差（domain.RestartConfirmed）；
+//  2. 观测到的 uptime 比上次记录的更小——重启后 uptime 必然回落，这个信号不会被整秒量化吞掉，
+//     因此能抓住「快速重启」和「前后 epoch 相同或只差一秒」的情况；
+//  3. 协调器明确观察到一次断线重连——重连期间发生过什么面板并不知道，保守按可能换过进程处理。
+//
+// 未确认时**不覆盖**锚点 epoch，避免 ±1 秒抖动逐轮累积；uptime 记录取单调最大值，同样不被抖动干扰。
+func (s *Store) AdvanceCapabilityGeneration(ctx context.Context, signal ports.CapabilitySignal,
 	tolerance time.Duration, now time.Time) (int64, bool, error) {
 	var generation int64
 	advanced := false
 	err := s.WithWriteTx(ctx, func(write ports.WriteTx) error {
 		tx := write.(*txStore)
 		var storedEpoch string
-		if err := tx.tx.QueryRowContext(ctx, `SELECT COALESCE(boot_epoch,''),capability_generation
-            FROM managed_xray_instances WHERE singleton=1`).Scan(&storedEpoch, &generation); err != nil {
+		var storedUptime int64
+		if err := tx.tx.QueryRowContext(ctx, `SELECT COALESCE(boot_epoch,''),capability_generation,last_uptime_seconds
+            FROM managed_xray_instances WHERE singleton=1`).Scan(&storedEpoch, &generation, &storedUptime); err != nil {
 			return err
 		}
-		if !known {
+		if !signal.Known {
 			return nil // 纪元未知时不做任何判断
 		}
 		anchor := time.Time{}
 		if storedEpoch != "" {
-			parsed, err := time.Parse(time.RFC3339, storedEpoch)
-			if err == nil {
+			if parsed, err := time.Parse(time.RFC3339, storedEpoch); err == nil {
 				anchor = parsed
 			}
 		}
-		if !anchor.IsZero() && !domain.RestartConfirmed(anchor, observed, true, tolerance) {
-			return nil // 同一进程的量化抖动：锚点与世代都不动
+		uptime := int64(signal.UptimeSeconds)
+		if anchor.IsZero() {
+			// 首次观测：只建立锚点，不算重启。
+			_, err := tx.tx.ExecContext(ctx, `UPDATE managed_xray_instances SET boot_epoch=?,last_uptime_seconds=?,updated_at=?
+                WHERE singleton=1`, signal.BootEpoch.UTC().Format(time.RFC3339), uptime, millis(now))
+			return err
 		}
-		if !anchor.IsZero() {
-			generation++
-			advanced = true
+		restarted := domain.RestartConfirmed(anchor, signal.BootEpoch, true, tolerance) ||
+			(storedUptime > 0 && uptime < storedUptime) || signal.SuspectedRestart
+		if !restarted {
+			// 同一进程：锚点不动，uptime 取单调最大值。
+			if uptime > storedUptime {
+				_, err := tx.tx.ExecContext(ctx, `UPDATE managed_xray_instances SET last_uptime_seconds=?,updated_at=?
+                    WHERE singleton=1`, uptime, millis(now))
+				return err
+			}
+			return nil
 		}
-		_, err := tx.tx.ExecContext(ctx, `UPDATE managed_xray_instances SET boot_epoch=?,capability_generation=?,updated_at=?
-            WHERE singleton=1`, observed.UTC().Format(time.RFC3339), generation, millis(now))
+		generation++
+		advanced = true
+		_, err := tx.tx.ExecContext(ctx, `UPDATE managed_xray_instances SET boot_epoch=?,capability_generation=?,
+            last_uptime_seconds=?,updated_at=? WHERE singleton=1`,
+			signal.BootEpoch.UTC().Format(time.RFC3339), generation, uptime, millis(now))
 		return err
 	})
 	return generation, advanced, err

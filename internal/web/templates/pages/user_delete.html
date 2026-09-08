@@ -1,16 +1,7 @@
 {{define "user_delete.html"}}{{template "head" .}}
-<body>{{template "nav" .}}<main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}
-<p>删除是软删除，请确认你了解以下后果：</p>
-<ul>
-  <li>该用户的凭证在节点确认移除后无法再建立新连接；已经建立的连接可能继续一段时间。</li>
-  <li>用户不再出现在默认列表中，但历史用量与审计记录保留，可通过“包含已删除”查看。</li>
-  <li>移除确认后密钥材料被销毁，无法恢复；之后可以用相同显示名称创建全新的用户。</li>
-</ul>
-<form method="post" action="/users/{{.Data.ID}}/delete">
-  {{.CSRFField}}
-  <input type="hidden" name="_request_id" value="{{.RequestID}}">
-  <input type="hidden" name="_version" value="{{.Version}}">
-  <button type="submit">确认删除用户</button>
-</form>
-<p><a href="/users/{{.Data.ID}}">取消并返回</a></p>
+<body>{{template "nav" .}}<main id="main-content" class="narrow" tabindex="-1">
+<a href="/users/{{.Data.ID}}" class="breadcrumb">取消并返回用户详情</a>
+<header class="page-header"><div class="page-title-group"><p class="eyebrow">危险操作</p><h1>{{.Title}}</h1><p class="page-description">删除会撤销该用户的专属入口，并在节点确认后销毁密钥材料。</p></div></header>
+{{template "messages" .}}
+<section class="confirm-card" aria-labelledby="delete-confirm-heading"><div class="confirm-summary"><h2 id="delete-confirm-heading">确认删除这个用户？</h2><p>这是软删除：用户会从默认列表移除。此操作保留审计与历史统计，但凭证无法恢复。</p></div><ul class="impact-list"><li>节点确认后，旧凭证不能再建立新连接；已建立连接可能短暂继续。</li><li>专属端口会被释放，可重新分配给其他用户。</li><li>密钥材料会被销毁；以后使用相同名称创建的是全新用户。</li></ul><div class="confirm-actions"><form method="post" action="/users/{{.Data.ID}}/delete" data-submit-label="正在删除…">{{.CSRFField}}<input type="hidden" name="_request_id" value="{{.RequestID}}"><input type="hidden" name="_version" value="{{.Version}}"><button type="submit" class="button-danger">确认删除用户</button></form><a href="/users/{{.Data.ID}}" class="button button-secondary">取消</a></div></section>
 {{template "footer" .}}</main></body></html>{{end}}

@@ -72,7 +72,7 @@ func Routes(deps RouteDependencies) (http.Handler, error) {
 		protected.HandleFunc("GET /fragments/users-table", fragments.UsersTable)
 	} else {
 		protected.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-			renderer.Page(w, http.StatusOK, "dashboard.html", views.Page{Title: "仪表盘", Authenticated: true,
+			renderer.Page(w, http.StatusOK, "dashboard.html", views.Page{Title: "仪表盘", Section: "dashboard", Authenticated: true,
 				CSRFField: csrf.TemplateField(r), RequestID: handlers.NewRequestID(), Timezone: "UTC",
 				Data: views.DashboardView{HealthState: "unknown", HealthLabel: views.HealthLabel("unknown")}})
 		})

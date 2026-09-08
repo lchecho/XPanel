@@ -1,31 +1,26 @@
 {{define "user_form.html"}}{{template "head" .}}
-<body>{{template "nav" .}}<main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}
-{{if .Data.NoCompatible}}<p class="empty">当前没有处于“兼容”状态的入站模板，无法创建用户。请先<a href="/templates">登记或重新验证入站模板</a>。</p>{{else}}
-<form method="post" action="/users">
-  {{.CSRFField}}
-  <input type="hidden" name="_request_id" value="{{.RequestID}}">
-  <label for="display_name">显示名称</label>
-  <input id="display_name" name="display_name" value="{{index .Values "display_name"}}" required maxlength="64" aria-describedby="display_name-error">
-  <span id="display_name-error" class="field-error">{{index .FieldErrors "display_name"}}</span>
-  <label for="template_id">入站模板</label>
-  <select id="template_id" name="template_id" required aria-describedby="template_id-error">{{$selected := index .Values "template_id"}}{{range .Data.Templates}}<option value="{{.ID}}"{{if eq .ID $selected}} selected{{end}}>{{.Name}}（{{.PublicHost}}，端口池 {{.PortPoolStart}}–{{.PortPoolEnd}}，剩余 {{.PortsRemaining}}）</option>{{end}}</select>
-  <span id="template_id-error" class="field-error">{{index .FieldErrors "template_id"}}</span>
-  <label for="port">专属端口（可选）</label>
-  <input id="port" name="port" type="number" min="1024" max="65535" value="{{index .Values "port"}}" aria-describedby="port-hint port-error">
-  <span id="port-hint" class="hint">留空表示由面板从端口池自动分配；填写时必须位于所选模板的端口池区间内（见上方选项中的范围）且未被其他用户占用。</span>
-  <span id="port-error" class="field-error">{{index .FieldErrors "port"}}</span>
-  <fieldset><legend>月度流量配额</legend>
-    <label for="quota_value">配额数值</label>
-    <input id="quota_value" name="quota_value" type="number" min="1" inputmode="numeric" value="{{index .Values "quota_value"}}" aria-describedby="quota-error">
-    <label for="quota_unit">单位</label>
-    <select id="quota_unit" name="quota_unit">{{$unit := index .Values "quota_unit"}}{{range .Data.Units}}<option value="{{.}}"{{if eq . $unit}} selected{{end}}>{{.}}</option>{{end}}</select>
-    <label><input type="checkbox" name="unlimited" value="on"{{if eq (index .Values "unlimited") "on"}} checked{{end}}> 无限制（仍统计用量，但不会因总量自动禁用）</label>
-    <span id="quota-error" class="field-error">{{index .FieldErrors "quota"}}{{index .FieldErrors "limit_bytes"}}</span>
-  </fieldset>
-  <label for="reset_day">每月重置日（1–28）</label>
-  <input id="reset_day" name="reset_day" type="number" min="1" max="28" value="{{index .Values "reset_day"}}" required aria-describedby="reset_day-error">
-  <span id="reset_day-error" class="field-error">{{index .FieldErrors "reset_day"}}</span>
-  <button type="submit">创建用户</button>
+<body>{{template "nav" .}}<main id="main-content" class="narrow" tabindex="-1">
+<a href="/users" class="breadcrumb">返回用户列表</a>
+<header class="page-header"><div class="page-title-group"><p class="eyebrow">新建专属入口</p><h1>{{.Title}}</h1><p class="page-description">为用户分配独立入站、端口和配额。创建意图会先保存，再由节点确认监听。</p></div></header>
+{{template "messages" .}}
+{{if .Data.NoCompatible}}<div class="empty"><strong>当前没有处于“兼容”状态的入站模板</strong>至少需要一份验证为“兼容”的模板才能创建用户。<br><a href="/templates">登记或重新验证入站模板</a></div>{{else}}
+<form method="post" action="/users" class="form-card" data-submit-label="正在创建…">
+  {{.CSRFField}}<input type="hidden" name="_request_id" value="{{.RequestID}}">
+  <div class="form-intro"><p>创建完成后状态会先显示为“启用中”。节点确认入站和凭证后，连接信息才可复制。</p></div>
+  <div class="form-body">
+    <fieldset class="form-section"><legend>用户与入口</legend><div class="form-grid">
+      <div class="form-field form-field-full"><label for="display_name">显示名称 <span class="required-mark" aria-hidden="true">*</span></label><input id="display_name" name="display_name" value="{{index .Values "display_name"}}" required maxlength="64" autocomplete="off" placeholder="例如：设计组 · 小陈" aria-describedby="display_name-hint display_name-error"{{with index .FieldErrors "display_name"}} aria-invalid="true"{{end}}><span id="display_name-hint" class="hint">只用于管理界面识别，不会作为 Xray 统计身份。</span><span id="display_name-error" class="field-error">{{index .FieldErrors "display_name"}}</span></div>
+      <div class="form-field form-field-full"><label for="template_id">入站模板 <span class="required-mark" aria-hidden="true">*</span></label><select id="template_id" name="template_id" required aria-describedby="template_id-hint template_id-error"{{with index .FieldErrors "template_id"}} aria-invalid="true"{{end}}>{{$selected := index .Values "template_id"}}{{range .Data.Templates}}<option value="{{.ID}}"{{if eq .ID $selected}} selected{{end}}>{{.Name}} · {{.PublicHost}} · 端口池 {{.PortPoolStart}}–{{.PortPoolEnd}} · 剩余 {{.PortsRemaining}}</option>{{end}}</select><span id="template_id-hint" class="hint">只显示已通过当前节点能力验证的模板。</span><span id="template_id-error" class="field-error">{{index .FieldErrors "template_id"}}</span></div>
+      <div class="form-field"><label for="port">专属端口</label><input id="port" name="port" type="number" min="1024" max="65535" inputmode="numeric" value="{{index .Values "port"}}" placeholder="自动分配" aria-describedby="port-hint port-error"{{with index .FieldErrors "port"}} aria-invalid="true"{{end}}><span id="port-hint" class="hint">留空时从所选模板的端口池自动分配最小空闲端口。</span><span id="port-error" class="field-error">{{index .FieldErrors "port"}}</span></div>
+      <div class="form-field"><label for="reset_day">每月重置日 <span class="required-mark" aria-hidden="true">*</span></label><input id="reset_day" name="reset_day" type="number" min="1" max="28" inputmode="numeric" value="{{index .Values "reset_day"}}" required aria-describedby="reset_day-hint reset_day-error"{{with index .FieldErrors "reset_day"}} aria-invalid="true"{{end}}><span id="reset_day-hint" class="hint">可选 1–28 日，按面板配额时区计算。</span><span id="reset_day-error" class="field-error">{{index .FieldErrors "reset_day"}}</span></div>
+    </div></fieldset>
+
+    <fieldset class="form-section"><legend>月度流量配额</legend>
+      <div id="quota-fields" class="form-field"><label for="quota_value">配额上限</label><div class="quota-row"><input id="quota_value" name="quota_value" type="number" min="1" inputmode="numeric" value="{{index .Values "quota_value"}}" placeholder="例如：100" aria-describedby="quota-hint quota-error"{{if or (index .FieldErrors "quota") (index .FieldErrors "limit_bytes")}} aria-invalid="true"{{end}}><label for="quota_unit" class="sr-only">配额单位</label><select id="quota_unit" name="quota_unit">{{$unit := index .Values "quota_unit"}}{{range .Data.Units}}<option value="{{.}}"{{if eq . $unit}} selected{{end}}>{{.}}</option>{{end}}</select></div><span id="quota-hint" class="hint">达到上限后会停止该用户的专属入站，主要阻止新连接。</span><span id="quota-error" class="field-error">{{index .FieldErrors "quota"}}{{index .FieldErrors "limit_bytes"}}</span></div>
+      <label class="checkbox-row"><input type="checkbox" name="unlimited" value="on" data-unlimited-toggle aria-controls="quota-fields"{{if eq (index .Values "unlimited") "on"}} checked{{end}}><span class="checkbox-copy"><strong>不限制流量</strong><span>仍统计使用量，但不会因月度总量自动禁用。</span></span></label>
+    </fieldset>
+
+    <div class="form-actions"><button type="submit">创建用户</button><a href="/users" class="button button-secondary">取消</a></div>
+  </div>
 </form>{{end}}
-<p><a href="/users">返回用户列表</a></p>
 {{template "footer" .}}</main></body></html>{{end}}

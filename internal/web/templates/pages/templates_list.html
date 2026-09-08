@@ -1,8 +1,19 @@
 {{define "templates_list.html"}}{{template "head" .}}
-<body>{{template "nav" .}}<main><h1>入站模板</h1>{{template "messages" .}}
-<p><a href="/templates/new" class="button">登记入站模板</a></p>
-{{if not .Data}}<p class="empty">尚未登记入站模板。登记公开地址、监听地址与端口池后，面板会为每个用户创建独立的入站与端口。</p>{{else}}
-<table><caption>已登记的入站模板</caption><thead><tr><th scope="col">名称</th><th scope="col">公开地址</th><th scope="col">监听地址</th><th scope="col">端口池</th><th scope="col">加密方式</th><th scope="col">兼容状态</th><th scope="col">最后验证</th></tr></thead><tbody>
-{{range .Data}}<tr><td data-label="名称"><a href="/templates/{{.ID}}">{{.Name}}</a></td><td data-label="公开地址">{{.PublicHost}}</td><td data-label="监听地址">{{.ListenAddress}}</td><td data-label="端口池">{{.PortPoolStart}}–{{.PortPoolEnd}}</td><td data-label="加密方式">{{.Method}}</td><td data-label="兼容状态"><span class="status status-{{.Compatibility}}">{{.CompatibilityLabel}}</span></td><td data-label="最后验证">{{.LastValidatedAt}}</td></tr>{{end}}
-</tbody></table>{{end}}
+<body>{{template "nav" .}}<main id="main-content" tabindex="-1">
+<header class="page-header">
+  <div class="page-title-group"><p class="eyebrow">入口规则</p><h1>入站模板</h1><p class="page-description">定义公开地址、监听地址和端口池。每位用户会从模板获得一条独立入站。</p></div>
+  <div class="page-actions"><a href="/templates/new" class="button button-primary"><span class="button-icon" aria-hidden="true">＋</span>登记模板</a></div>
+</header>
+{{template "messages" .}}
+{{if not .Data}}<div class="empty"><strong>尚未登记入站模板</strong>先配置公开地址、监听地址与端口池，验证通过后即可创建用户。<br><a href="/templates/new">登记第一个模板</a></div>{{else}}
+<div class="table-shell"><table><caption>已登记的入站模板</caption><thead><tr><th scope="col">模板</th><th scope="col">地址</th><th scope="col">端口池</th><th scope="col">协议能力</th><th scope="col">兼容状态</th><th scope="col">最后验证</th></tr></thead><tbody>
+{{range .Data}}<tr>
+  <td data-label="模板"><div class="cell-primary"><a href="/templates/{{.ID}}">{{.Name}}</a><small>{{.PublicHost}}</small></div></td>
+  <td data-label="地址"><div class="cell-primary"><span>{{.ListenAddress}}</span><small>公开 {{.PublicHost}}</small></div></td>
+  <td data-label="端口池" class="numeric">{{.PortPoolStart}}–{{.PortPoolEnd}}</td>
+  <td data-label="协议能力"><div class="cell-primary"><span>{{.Method}}</span><small>{{.Network}}</small></div></td>
+  <td data-label="兼容状态"><span class="status status-{{.Compatibility}}">{{.CompatibilityLabel}}</span></td>
+  <td data-label="最后验证" class="numeric">{{if .LastValidatedAt}}{{.LastValidatedAt}}{{else}}尚未验证{{end}}</td>
+</tr>{{end}}
+</tbody></table></div>{{end}}
 {{template "footer" .}}</main></body></html>{{end}}

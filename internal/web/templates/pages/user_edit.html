@@ -1,27 +1,24 @@
 {{define "user_edit.html"}}{{template "head" .}}
-<body>{{template "nav" .}}<main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}
-<p>当前存储值：{{.Data.User.DisplayName}}，配额 {{.Data.User.Quota.LimitText}}，每月 {{.Data.User.Quota.ResetDay}} 日重置，{{if .Data.User.AdminEnabled}}已启用{{else}}已手动禁用{{end}}（版本 {{.Version}}）</p>
-<form method="post" action="/users/{{.Data.User.ID}}">
-  {{.CSRFField}}
-  <input type="hidden" name="_request_id" value="{{.RequestID}}">
-  <input type="hidden" name="_version" value="{{.Version}}">
-  <label for="display_name">显示名称</label>
-  <input id="display_name" name="display_name" value="{{index .Values "display_name"}}" required maxlength="64" aria-describedby="display_name-error">
-  <span id="display_name-error" class="field-error">{{index .FieldErrors "display_name"}}</span>
-  <fieldset><legend>月度流量配额</legend>
-    <label for="quota_value">配额数值</label>
-    <input id="quota_value" name="quota_value" type="number" min="1" inputmode="numeric" value="{{index .Values "quota_value"}}" aria-describedby="quota-error">
-    <label for="quota_unit">单位</label>
-    <select id="quota_unit" name="quota_unit">{{$unit := index .Values "quota_unit"}}{{range .Data.Units}}<option value="{{.}}"{{if eq . $unit}} selected{{end}}>{{.}}</option>{{end}}</select>
-    <label><input type="checkbox" name="unlimited" value="on"{{if eq (index .Values "unlimited") "on"}} checked{{end}}> 无限制</label>
-    <span id="quota-error" class="field-error">{{index .FieldErrors "quota"}}{{index .FieldErrors "limit_bytes"}}</span>
-    <p class="hint">调低到不高于当前用量会立即封禁新连接；调高或改为无限制且配额是唯一阻断原因时会立即恢复。</p>
-  </fieldset>
-  <label for="reset_day">每月重置日（1–28，从下一周期起生效）</label>
-  <input id="reset_day" name="reset_day" type="number" min="1" max="28" value="{{index .Values "reset_day"}}" required aria-describedby="reset_day-error">
-  <span id="reset_day-error" class="field-error">{{index .FieldErrors "reset_day"}}</span>
-  <label><input type="checkbox" name="admin_enabled" value="on"{{if eq (index .Values "admin_enabled") "on"}} checked{{end}}> 允许该用户建立新连接（取消勾选即手动禁用）</label>
-  <button type="submit">保存修改</button>
+<body>{{template "nav" .}}<main id="main-content" class="narrow" tabindex="-1">
+<a href="/users/{{.Data.User.ID}}" class="breadcrumb">返回用户详情</a>
+<header class="page-header"><div class="page-title-group"><p class="eyebrow">访问策略</p><h1>{{.Title}}</h1><p class="page-description">修改显示信息、流量配额与访问意图。保存失败时已填写内容会保留。</p></div></header>
+{{template "messages" .}}
+<form method="post" action="/users/{{.Data.User.ID}}" class="form-card" data-submit-label="正在保存…">
+  {{.CSRFField}}<input type="hidden" name="_request_id" value="{{.RequestID}}"><input type="hidden" name="_version" value="{{.Version}}">
+  <div class="form-intro"><p>当前：<strong>{{.Data.User.DisplayName}}</strong> · 配额 {{.Data.User.Quota.LimitText}} · {{if .Data.User.AdminEnabled}}允许新连接{{else}}已手动禁用{{end}} · 版本 {{.Version}}</p></div>
+  <div class="form-body">
+    <fieldset class="form-section"><legend>用户信息</legend><div class="form-grid">
+      <div class="form-field form-field-full"><label for="display_name">显示名称 <span class="required-mark" aria-hidden="true">*</span></label><input id="display_name" name="display_name" value="{{index .Values "display_name"}}" required maxlength="64" autocomplete="off" aria-describedby="display_name-hint display_name-error"{{with index .FieldErrors "display_name"}} aria-invalid="true"{{end}}><span id="display_name-hint" class="hint">更改名称不会影响端口、凭证、统计身份或历史流量。</span><span id="display_name-error" class="field-error">{{index .FieldErrors "display_name"}}</span></div>
+      <div class="form-field"><label for="reset_day">每月重置日 <span class="required-mark" aria-hidden="true">*</span></label><input id="reset_day" name="reset_day" type="number" min="1" max="28" inputmode="numeric" value="{{index .Values "reset_day"}}" required aria-describedby="reset_day-hint reset_day-error"{{with index .FieldErrors "reset_day"}} aria-invalid="true"{{end}}><span id="reset_day-hint" class="hint">变更从下一周期起生效，当前周期不会重算。</span><span id="reset_day-error" class="field-error">{{index .FieldErrors "reset_day"}}</span></div>
+    </div></fieldset>
+
+    <fieldset class="form-section"><legend>月度流量配额</legend>
+      <div id="quota-fields" class="form-field"><label for="quota_value">配额上限</label><div class="quota-row"><input id="quota_value" name="quota_value" type="number" min="1" inputmode="numeric" value="{{index .Values "quota_value"}}" aria-describedby="quota-hint quota-error"{{if or (index .FieldErrors "quota") (index .FieldErrors "limit_bytes")}} aria-invalid="true"{{end}}><label for="quota_unit" class="sr-only">配额单位</label><select id="quota_unit" name="quota_unit">{{$unit := index .Values "quota_unit"}}{{range .Data.Units}}<option value="{{.}}"{{if eq . $unit}} selected{{end}}>{{.}}</option>{{end}}</select></div><span id="quota-hint" class="hint">调低至不高于当前用量会立即进入超限处理；调高后会在条件允许时自动恢复。</span><span id="quota-error" class="field-error">{{index .FieldErrors "quota"}}{{index .FieldErrors "limit_bytes"}}</span></div>
+      <label class="checkbox-row"><input type="checkbox" name="unlimited" value="on" data-unlimited-toggle aria-controls="quota-fields"{{if eq (index .Values "unlimited") "on"}} checked{{end}}><span class="checkbox-copy"><strong>不限制流量</strong><span>继续统计使用量，但不因月度总量自动停止入口。</span></span></label>
+    </fieldset>
+
+    <fieldset class="form-section"><legend>访问状态</legend><label class="checkbox-row"><input type="checkbox" name="admin_enabled" value="on"{{if eq (index .Values "admin_enabled") "on"}} checked{{end}}><span class="checkbox-copy"><strong>允许该用户建立新连接</strong><span>取消后面板会移除整条专属入站，端口停止监听；再次启用仍使用原端口。</span></span></label></fieldset>
+    <div class="form-actions"><button type="submit">保存修改</button><a href="/users/{{.Data.User.ID}}" class="button button-secondary">取消</a></div>
+  </div>
 </form>
-<p><a href="/users/{{.Data.User.ID}}">返回用户详情</a></p>
 {{template "footer" .}}</main></body></html>{{end}}

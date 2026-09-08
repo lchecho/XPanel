@@ -10,7 +10,7 @@ import (
 	"xpanel/internal/domain"
 )
 
-var passwordPattern = regexp.MustCompile(`<code class="print-hidden connection-secret">([^<]+)</code>`)
+var passwordPattern = regexp.MustCompile(`<code\b[^>]*class="print-hidden connection-secret"[^>]*>([^<]+)</code>`)
 
 func TestLifecycleEndToEnd(t *testing.T) {
 	app := newHarness(t)

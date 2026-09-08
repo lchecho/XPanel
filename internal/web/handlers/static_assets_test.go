@@ -21,10 +21,14 @@ func TestStaticAssetsAreContentHashedAndImmutable(t *testing.T) {
 	if len(match) != 2 {
 		t.Fatalf("hashed stylesheet reference missing: %s", body)
 	}
-	for _, ref := range []string{match[1]} {
+	favicon := regexp.MustCompile(`href="(/static/favicon\.[0-9a-f]{12}\.svg)"`).FindStringSubmatch(body)
+	if len(favicon) != 2 {
+		t.Fatalf("hashed favicon reference missing: %s", body)
+	}
+	for _, ref := range []string{match[1], favicon[1]} {
 		response, content := app.Get(ref)
 		if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" ||
-			!strings.HasPrefix(response.Header.Get("Content-Type"), "text/css") || len(content) == 0 {
+			(!strings.HasPrefix(response.Header.Get("Content-Type"), "text/css") && !strings.Contains(response.Header.Get("Content-Type"), "svg")) || len(content) == 0 {
 			t.Fatalf("asset %s status=%d cache=%q type=%q", ref, response.StatusCode, response.Header.Get("Cache-Control"), response.Header.Get("Content-Type"))
 		}
 		if response.Header.Get("Content-Security-Policy") == "" || response.Header.Get("X-Content-Type-Options") != "nosniff" {

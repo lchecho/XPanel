@@ -32,7 +32,7 @@ func TestTemplatePagesRequireAuthenticationAndExposeNoKeys(t *testing.T) {
 	response, body = app.Get("/templates/new")
 	if response.StatusCode != http.StatusOK || strings.Contains(body, `name="server_key"`) ||
 		!strings.Contains(body, `label for="listen_address"`) || !strings.Contains(body, `label for="port_pool_start"`) ||
-		!strings.Contains(body, `aria-describedby="name-error"`) {
+		!strings.Contains(body, `aria-describedby="name-error name-hint"`) {
 		t.Fatalf("new template form status=%d body=%s", response.StatusCode, body)
 	}
 	response, body = app.PostForm("/templates", "/templates/new", templateForm(t, "Primary", 30000, 30099))

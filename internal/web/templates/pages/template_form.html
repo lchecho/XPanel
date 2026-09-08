@@ -1,35 +1,30 @@
 {{define "template_form.html"}}{{template "head" .}}
-<body>{{template "nav" .}}<main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}
-{{if .Data.Edit}}<p>当前存储值：{{.Data.Template.PublicHost}} / 监听 {{.Data.Template.ListenAddress}} / 端口池 {{.Data.Template.PortPoolStart}}–{{.Data.Template.PortPoolEnd}} / {{.Data.Template.Method}}（版本 {{.Version}}）</p>{{end}}
-<form method="post" action="{{if .Data.Edit}}/templates/{{.Data.Template.ID}}{{else}}/templates{{end}}">
-  {{.CSRFField}}
-  <input type="hidden" name="_request_id" value="{{.RequestID}}">
-  {{if .Data.Edit}}<input type="hidden" name="_version" value="{{.Version}}">{{end}}
-  <label for="name">名称</label>
-  <input id="name" name="name" value="{{index .Values "name"}}" required maxlength="64" aria-describedby="name-error">
-  <span id="name-error" class="field-error">{{index .FieldErrors "name"}}</span>
-  <label for="public_host">公开地址（交付给使用者）</label>
-  <input id="public_host" name="public_host" value="{{index .Values "public_host"}}" required aria-describedby="public_host-error">
-  <span id="public_host-error" class="field-error">{{index .FieldErrors "public_host"}}</span>
-  <label for="listen_address">监听地址</label>
-  <input id="listen_address" name="listen_address" value="{{index .Values "listen_address"}}" required aria-describedby="listen_address-hint listen_address-error">
-  <span id="listen_address-hint" class="hint">面板创建的入站将绑定到该地址，必须是 IP 字面量，例如 0.0.0.0。</span>
-  <span id="listen_address-error" class="field-error">{{index .FieldErrors "listen_address"}}</span>
-  <label for="port_pool_start">端口池起始</label>
-  <input id="port_pool_start" name="port_pool_start" type="number" min="1024" max="65535" value="{{index .Values "port_pool_start"}}" required aria-describedby="port_pool_start-error">
-  <span id="port_pool_start-error" class="field-error">{{index .FieldErrors "port_pool_start"}}</span>
-  <label for="port_pool_end">端口池结束</label>
-  <input id="port_pool_end" name="port_pool_end" type="number" min="1024" max="65535" value="{{index .Values "port_pool_end"}}" required aria-describedby="port_pool_end-hint port_pool_end-error">
-  <span id="port_pool_end-hint" class="hint">面板只在该闭区间内为用户分配端口；区间容量即用户数上限。防火墙需要整段放行。</span>
-  <span id="port_pool_end-error" class="field-error">{{index .FieldErrors "port_pool_end"}}</span>
-  <label for="method">加密方式</label>
-  <select id="method" name="method" aria-describedby="method-error">{{$method := index .Values "method"}}{{range .Data.Methods}}<option value="{{.}}"{{if eq . $method}} selected{{end}}>{{.}}</option>{{end}}</select>
-  <span id="method-error" class="field-error">{{index .FieldErrors "method"}}</span>
-  <label for="network">网络能力</label>
-  <select id="network" name="network" aria-describedby="network-error">{{$network := index .Values "network"}}{{range .Data.Networks}}<option value="{{.}}"{{if eq . $network}} selected{{end}}>{{.}}</option>{{end}}</select>
-  <span id="network-error" class="field-error">{{index .FieldErrors "network"}}</span>
-  <p class="hint">服务端密钥由面板生成：每条专属入站拥有各自独立的密钥，无需在此填写。</p>
-  <button type="submit">{{if .Data.Edit}}保存修改{{else}}登记并验证{{end}}</button>
+<body>{{template "nav" .}}<main id="main-content" class="narrow" tabindex="-1">
+<a href="{{if .Data.Edit}}/templates/{{.Data.Template.ID}}{{else}}/templates{{end}}" class="breadcrumb">{{if .Data.Edit}}返回模板详情{{else}}返回入站模板{{end}}</a>
+<header class="page-header"><div class="page-title-group"><p class="eyebrow">{{if .Data.Edit}}配置维护{{else}}入口规则{{end}}</p><h1>{{.Title}}</h1><p class="page-description">{{if .Data.Edit}}调整公开地址、端口范围与节点能力要求。已有池外分配不会被迁移。{{else}}创建一套可复用的专属入站规则，保存后会立即验证节点能力。{{end}}</p></div></header>
+{{template "messages" .}}
+<form method="post" action="{{if .Data.Edit}}/templates/{{.Data.Template.ID}}{{else}}/templates{{end}}" class="form-card" data-submit-label="{{if .Data.Edit}}正在保存…{{else}}正在登记并验证…{{end}}">
+  {{.CSRFField}}<input type="hidden" name="_request_id" value="{{.RequestID}}">{{if .Data.Edit}}<input type="hidden" name="_version" value="{{.Version}}">{{end}}
+  {{if .Data.Edit}}<div class="form-intro"><p>当前配置：<strong>{{.Data.Template.PublicHost}}</strong> · {{.Data.Template.ListenAddress}} · 端口 {{.Data.Template.PortPoolStart}}–{{.Data.Template.PortPoolEnd}} · 版本 {{.Version}}</p></div>{{end}}
+  <div class="form-body">
+    <fieldset class="form-section"><legend>基本信息</legend><div class="form-grid">
+      <div class="form-field form-field-full"><label for="name">模板名称 <span class="required-mark" aria-hidden="true">*</span></label><input id="name" name="name" value="{{index .Values "name"}}" required maxlength="64" placeholder="例如：香港节点主入口" aria-describedby="name-error name-hint"{{with index .FieldErrors "name"}} aria-invalid="true"{{end}}><span id="name-hint" class="hint">使用容易区分节点或用途的名称，最多 64 个字符。</span><span id="name-error" class="field-error">{{index .FieldErrors "name"}}</span></div>
+      <div class="form-field"><label for="public_host">公开地址 <span class="required-mark" aria-hidden="true">*</span></label><input id="public_host" name="public_host" value="{{index .Values "public_host"}}" required placeholder="edge.example.com" aria-describedby="public_host-hint public_host-error"{{with index .FieldErrors "public_host"}} aria-invalid="true"{{end}}><span id="public_host-hint" class="hint">写入交付给使用者的连接信息。</span><span id="public_host-error" class="field-error">{{index .FieldErrors "public_host"}}</span></div>
+      <div class="form-field"><label for="listen_address">监听地址 <span class="required-mark" aria-hidden="true">*</span></label><input id="listen_address" name="listen_address" value="{{index .Values "listen_address"}}" required placeholder="0.0.0.0" aria-describedby="listen_address-hint listen_address-error"{{with index .FieldErrors "listen_address"}} aria-invalid="true"{{end}}><span id="listen_address-hint" class="hint">必须是 IP 字面量，例如 0.0.0.0。</span><span id="listen_address-error" class="field-error">{{index .FieldErrors "listen_address"}}</span></div>
+    </div></fieldset>
+
+    <fieldset class="form-section"><legend>端口分配</legend><div class="form-grid">
+      <div class="form-field"><label for="port_pool_start">起始端口 <span class="required-mark" aria-hidden="true">*</span></label><input id="port_pool_start" name="port_pool_start" type="number" min="1024" max="65535" inputmode="numeric" value="{{index .Values "port_pool_start"}}" required placeholder="30000" aria-describedby="port_pool_start-error"{{with index .FieldErrors "port_pool_start"}} aria-invalid="true"{{end}}><span id="port_pool_start-error" class="field-error">{{index .FieldErrors "port_pool_start"}}</span></div>
+      <div class="form-field"><label for="port_pool_end">结束端口 <span class="required-mark" aria-hidden="true">*</span></label><input id="port_pool_end" name="port_pool_end" type="number" min="1024" max="65535" inputmode="numeric" value="{{index .Values "port_pool_end"}}" required placeholder="30099" aria-describedby="port_pool_end-hint port_pool_end-error"{{with index .FieldErrors "port_pool_end"}} aria-invalid="true"{{end}}><span id="port_pool_end-hint" class="hint">闭区间容量即用户数上限；防火墙需放行整段。</span><span id="port_pool_end-error" class="field-error">{{index .FieldErrors "port_pool_end"}}</span></div>
+    </div></fieldset>
+
+    <fieldset class="form-section"><legend>协议能力</legend><div class="form-grid">
+      <div class="form-field"><label for="method">加密方式</label><select id="method" name="method" aria-describedby="method-hint method-error"{{with index .FieldErrors "method"}} aria-invalid="true"{{end}}>{{$method := index .Values "method"}}{{range .Data.Methods}}<option value="{{.}}"{{if eq . $method}} selected{{end}}>{{.}}</option>{{end}}</select><span id="method-hint" class="hint">每条专属入站会生成独立服务端与用户密钥。</span><span id="method-error" class="field-error">{{index .FieldErrors "method"}}</span></div>
+      <div class="form-field"><label for="network">网络能力</label><select id="network" name="network" aria-describedby="network-hint network-error"{{with index .FieldErrors "network"}} aria-invalid="true"{{end}}>{{$network := index .Values "network"}}{{range .Data.Networks}}<option value="{{.}}"{{if eq . $network}} selected{{end}}>{{.}}</option>{{end}}</select><span id="network-hint" class="hint">选择节点需要为此模板支持的传输类型。</span><span id="network-error" class="field-error">{{index .FieldErrors "network"}}</span></div>
+    </div></fieldset>
+
+    <div class="notice notice-info">服务端密钥由面板生成并安全保存，不需要手动填写。</div>
+    <div class="form-actions"><button type="submit">{{if .Data.Edit}}保存修改{{else}}登记并验证{{end}}</button><a href="{{if .Data.Edit}}/templates/{{.Data.Template.ID}}{{else}}/templates{{end}}" class="button button-secondary">取消</a></div>
+  </div>
 </form>
-<p><a href="/templates">返回入站模板列表</a></p>
 {{template "footer" .}}</main></body></html>{{end}}

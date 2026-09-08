@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/alexedwards/scs/v2"
@@ -31,7 +32,7 @@ type Base struct {
 
 // NewPage 构造认证页面的基础数据：CSRF 字段、一次性请求 ID、flash 消息与面板时区。
 func (b Base) NewPage(r *http.Request, title string) views.Page {
-	page := views.Page{Title: title, CSRFField: csrf.TemplateField(r), RequestID: NewRequestID(), Authenticated: true,
+	page := views.Page{Title: title, Section: pageSection(r.URL.Path), CSRFField: csrf.TemplateField(r), RequestID: NewRequestID(), Authenticated: true,
 		Values: map[string]string{}, FieldErrors: map[string]string{}, Timezone: b.Location(r).String()}
 	if b.Sessions != nil {
 		message := b.Sessions.PopString(r.Context(), sessionFlashMessage)
@@ -44,6 +45,23 @@ func (b Base) NewPage(r *http.Request, title string) views.Page {
 		}
 	}
 	return page
+}
+
+func pageSection(path string) string {
+	switch {
+	case path == "/":
+		return "dashboard"
+	case strings.HasPrefix(path, "/users"):
+		return "users"
+	case strings.HasPrefix(path, "/templates"):
+		return "templates"
+	case strings.HasPrefix(path, "/audit"):
+		return "audit"
+	case strings.HasPrefix(path, "/settings"):
+		return "settings"
+	default:
+		return ""
+	}
 }
 
 // Flash 把一次性成功消息存入服务端 session，由下一次 GET 渲染（http.md §General Rules）。

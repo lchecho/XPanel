@@ -7,6 +7,7 @@ type Flash struct {
 
 type Page struct {
 	Title         string
+	Section       string
 	CSRFField     any
 	RequestID     string
 	Authenticated bool

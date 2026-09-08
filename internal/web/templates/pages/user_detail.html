@@ -1,45 +1,52 @@
 {{define "user_detail.html"}}{{template "head" .}}
-<body>{{template "nav" .}}<main><h1>{{.Title}}</h1>{{template "messages" .}}
-{{with .Data.User}}
-<p>状态：{{template "state" .}}{{if not .TemplateCompatible}} <span class="badge">入站模板{{.TemplateStateLabel}}</span>{{end}}</p>
-{{if .Rebuilding}}<p class="notice">该用户的专属入站当前没有在监听：端口 {{.Port}} 暂时不可用。节点重启会让所有用户的端口短暂不可用，面板会按保存的端口分配自动重建，重建完成前请勿手动改动。若原因是端口被面板之外的进程占用，可以<a href="/users/{{.ID}}/port">更换端口</a>。</p>{{end}}
-{{if .QuotaExceeded}}<p class="notice">配额超限：该用户的专属入站已被移除，端口 {{.Port}} 已停止监听，新连接会被拒绝。配额控制存在检测延迟，已建立的连接可能继续并造成少量超额。新的配额周期开始后会以同一端口自动恢复。</p>{{end}}
-<dl>
-  <dt>入站模板</dt><dd><a href="/templates/{{.TemplateID}}">{{.TemplateName}}</a></dd>
-  <dt>专属端口</dt><dd>{{.Port}}</dd>
-  <dt>入站标签</dt><dd>{{.InboundTag}}</dd>
-  <dt>监听状态</dt><dd>{{if .Listening}}监听中{{else if .PendingSync}}待同步{{else}}未监听{{end}}</dd>
-  <dt>最后同步</dt><dd>{{if .LastSyncAt}}{{.LastSyncAt}}{{else}}尚未同步{{end}}</dd>
-  <dt>本周期用量</dt><dd>{{.Quota.UsedText}}（上行 {{.Quota.UplinkText}} / 下行 {{.Quota.DownlinkText}}）</dd>
-  <dt>配额</dt><dd>{{.Quota.LimitText}}{{if not .Quota.Unlimited}}，剩余 {{.Quota.RemainingText}}（{{.Quota.Percent}}%）{{if .Quota.OverageText}}，超额 {{.Quota.OverageText}}{{end}}{{end}}</dd>
-  <dt>当前周期</dt><dd>{{.Quota.CycleStart}} 至 {{.Quota.CycleEnd}}（每月 {{.Quota.ResetDay}} 日重置，时区 {{.Quota.Timezone}}）</dd>
-  <dt>创建时间</dt><dd>{{.CreatedAt}}</dd>
+<body>{{template "nav" .}}<main id="main-content" tabindex="-1">
+<a href="/users" class="breadcrumb">返回用户列表</a>
+<section class="detail-hero">
+  <div><p class="eyebrow">受管用户 · 专属端口 :{{.Data.User.Port}}</p><h1>{{.Data.User.DisplayName}}</h1><div class="hero-status">{{template "state" .Data.User}}{{if not .Data.User.TemplateCompatible}}<span class="badge">模板{{.Data.User.TemplateStateLabel}}</span>{{end}}{{if .Data.User.Listening}}<span class="status status-active">端口监听中</span>{{else}}<span class="status status-unreachable">端口未监听</span>{{end}}</div></div>
+  <div class="page-actions">{{if .Data.ConnectionAvailable}}<a href="/users/{{.Data.User.ID}}/connection" class="button button-primary">查看连接信息</a>{{else if .Data.ConnectionPending}}<span class="button" aria-disabled="true">连接信息待节点确认</span>{{end}}</div>
+</section>
+{{template "messages" .}}
+{{if .Data.User.Rebuilding}}<p class="notice">专属端口 {{.Data.User.Port}} 暂时不可用，系统正在按保存的分配自动重建。若端口被其他进程占用，可使用“更换端口”处理。</p>{{end}}
+{{if .Data.User.QuotaExceeded}}<p class="notice notice-danger">本周期配额已用尽，专属入站已停止监听。已建立的连接可能继续并造成少量超额；提高配额、改为无限制或等待下一周期后可自动恢复。</p>{{end}}
+{{if .Data.ConnectionPending}}<p class="notice">连接信息将在节点确认凭证后可用，请稍候刷新。</p>{{end}}
+{{if .Data.User.Deleted}}<p class="notice">该用户已删除，页面只读；历史用量与审计记录仍保留。</p>{{end}}
+
+<dl class="detail-grid">
+  <div class="detail-item"><dt>专属端口</dt><dd>{{.Data.User.Port}}</dd></div>
+  <div class="detail-item"><dt>本周期用量</dt><dd>{{.Data.User.Quota.UsedText}}（上行 {{.Data.User.Quota.UplinkText}} / 下行 {{.Data.User.Quota.DownlinkText}}）</dd></div>
+  <div class="detail-item"><dt>剩余配额</dt><dd>{{.Data.User.Quota.RemainingText}}</dd></div>
+  <div class="detail-item"><dt>入站模板</dt><dd><a href="/templates/{{.Data.User.TemplateID}}">{{.Data.User.TemplateName}}</a></dd></div>
+  <div class="detail-item"><dt>最后同步</dt><dd>{{if .Data.User.LastSyncAt}}{{.Data.User.LastSyncAt}}{{else}}尚未同步{{end}}</dd></div>
+  <div class="detail-item"><dt>创建时间</dt><dd>{{.Data.User.CreatedAt}}</dd></div>
 </dl>
-{{end}}
-<div class="actions">
-  {{if .Data.ConnectionAvailable}}<a href="/users/{{.Data.User.ID}}/connection" class="button">查看连接信息</a>{{end}}
-  {{if not .Data.User.Deleted}}<a href="/users/{{.Data.User.ID}}/edit" class="button">编辑</a>
-  <a href="/users/{{.Data.User.ID}}/reset-traffic" class="button">重置本周期流量</a>
-  {{if .Data.User.AdminEnabled}}<form method="post" action="/users/{{.Data.User.ID}}/disable" class="inline">{{$.CSRFField}}<input type="hidden" name="_request_id" value="{{$.RequestID}}"><input type="hidden" name="_version" value="{{$.Version}}"><button type="submit">禁用</button></form>
-  {{else}}<form method="post" action="/users/{{.Data.User.ID}}/enable" class="inline">{{$.CSRFField}}<input type="hidden" name="_request_id" value="{{$.RequestID}}"><input type="hidden" name="_version" value="{{$.Version}}"><button type="submit">启用</button></form>{{end}}
-  <a href="/users/{{.Data.User.ID}}/rotate" class="button">轮换凭证</a>
-  <a href="/users/{{.Data.User.ID}}/port" class="button">更换端口</a>
-  <a href="/users/{{.Data.User.ID}}/delete" class="button">删除</a>{{end}}
-  {{if .Data.User.Deleted}}<p class="notice">该用户已删除，页面只读；历史用量与审计仍可查看。</p>{{end}}
-  {{if .Data.ConnectionPending}}<p class="notice">连接信息将在节点确认凭证后可用。</p>{{end}}
+
+{{if not .Data.User.Deleted}}<nav class="action-bar" aria-label="用户操作">
+  <a href="/users/{{.Data.User.ID}}/edit" class="button button-secondary">编辑策略</a>
+  {{if .Data.User.AdminEnabled}}<form method="post" action="/users/{{.Data.User.ID}}/disable" class="inline" data-submit-label="正在禁用…">{{$.CSRFField}}<input type="hidden" name="_request_id" value="{{$.RequestID}}"><input type="hidden" name="_version" value="{{$.Version}}"><button type="submit" class="button-secondary">禁用用户</button></form>{{else}}<form method="post" action="/users/{{.Data.User.ID}}/enable" class="inline" data-submit-label="正在启用…">{{$.CSRFField}}<input type="hidden" name="_request_id" value="{{$.RequestID}}"><input type="hidden" name="_version" value="{{$.Version}}"><button type="submit">启用用户</button></form>{{end}}
+  <a href="/users/{{.Data.User.ID}}/rotate" class="button button-secondary">轮换凭证</a>
+  <a href="/users/{{.Data.User.ID}}/port" class="button button-secondary">更换端口</a>
+  <a href="/users/{{.Data.User.ID}}/reset-traffic" class="button button-secondary">重置流量</a>
+  <span class="action-separator" aria-hidden="true"></span><a href="/users/{{.Data.User.ID}}/delete" class="button button-quiet danger-link">删除用户</a>
+</nav>{{end}}
+
+<div class="content-grid">
+  <div>
+    <section class="section-card" aria-labelledby="quota-heading">
+      <div class="section-heading"><div><h2 id="quota-heading">流量与配额</h2><p class="section-description">当前周期 {{.Data.User.Quota.CycleStart}} 至 {{.Data.User.Quota.CycleEnd}}</p></div><span class="badge">每月 {{.Data.User.Quota.ResetDay}} 日重置</span></div>
+      {{if .Data.User.Quota.Unlimited}}<div class="progress-block"><div class="progress-head"><span>已使用</span><strong>{{.Data.User.Quota.UsedText}}</strong></div><p class="hint">当前为无限制配额，仍持续记录上行与下行流量。</p></div>{{else}}<div class="progress-block"><div class="progress-head"><span>已使用 {{.Data.User.Quota.UsedText}} / {{.Data.User.Quota.LimitText}}</span><strong>{{.Data.User.Quota.Percent}}%</strong></div><progress class="native-progress" value="{{.Data.User.Quota.UsedBytes}}" max="{{.Data.User.Quota.LimitBytes}}">{{.Data.User.Quota.Percent}}%</progress><span class="hint">上行 {{.Data.User.Quota.UplinkText}} · 下行 {{.Data.User.Quota.DownlinkText}}{{if .Data.User.Quota.OverageText}} · 超额 {{.Data.User.Quota.OverageText}}{{end}}</span></div>{{end}}
+    </section>
+
+    <section class="section-card" aria-labelledby="trend-heading"><div class="section-heading"><div><h2 id="trend-heading">当前周期每日趋势</h2><p class="section-description">当前周期内已确认的自然日汇总。</p></div></div>
+      {{if not .Data.Daily}}<div class="empty"><strong>尚无确认流量</strong>产生并采集流量后，这里会显示每日趋势。</div>{{else}}<div class="table-shell"><table><caption>每日流量 · 时区 {{.Data.User.Quota.Timezone}}</caption><thead><tr><th scope="col">日期</th><th scope="col">上行</th><th scope="col">下行</th><th scope="col">合计</th></tr></thead><tbody>{{range .Data.Daily}}<tr><td data-label="日期" class="numeric">{{.LocalDate}}</td><td data-label="上行" class="numeric">{{.UplinkText}}</td><td data-label="下行" class="numeric">{{.DownlinkText}}</td><td data-label="合计" class="numeric">{{.TotalText}}</td></tr>{{end}}</tbody></table></div>{{end}}
+    </section>
+  </div>
+
+  <aside class="stack" aria-label="入口与诊断">
+    <section class="section-card" aria-labelledby="entry-heading"><h2 id="entry-heading">专属入口</h2><dl class="info-list"><dt>入站标签</dt><dd>{{.Data.User.InboundTag}}</dd><dt>监听状态</dt><dd>{{if .Data.User.Listening}}监听中{{else if .Data.User.PendingSync}}待同步{{else}}未监听{{end}}</dd><dt>节点状态</dt><dd>{{if .Data.NodeHealth}}{{.Data.NodeHealth}}{{else}}未知{{end}}</dd><dt>最后通信</dt><dd>{{if .Data.NodeLastSuccess}}{{.Data.NodeLastSuccess}}{{else}}尚无{{end}}</dd>{{if .Data.NodeError}}<dt>最近故障</dt><dd>{{.Data.NodeError}}</dd>{{end}}</dl></section>
+    <section class="section-card continuity-card" aria-labelledby="events-heading"><h2 id="events-heading">统计连续性</h2>{{if not .Data.Events}}<div class="empty"><strong>计量连续</strong>当前没有计数器异常事件。</div>{{else}}<ul class="impact-list">{{range .Data.Events}}<li><strong>{{.OccurredAt}}</strong><br>{{.Sentence}}{{if .Direction}}（{{.Direction}}）{{end}}</li>{{end}}</ul>{{end}}</section>
+  </aside>
 </div>
-<section aria-labelledby="trend-heading"><h2 id="trend-heading">当前周期每日趋势</h2>
-{{if not .Data.Daily}}<p class="empty">本周期尚无确认流量。</p>{{else}}
-<table><caption>每日流量（周期时区 {{.Data.User.Quota.Timezone}}）</caption><thead><tr><th scope="col">日期</th><th scope="col">上行</th><th scope="col">下行</th><th scope="col">合计</th></tr></thead><tbody>
-{{range .Data.Daily}}<tr><td data-label="日期">{{.LocalDate}}</td><td data-label="上行">{{.UplinkText}}</td><td data-label="下行">{{.DownlinkText}}</td><td data-label="合计">{{.TotalText}}</td></tr>{{end}}
-</tbody></table>{{end}}</section>
-<section aria-labelledby="node-heading"><h2 id="node-heading">节点</h2><p>健康状态：{{.Data.NodeHealth}}{{if .Data.NodeLastSuccess}}，最后成功通信 {{.Data.NodeLastSuccess}}{{end}}{{if .Data.NodeError}}；最近故障：{{.Data.NodeError}}{{end}}</p></section>
-<section aria-labelledby="events-heading"><h2 id="events-heading">统计连续性事件</h2>
-{{if not .Data.Events}}<p>无异常事件。</p>{{else}}<ul>{{range .Data.Events}}<li>{{.OccurredAt}} — {{.Sentence}}{{if .Direction}}（{{.Direction}}）{{end}}</li>{{end}}</ul>{{end}}</section>
-<section aria-labelledby="sync-heading"><h2 id="sync-heading">同步操作历史</h2>
-{{if not .Data.Sync}}<p>暂无同步操作。</p>{{else}}
-<table><caption>最近的同步操作</caption><thead><tr><th scope="col">版本</th><th scope="col">操作</th><th scope="col">阶段</th><th scope="col">状态</th><th scope="col">重试</th><th scope="col">说明</th></tr></thead><tbody>
-{{range .Data.Sync}}<tr><td data-label="版本">{{.Revision}}</td><td data-label="操作">{{.ReasonLabel}}</td><td data-label="阶段">{{.Phase}}</td><td data-label="状态">{{.StateLabel}}{{if .CompletedAt}}（{{.CompletedAt}}）{{end}}</td><td data-label="重试">{{.Attempts}}{{if .NextAttempt}}，下次 {{.NextAttempt}}{{end}}</td><td data-label="说明">{{.ErrorText}}</td></tr>{{end}}
-</tbody></table>{{end}}</section>
-<p><a href="/users">返回用户列表</a></p>
+
+<section class="section-card" aria-labelledby="sync-heading"><div class="section-heading"><div><h2 id="sync-heading">同步操作历史</h2><p class="section-description">用于诊断重试、节点确认与被新意图取代的操作。</p></div></div>
+{{if not .Data.Sync}}<div class="empty"><strong>暂无同步操作</strong>影响访问状态的操作会记录在这里。</div>{{else}}<div class="table-shell"><table><caption>最近的同步操作</caption><thead><tr><th scope="col">版本</th><th scope="col">操作</th><th scope="col">阶段</th><th scope="col">状态</th><th scope="col">重试</th><th scope="col">说明</th></tr></thead><tbody>{{range .Data.Sync}}<tr><td data-label="版本" class="numeric">{{.Revision}}</td><td data-label="操作">{{.ReasonLabel}}</td><td data-label="阶段">{{.Phase}}</td><td data-label="状态"><span class="badge">{{.StateLabel}}</span>{{if .CompletedAt}}<span class="hint">{{.CompletedAt}}</span>{{end}}</td><td data-label="重试" class="numeric">{{.Attempts}}{{if .NextAttempt}} · {{.NextAttempt}}{{end}}</td><td data-label="说明">{{.ErrorText}}</td></tr>{{end}}</tbody></table></div>{{end}}</section>
 {{template "footer" .}}</main></body></html>{{end}}

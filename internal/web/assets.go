@@ -25,7 +25,7 @@ type assetManifest struct {
 	content map[string][]byte // hashed → bytes
 }
 
-// buildManifest 为嵌入的 CSS/JS 计算内容哈希名；其余文件（如 THIRD_PARTY.md）不对外提供。
+// buildManifest 为可公开使用的前端资源计算内容哈希名；其余文件（如 THIRD_PARTY.md）不对外提供。
 func buildManifest() (*assetManifest, error) {
 	static, err := fs.Sub(assets, "static")
 	if err != nil {
@@ -39,7 +39,7 @@ func buildManifest() (*assetManifest, error) {
 	for _, entry := range entries {
 		name := entry.Name()
 		ext := path.Ext(name)
-		if entry.IsDir() || (ext != ".css" && ext != ".js") {
+		if entry.IsDir() || (ext != ".css" && ext != ".js" && ext != ".svg") {
 			continue
 		}
 		data, err := fs.ReadFile(static, name)

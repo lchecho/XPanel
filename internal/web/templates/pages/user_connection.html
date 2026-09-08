@@ -1,16 +1,13 @@
 {{define "user_connection.html"}}{{template "head" .}}
-<body>{{template "nav" .}}<main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}
-{{if .Data.Pending}}<p class="notice">连接信息尚不可用：凭证正在等待节点确认（创建或轮换完成后才会展示）。</p>{{else}}
-{{if .Data.Inactive}}<p class="notice">该用户当前不活跃（手动禁用或配额超限），以下信息暂时无法建立新连接。</p>{{end}}
-<dl>
-  <dt>服务器</dt><dd>{{.Data.Host}}</dd>
-  <dt>端口</dt><dd>{{.Data.Port}}</dd>
-  <dt>加密方式</dt><dd>{{.Data.Method}}</dd>
-  <dt>标签</dt><dd>{{.Data.Label}}</dd>
-  <dt>客户端密码</dt><dd><code class="print-hidden connection-secret">{{.Data.Password}}</code></dd>
-</dl>
-<label for="uri">ss:// 连接信息（可全选复制）</label>
-<textarea id="uri" class="print-hidden connection-secret" readonly rows="3">{{.Data.URI}}</textarea>
-{{end}}
-<p><a href="/users/{{.Data.User.ID}}">返回用户详情</a></p>
+<body>{{template "nav" .}}<main id="main-content" class="narrow" tabindex="-1">
+<a href="/users/{{.Data.User.ID}}" class="breadcrumb">返回用户详情</a>
+<header class="page-header"><div class="page-title-group"><p class="eyebrow">安全交付</p><h1>{{.Title}}</h1><p class="page-description">仅在确认交付时展示完整凭证。请通过可信渠道发送给对应使用者。</p></div></header>
+{{template "messages" .}}
+{{if .Data.Pending}}<div class="empty"><strong>连接信息尚不可用</strong>节点尚未确认创建或轮换后的凭证。请稍候返回用户详情刷新状态。</div>{{else}}
+{{if .Data.Inactive}}<p class="notice">该用户当前不活跃，以下信息暂时无法建立新连接；重新启用后仍可继续使用。</p>{{end}}
+<section class="connection-card" aria-labelledby="connection-heading">
+  <div class="connection-meta"><div class="section-heading"><div><h2 id="connection-heading">Shadowsocks 2022</h2><p class="section-description">{{.Data.Host}}:{{.Data.Port}} · {{.Data.Method}}</p></div>{{if .Data.Inactive}}<span class="status status-disabled">当前不可用</span>{{else}}<span class="status status-active">可以交付</span>{{end}}</div><dl class="info-list"><dt>服务器</dt><dd>{{.Data.Host}}</dd><dt>端口</dt><dd class="numeric">{{.Data.Port}}</dd><dt>加密方式</dt><dd>{{.Data.Method}}</dd><dt>标签</dt><dd>{{.Data.Label}}</dd></dl></div>
+  <div class="secret-block"><span id="password-label" class="secret-label">客户端密码</span><div class="secret-row"><code id="password" class="print-hidden connection-secret" aria-labelledby="password-label">{{.Data.Password}}</code><button type="button" class="button button-secondary print-hidden" data-copy-target="password" data-copy-label="密码">复制密码</button></div>
+  <label for="uri">完整 ss:// 连接信息</label><div class="secret-row"><textarea id="uri" class="connection-secret print-hidden" readonly rows="3">{{.Data.URI}}</textarea><button type="button" class="button button-primary print-hidden" data-copy-target="uri" data-copy-label="连接信息">复制连接信息</button></div><p id="copy-feedback" class="copy-feedback print-hidden" aria-live="polite"></p></div>
+</section>{{end}}
 {{template "footer" .}}</main></body></html>{{end}}

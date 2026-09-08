@@ -22,7 +22,7 @@ func TestUserCreationFormAndConnectionVisibility(t *testing.T) {
 	}
 	templateID := app.RegisterCompatibleTemplate("Primary")
 	_, body = app.Get("/users/new")
-	if !strings.Contains(body, `<option value="`+templateID.String()+`"`) || !strings.Contains(body, `name="reset_day" type="number" min="1" max="28" value="1"`) {
+	if !strings.Contains(body, `<option value="`+templateID.String()+`"`) || !strings.Contains(body, `name="reset_day" type="number" min="1" max="28" inputmode="numeric" value="1"`) {
 		t.Fatalf("form lacks compatible template option or reset day default: %s", body)
 	}
 

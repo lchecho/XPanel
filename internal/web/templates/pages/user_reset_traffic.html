@@ -1,16 +1,7 @@
 {{define "user_reset_traffic.html"}}{{template "head" .}}
-<body>{{template "nav" .}}<main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}
-<p>本周期计量用量当前为 {{.Data.Quota.UsedText}}（配额 {{.Data.Quota.LimitText}}）。</p>
-<ul>
-  <li>重置只把本周期用于配额判定的用量清零，并从当前已确认的计数建立新的计量起点。</li>
-  <li>真实流量记录（本周期 {{.Data.Quota.GrossText}}）、累计流量与每日趋势保持不变。</li>
-  <li>周期结束时间 {{.Data.Quota.CycleEnd}} 不变。</li>
-  <li>若配额超限是唯一阻断原因，重置后会立即请求节点恢复新连接；手动禁用的用户保持不可用。</li>
-</ul>
-<form method="post" action="/users/{{.Data.ID}}/reset-traffic">
-  {{.CSRFField}}
-  <input type="hidden" name="_request_id" value="{{.RequestID}}">
-  <button type="submit">确认重置本周期用量</button>
-</form>
-<p><a href="/users/{{.Data.ID}}">取消并返回</a></p>
+<body>{{template "nav" .}}<main id="main-content" class="narrow" tabindex="-1">
+<a href="/users/{{.Data.ID}}" class="breadcrumb">取消并返回用户详情</a>
+<header class="page-header"><div class="page-title-group"><p class="eyebrow">配额操作</p><h1>{{.Title}}</h1><p class="page-description">重新建立本周期计量起点，不删除真实流量记录或每日趋势。</p></div></header>
+{{template "messages" .}}
+<section class="confirm-card" aria-labelledby="reset-confirm-heading"><div class="confirm-summary"><h2 id="reset-confirm-heading">本周期已计量 {{.Data.Quota.UsedText}}</h2><p>当前配额 {{.Data.Quota.LimitText}}，周期结束时间 {{.Data.Quota.CycleEnd}}。</p></div><ul class="impact-list"><li>用于配额判定的本周期用量会归零，并从当前计数建立新起点。</li><li>真实流量（当前 {{.Data.Quota.GrossText}}）、累计流量和每日趋势保持不变。</li><li>周期起止时间不变；若仅因超限被停用，入口会自动恢复。</li></ul><div class="confirm-actions"><form method="post" action="/users/{{.Data.ID}}/reset-traffic" data-submit-label="正在重置…">{{.CSRFField}}<input type="hidden" name="_request_id" value="{{.RequestID}}"><button type="submit">确认重置本周期用量</button></form><a href="/users/{{.Data.ID}}" class="button button-secondary">取消</a></div></section>
 {{template "footer" .}}</main></body></html>{{end}}

@@ -1,16 +1,7 @@
 {{define "user_rotate.html"}}{{template "head" .}}
-<body>{{template "nav" .}}<main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}
-<p>轮换会为该用户生成全新的客户端密钥。请确认你了解以下后果：</p>
-<ul>
-  <li>旧凭证只有在节点确认移除后才停止接受新连接；已经建立的连接可能继续一段时间。</li>
-  <li>节点确认新凭证之前，连接信息页不会展示新密码，也不会把任一凭证标为可用。</li>
-  <li>流量历史、配额周期与审计记录保持不变，仍归属于同一个用户。</li>
-</ul>
-<form method="post" action="/users/{{.Data.ID}}/rotate">
-  {{.CSRFField}}
-  <input type="hidden" name="_request_id" value="{{.RequestID}}">
-  <input type="hidden" name="_version" value="{{.Version}}">
-  <button type="submit">确认轮换凭证</button>
-</form>
-<p><a href="/users/{{.Data.ID}}">取消并返回</a></p>
+<body>{{template "nav" .}}<main id="main-content" class="narrow" tabindex="-1">
+<a href="/users/{{.Data.ID}}" class="breadcrumb">取消并返回用户详情</a>
+<header class="page-header"><div class="page-title-group"><p class="eyebrow">凭证安全</p><h1>{{.Title}}</h1><p class="page-description">生成新客户端密钥，同时保持原端口和历史流量归属不变。</p></div></header>
+{{template "messages" .}}
+<section class="confirm-card" aria-labelledby="rotate-confirm-heading"><div class="confirm-summary"><h2 id="rotate-confirm-heading">确认轮换凭证？</h2><p>系统会先建立安全过渡，再撤销旧凭证，专属端口保持监听。</p></div><ul class="impact-list"><li>旧凭证只有在节点确认移除后才停止接受新连接；已建立连接可能短暂继续。</li><li>确认完成前，连接信息页不会把任一新凭证标记为可交付。</li><li>端口、统计身份、配额周期与流量历史都不会改变。</li></ul><div class="confirm-actions"><form method="post" action="/users/{{.Data.ID}}/rotate" data-submit-label="正在轮换…">{{.CSRFField}}<input type="hidden" name="_request_id" value="{{.RequestID}}"><input type="hidden" name="_version" value="{{.Version}}"><button type="submit">确认轮换凭证</button></form><a href="/users/{{.Data.ID}}" class="button button-secondary">取消</a></div></section>
 {{template "footer" .}}</main></body></html>{{end}}

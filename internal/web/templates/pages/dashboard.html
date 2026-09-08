@@ -1,6 +1,10 @@
 {{define "dashboard.html"}}{{template "head" .}}
-<body>{{template "nav" .}}<main><h1>XPanel 仪表盘</h1>{{template "messages" .}}
-<p id="refresh-status" class="hint" aria-live="polite">每 5 秒自动刷新汇总；脚本未加载时请手动刷新页面。</p>
-<div id="dashboard-summary" hx-get="/fragments/dashboard-summary" hx-trigger="every 5s" hx-swap="innerHTML">{{template "dashboard_summary.html" .}}</div>
-<div class="actions"><a href="/users" class="button">用户列表</a><a href="/users/new" class="button">创建用户</a><a href="/templates" class="button">入站模板</a></div>
-{{template "footer" .}}</main>{{template "scripts" .}}</body></html>{{end}}
+<body>{{template "nav" .}}<main id="main-content" tabindex="-1">
+<header class="page-header">
+  <div class="page-title-group"><p class="eyebrow">运行概览</p><h1>仪表盘</h1><p class="page-description">集中查看节点健康、用户状态、端口容量与需要处理的同步异常。</p></div>
+  <div class="page-actions"><a href="/users/new" class="button button-primary"><span class="button-icon" aria-hidden="true">＋</span>创建用户</a><a href="/templates/new" class="button button-secondary">登记模板</a></div>
+</header>
+{{template "messages" .}}
+<p id="refresh-status" class="refresh-line" aria-live="polite">汇总每 5 秒自动更新；你也可以刷新页面获取最新状态。</p>
+<div id="dashboard-summary" hx-get="/fragments/dashboard-summary" hx-trigger="every 5s" hx-swap="innerHTML" hx-sync="this:drop">{{template "dashboard_summary.html" .}}</div>
+{{template "footer" .}}</main></body></html>{{end}}

@@ -1,42 +1,50 @@
-{{define "dashboard_summary.html"}}<section aria-labelledby="node-heading">
-<h2 id="node-heading">节点</h2>
-<dl>
-  <dt>健康状态</dt><dd><span class="status status-{{.Data.HealthState}}">{{.Data.HealthLabel}}</span>{{if .Data.Stale}} <span class="badge stale">数据陈旧</span>{{end}}</dd>
-  <dt>最后成功通信</dt><dd>{{if .Data.LastSuccessAt}}{{.Data.LastSuccessAt}}{{else}}尚无{{end}}</dd>
-  <dt>最后采集成功</dt><dd>{{if .Data.LastCollectionAt}}{{.Data.LastCollectionAt}}{{else}}尚无{{end}}</dd>
-  {{if .Data.LastErrorText}}<dt>最近故障</dt><dd>{{.Data.LastErrorText}}</dd>{{end}}
-</dl>
+{{define "dashboard_summary.html"}}
+<section class="metric-grid" aria-label="关键指标">
+  <article class="metric-card metric-accent"><span class="metric-label">节点状态</span><span class="metric-value"><span class="status status-{{.Data.HealthState}}">{{.Data.HealthLabel}}</span></span><span class="metric-meta">{{if .Data.LastSuccessAt}}最近通信 {{.Data.LastSuccessAt}}{{else}}尚无成功通信{{end}}</span></article>
+  <dl class="metric-card"><dt>用户总数</dt><dd>{{.Data.TotalUsers}}</dd><span class="metric-meta">{{.Data.Active}} 位已启用 · {{.Data.Pending}} 项待同步</span></dl>
+  <article class="metric-card"><span class="metric-label">本周期总流量</span><strong class="metric-value">{{.Data.AccountedText}}</strong><span class="metric-meta">已确认计量，不含待采集数据</span></article>
+  <article class="metric-card"><span class="metric-label">剩余端口</span><strong class="metric-value">{{.Data.PortsRemaining}}</strong><span class="metric-meta">容量 {{.Data.PortsCapacity}} · 已分配 {{.Data.PortsAssigned}}</span></article>
 </section>
-<section aria-labelledby="users-heading">
-<h2 id="users-heading">用户</h2>
-{{if eq .Data.TotalUsers 0}}<p class="empty">尚未创建用户。<a href="/users/new">创建第一个用户</a>。</p>{{else}}
-<dl>
-  <dt>用户总数</dt><dd>{{.Data.TotalUsers}}</dd>
-  <dt>已启用</dt><dd>{{.Data.Active}}</dd>
-  <dt>手动禁用</dt><dd>{{.Data.Disabled}}</dd>
-  <dt>配额超限</dt><dd>{{.Data.QuotaExceeded}}</dd>
-  <dt>待同步</dt><dd>{{.Data.Pending}}{{if .Data.StuckSync}} <span class="badge error">持续不同步 {{.Data.StuckSync}}</span>{{end}}</dd>
-  <dt>已删除</dt><dd>{{.Data.Deleted}}</dd>
-  <dt>当期总流量</dt><dd>{{.Data.AccountedText}}</dd>
-</dl>{{end}}
-</section>
-<section aria-labelledby="ports-heading">
-<h2 id="ports-heading">端口池</h2>
-{{if eq .Data.PortsCapacity 0}}<p class="empty">尚未登记入站模板，因此还没有可分配的端口。<a href="/templates/new">登记入站模板</a>。</p>{{else}}
-<dl>
-  <dt>池容量</dt><dd>{{.Data.PortsCapacity}}</dd>
-  <dt>已分配</dt><dd>{{.Data.PortsAssigned}}</dd>
-  <dt>剩余可分配</dt><dd>{{.Data.PortsRemaining}}{{if eq .Data.PortsRemaining 0}} <span class="badge error">端口池已耗尽</span>{{end}}</dd>
-  {{if .Data.PortsOutside}}<dt>池外分配</dt><dd>{{.Data.PortsOutside}} <span class="badge">端口池缩小后仍在使用</span></dd>{{end}}
-  {{if .Data.PortsRebuilding}}<dt>待重建</dt><dd>{{.Data.PortsRebuilding}} <span class="badge">端口暂时不可用</span></dd>{{end}}
-</dl>
-{{if .Data.PortsRebuilding}}<p class="notice">有 {{.Data.PortsRebuilding}} 个应当监听的端口当前没有在监听。节点重启会让所有用户的端口短暂不可用，面板会按保存的端口分配自动重建，通常在一个对账周期内完成。</p>{{end}}{{end}}
-</section>
-<section aria-labelledby="sync-heading">
-<h2 id="sync-heading">最近同步结果</h2>
-{{if not .Data.Failed}}<p>没有等待重试或失败的同步操作。</p>{{else}}
-<table><caption>需要关注的同步操作</caption><thead><tr><th scope="col">用户</th><th scope="col">操作</th><th scope="col">状态</th><th scope="col">原因</th><th scope="col">下次重试</th></tr></thead><tbody>
-{{range .Data.Failed}}<tr><td data-label="用户"><a href="/users/{{.UserID}}">{{.DisplayName}}</a></td><td data-label="操作">{{.ReasonLabel}}</td><td data-label="状态">{{.StateLabel}}（第 {{.AttemptCount}} 次）</td><td data-label="原因">{{.ErrorText}}</td><td data-label="下次重试">{{.NextAttempt}}</td></tr>{{end}}
-</tbody></table>{{end}}
-</section>
-<p class="hint">汇总生成于 {{.Data.GeneratedAt}}（面板时区 {{.Timezone}}）。</p>{{end}}
+
+<div class="dashboard-grid">
+  <div class="stack">
+    <section class="section-card" aria-labelledby="users-heading">
+      <div class="section-heading"><div><h2 id="users-heading">用户分布</h2><p class="section-description">按访问状态快速判断当前服务情况。</p></div><a href="/users" class="button button-quiet">查看全部</a></div>
+      {{if eq .Data.TotalUsers 0}}<div class="empty"><strong>尚未创建用户</strong>先登记兼容的入站模板，再创建第一个专属入口。<br><a href="/users/new">开始创建</a></div>{{else}}
+      <div class="metric-grid">
+        <dl class="metric-card"><dt>已启用</dt><dd>{{.Data.Active}}</dd></dl>
+        <dl class="metric-card"><dt>手动禁用</dt><dd>{{.Data.Disabled}}</dd></dl>
+        <dl class="metric-card"><dt>配额超限</dt><dd>{{.Data.QuotaExceeded}}</dd></dl>
+        <dl class="metric-card"><dt>待同步</dt><dd>{{.Data.Pending}}</dd></dl>
+        <dl class="metric-card"><dt>已删除</dt><dd>{{.Data.Deleted}}</dd></dl>
+      </div>{{end}}
+    </section>
+
+    <section class="section-card" aria-labelledby="sync-heading">
+      <div class="section-heading"><div><h2 id="sync-heading">需要关注</h2><p class="section-description">等待重试或未完成的节点同步操作。</p></div>{{if .Data.StuckSync}}<span class="badge error">持续不同步 {{.Data.StuckSync}}</span>{{end}}</div>
+      {{if not .Data.Failed}}<div class="empty"><strong>同步状态正常</strong>当前没有等待重试或失败的操作。</div>{{else}}
+      <div class="table-shell"><table><caption>需要关注的同步操作</caption><thead><tr><th scope="col">用户</th><th scope="col">操作</th><th scope="col">状态</th><th scope="col">原因</th><th scope="col">下次重试</th></tr></thead><tbody>
+      {{range .Data.Failed}}<tr><td data-label="用户"><a href="/users/{{.UserID}}">{{.DisplayName}}</a></td><td data-label="操作">{{.ReasonLabel}}</td><td data-label="状态"><span class="badge error">{{.StateLabel}} · 第 {{.AttemptCount}} 次</span></td><td data-label="原因">{{.ErrorText}}</td><td data-label="下次重试" class="numeric">{{.NextAttempt}}</td></tr>{{end}}
+      </tbody></table></div>{{end}}
+    </section>
+  </div>
+
+  <aside class="stack" aria-label="节点与端口状态">
+    <section class="section-card" aria-labelledby="node-heading">
+      <div class="health-row"><div><p class="eyebrow">Managed node</p><h2 id="node-heading">节点通信</h2></div><span class="status status-{{.Data.HealthState}}">{{.Data.HealthLabel}}</span></div>
+      {{if .Data.Stale}}<p class="notice">数据陈旧，当前展示最后一次成功采集的结果。</p>{{end}}
+      <div class="health-meta"><p><span>最后成功通信</span><strong>{{if .Data.LastSuccessAt}}{{.Data.LastSuccessAt}}{{else}}尚无{{end}}</strong></p><p><span>最后采集成功</span><strong>{{if .Data.LastCollectionAt}}{{.Data.LastCollectionAt}}{{else}}尚无{{end}}</strong></p>{{if .Data.LastErrorText}}<p><span>最近故障</span><strong>{{.Data.LastErrorText}}</strong></p>{{end}}</div>
+    </section>
+
+    <section class="section-card" aria-labelledby="ports-heading">
+      <div class="section-heading"><div><h2 id="ports-heading">端口池</h2><p class="section-description">全部未归档模板的合计容量。</p></div><a href="/templates" class="button button-quiet">管理</a></div>
+      {{if eq .Data.PortsCapacity 0}}<div class="empty"><strong>尚未登记入站模板</strong><a href="/templates/new">登记入站模板</a>后即可创建用户。</div>{{else}}
+      <dl class="capacity-stats"><div><dt>池容量</dt><dd>{{.Data.PortsCapacity}}</dd></div><div><dt>已分配</dt><dd>{{.Data.PortsAssigned}}</dd></div><div><dt>剩余可分配</dt><dd>{{.Data.PortsRemaining}}{{if eq .Data.PortsRemaining 0}} <span class="status status-error">已耗尽</span>{{end}}</dd></div></dl>
+      <div class="progress-block"><progress class="native-progress" value="{{.Data.PortsAssigned}}" max="{{.Data.PortsCapacity}}">{{.Data.PortsAssigned}} / {{.Data.PortsCapacity}}</progress></div>
+      {{if eq .Data.PortsRemaining 0}}<p class="notice notice-danger">端口池已耗尽。请先扩大模板端口范围再创建用户。</p>{{end}}
+      {{if .Data.PortsOutside}}<p class="notice">{{.Data.PortsOutside}} 个既有端口位于当前池外，仍保持分配。</p>{{end}}
+      {{if .Data.PortsRebuilding}}<p class="notice">{{.Data.PortsRebuilding}} 个端口暂时不可用，系统正在按原分配自动重建。</p>{{end}}{{end}}
+    </section>
+  </aside>
+</div>
+<p class="refresh-line">汇总生成于 {{.Data.GeneratedAt}} · 面板时区 {{.Timezone}}</p>{{end}}

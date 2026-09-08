@@ -1,2 +1,2 @@
 {{define "error.html"}}{{template "head" .}}
-<body><main class="narrow"><h1>{{.Title}}</h1>{{template "messages" .}}{{with index .Values "error_id"}}<p>错误编号：<code>{{.}}</code></p>{{end}}<p><a href="/">返回仪表盘</a></p></main></body></html>{{end}}
+<body class="error-page"><main id="main-content" class="error-panel"><p class="eyebrow">请求未完成</p><h1>{{.Title}}</h1>{{template "messages" .}}{{with index .Values "error_id"}}<p class="hint">向管理员反馈时请附上错误编号：<code>{{.}}</code></p>{{end}}<div class="actions"><a href="/" class="button button-primary">返回仪表盘</a><button type="button" class="button button-secondary" data-history-back>返回上一页</button></div>{{template "scripts" .}}</main></body></html>{{end}}

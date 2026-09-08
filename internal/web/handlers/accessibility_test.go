@@ -21,7 +21,7 @@ var (
 	tablePattern    = regexp.MustCompile(`(?s)<table>.*?</table>`)
 	requiredMediaQ  = "@media (max-width: 40rem)"
 	stylesheetPath  = "../static/app.css"
-	navigationLinks = []string{`<a href="/">`, `<a href="/users">`, `<a href="/templates">`, `<a href="/audit">`, `<a href="/settings">`}
+	navigationLinks = []string{`href="/"`, `href="/users"`, `href="/templates"`, `href="/audit"`, `href="/settings"`}
 )
 
 // 所有页面：每个可见输入有程序化标签，错误提示通过 aria-describedby 关联，表格有 caption 与 scope，
@@ -90,6 +90,9 @@ func TestPagesMeetStructuralAccessibilityRules(t *testing.T) {
 			}
 			if !strings.Contains(body, `aria-live="polite"`) {
 				t.Fatalf("%s lacks a polite live region", path)
+			}
+			if !strings.Contains(body, `aria-current="page"`) {
+				t.Fatalf("%s does not identify the active navigation item", path)
 			}
 		}
 		if strings.Contains(path, "422") && !strings.Contains(body, `class="error-summary" tabindex="-1" role="alert"`) {

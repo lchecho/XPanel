@@ -35,12 +35,13 @@ func CSRF(authKey []byte, secure bool, next http.Handler) http.Handler {
 	return origin.Handler(normalizeSameOriginNullOrigin(secure, protected))
 }
 
-// normalizeSameOriginNullOrigin reconciles Referrer-Policy: no-referrer with
-// gorilla/csrf's Origin validation. The Fetch standard serializes Origin as
-// "null" for non-CORS POST requests under that policy, including normal
-// same-origin HTML form submissions. Sec-Fetch-Site is a forbidden browser
-// header, so after CrossOriginProtection has accepted an explicit
-// "same-origin" value we can safely restore the effective origin for the
+// normalizeSameOriginNullOrigin restores an effective Origin for same-origin
+// requests that arrive with Origin: "null". SecurityHeaders now sends
+// Referrer-Policy: same-origin, so browsers send a real Origin for same-origin
+// form POSTs and this path is a fallback rather than the norm; it still covers
+// deployments fronted by a proxy that rewrites Referrer-Policy. Sec-Fetch-Site
+// is a forbidden browser header, so once CrossOriginProtection has accepted an
+// explicit "same-origin" value we can safely restore the origin for the
 // double-submit token check. Cross-site and unverifiable null origins are left
 // untouched and remain rejected.
 func normalizeSameOriginNullOrigin(secure bool, next http.Handler) http.Handler {

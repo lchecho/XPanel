@@ -62,7 +62,8 @@ func TestUserCreationFormAndConnectionVisibility(t *testing.T) {
 	location := response.Header.Get("Location")
 	response, body = app.Get(location)
 	if response.StatusCode != http.StatusOK || !strings.Contains(body, "启用中（待同步）") || !strings.Contains(body, "2.00 GiB") ||
-		!strings.Contains(body, "连接信息将在节点确认凭证后可用") {
+		!strings.Contains(body, "连接信息将在节点确认凭证后可用") || !strings.Contains(body, `hx-get="`+location+`"`) ||
+		!strings.Contains(body, `hx-select="#user-detail"`) {
 		t.Fatalf("detail before sync status=%d body=%s", response.StatusCode, body)
 	}
 	// 详情页展示端口、入站标签与监听状态；同步前是「待同步」。
@@ -78,7 +79,8 @@ func TestUserCreationFormAndConnectionVisibility(t *testing.T) {
 
 	app.Drain()
 	_, body = app.Get(location)
-	if !strings.Contains(body, "已启用") || strings.Contains(body, "待同步") || !strings.Contains(body, "查看连接信息") {
+	if !strings.Contains(body, "已启用") || strings.Contains(body, "待同步") || !strings.Contains(body, "查看连接信息") ||
+		strings.Contains(body, `hx-get="`+location+`"`) {
 		t.Fatalf("detail after sync body=%s", body)
 	}
 	if !strings.Contains(body, "<dt>监听状态</dt><dd>监听中</dd>") {

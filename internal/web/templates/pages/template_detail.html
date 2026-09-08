@@ -1,11 +1,13 @@
 {{define "template_detail.html"}}{{template "head" .}}
 <body>{{template "nav" .}}<main id="main-content" tabindex="-1">
 <a href="/templates" class="breadcrumb">返回入站模板</a>
+<div id="template-detail"{{if eq .Data.Compatibility "unverified"}} hx-get="/templates/{{.Data.ID}}" hx-trigger="every 2s" hx-select="#template-detail" hx-target="this" hx-swap="outerHTML" hx-sync="this:drop"{{end}}>
 <section class="detail-hero">
   <div><p class="eyebrow">入站模板</p><h1>{{.Title}}</h1><div class="hero-status"><span class="status status-{{.Data.Compatibility}}">{{.Data.CompatibilityLabel}}</span>{{if .Data.Reason}}<span class="hint">{{.Data.Reason}}</span>{{end}}</div></div>
   <div class="page-actions"><a href="/templates/{{.Data.ID}}/edit" class="button button-secondary">编辑模板</a><form method="post" action="/templates/{{.Data.ID}}/revalidate" class="inline" data-submit-label="正在验证…">{{.CSRFField}}<input type="hidden" name="_request_id" value="{{.RequestID}}"><input type="hidden" name="_version" value="{{.Version}}"><button type="submit">重新验证</button></form></div>
 </section>
 {{template "messages" .}}
+{{if eq .Data.Compatibility "unverified"}}<p id="refresh-status" class="refresh-line" aria-live="polite">正在验证节点能力，本页每 2 秒自动更新。</p>{{end}}
 {{if .Data.StatsSuspect}}<p class="notice">已存在监听用户，但从未从节点读到任何用户级流量计数。请检查 Xray 的 <code>statsUserUplink</code> 与 <code>statsUserDownlink</code> 是否启用，修复后重新验证。</p>{{end}}
 {{if .Data.PortsOutside}}<p class="notice">{{len .Data.PortsOutside}} 个已分配端口位于当前端口池之外：{{range .Data.PortsOutside}}<code>{{.}}</code> {{end}}。既有用户不会被迁移或中断。</p>{{end}}
 {{if eq .Data.Compatibility "incompatible"}}<p class="notice notice-danger">节点能力不满足要求。此模板正在等待运维修复；修复节点配置并重新验证前不能创建新用户。</p>{{end}}
@@ -24,4 +26,5 @@
   <div class="section-heading"><div><h2 id="capacity-heading">端口容量</h2><p class="section-description">端口池容量直接决定这份模板可承载的用户数量。</p></div><strong class="numeric">剩余 {{.Data.PortsRemaining}}</strong></div>
   <div class="progress-block"><div class="progress-head"><span>已分配 {{.Data.PortsAssigned}}</span><span>总容量 {{.Data.PortPoolCapacity}}</span></div><progress class="native-progress" value="{{.Data.PortsAssigned}}" max="{{.Data.PortPoolCapacity}}">{{.Data.PortsAssigned}} / {{.Data.PortPoolCapacity}}</progress></div>
 </section>
+</div>
 {{template "footer" .}}</main></body></html>{{end}}

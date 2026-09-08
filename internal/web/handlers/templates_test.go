@@ -41,7 +41,8 @@ func TestTemplatePagesRequireAuthenticationAndExposeNoKeys(t *testing.T) {
 	}
 	location := response.Header.Get("Location")
 	response, body = app.Get(location)
-	if response.StatusCode != http.StatusOK || !strings.Contains(body, "待验证") || !strings.Contains(body, "30000–30099") {
+	if response.StatusCode != http.StatusOK || !strings.Contains(body, "待验证") || !strings.Contains(body, "30000–30099") ||
+		!strings.Contains(body, `hx-get="`+location+`"`) || !strings.Contains(body, `hx-select="#template-detail"`) {
 		t.Fatalf("detail status=%d body=%s", response.StatusCode, body)
 	}
 	if !strings.Contains(body, "入站模板已保存") {
@@ -52,7 +53,7 @@ func TestTemplatePagesRequireAuthenticationAndExposeNoKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, body = app.Get(location)
-	if !strings.Contains(body, "兼容") || strings.Contains(body, "待验证") {
+	if !strings.Contains(body, "兼容") || strings.Contains(body, "待验证") || strings.Contains(body, `hx-get="`+location+`"`) {
 		t.Fatalf("validated detail body=%s", body)
 	}
 	_, body = app.Get(location + "/edit")

@@ -1,11 +1,13 @@
 {{define "user_detail.html"}}{{template "head" .}}
 <body>{{template "nav" .}}<main id="main-content" tabindex="-1">
 <a href="/users" class="breadcrumb">返回用户列表</a>
+<div id="user-detail"{{if or .Data.User.PendingSync .Data.ConnectionPending}} hx-get="/users/{{.Data.User.ID}}" hx-trigger="every 2s" hx-select="#user-detail" hx-target="this" hx-swap="outerHTML" hx-sync="this:drop"{{end}}>
 <section class="detail-hero">
   <div><p class="eyebrow">受管用户 · 专属端口 :{{.Data.User.Port}}</p><h1>{{.Data.User.DisplayName}}</h1><div class="hero-status">{{template "state" .Data.User}}{{if not .Data.User.TemplateCompatible}}<span class="badge">模板{{.Data.User.TemplateStateLabel}}</span>{{end}}{{if .Data.User.Listening}}<span class="status status-active">端口监听中</span>{{else}}<span class="status status-unreachable">端口未监听</span>{{end}}</div></div>
   <div class="page-actions">{{if .Data.ConnectionAvailable}}<a href="/users/{{.Data.User.ID}}/connection" class="button button-primary">查看连接信息</a>{{else if .Data.ConnectionPending}}<span class="button" aria-disabled="true">连接信息待节点确认</span>{{end}}</div>
 </section>
 {{template "messages" .}}
+{{if or .Data.User.PendingSync .Data.ConnectionPending}}<p id="refresh-status" class="refresh-line" aria-live="polite">正在等待节点确认，本页每 2 秒自动更新。</p>{{end}}
 {{if .Data.User.Rebuilding}}<p class="notice">专属端口 {{.Data.User.Port}} 暂时不可用，系统正在按保存的分配自动重建。若端口被其他进程占用，可使用“更换端口”处理。</p>{{end}}
 {{if .Data.User.QuotaExceeded}}<p class="notice notice-danger">本周期配额已用尽，专属入站已停止监听。已建立的连接可能继续并造成少量超额；提高配额、改为无限制或等待下一周期后可自动恢复。</p>{{end}}
 {{if .Data.ConnectionPending}}<p class="notice">连接信息将在节点确认凭证后可用，请稍候刷新。</p>{{end}}
@@ -49,4 +51,5 @@
 
 <section class="section-card" aria-labelledby="sync-heading"><div class="section-heading"><div><h2 id="sync-heading">同步操作历史</h2><p class="section-description">用于诊断重试、节点确认与被新意图取代的操作。</p></div></div>
 {{if not .Data.Sync}}<div class="empty"><strong>暂无同步操作</strong>影响访问状态的操作会记录在这里。</div>{{else}}<div class="table-shell"><table><caption>最近的同步操作</caption><thead><tr><th scope="col">版本</th><th scope="col">操作</th><th scope="col">阶段</th><th scope="col">状态</th><th scope="col">重试</th><th scope="col">说明</th></tr></thead><tbody>{{range .Data.Sync}}<tr><td data-label="版本" class="numeric">{{.Revision}}</td><td data-label="操作">{{.ReasonLabel}}</td><td data-label="阶段">{{.Phase}}</td><td data-label="状态"><span class="badge">{{.StateLabel}}</span>{{if .CompletedAt}}<span class="hint">{{.CompletedAt}}</span>{{end}}</td><td data-label="重试" class="numeric">{{.Attempts}}{{if .NextAttempt}} · {{.NextAttempt}}{{end}}</td><td data-label="说明">{{.ErrorText}}</td></tr>{{end}}</tbody></table></div>{{end}}</section>
+</div>
 {{template "footer" .}}</main></body></html>{{end}}

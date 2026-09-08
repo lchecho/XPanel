@@ -574,3 +574,17 @@ Task: "更新 internal/web/handlers/users.go 与 user_form.html"
   量化 boot epoch 字符串必然变大。覆盖快速重启、同 epoch 重启、显式重连、±1 秒无重启抖动和缺失/恢复
   policy，并更正 `validation-report.md` 后重跑固定 Xray v26.3.27 的完整 `make check` per
   FR-005 / FR-029 / T089 / T094 / Constitution: 开发流程与质量门禁 (contradicts)
+
+---
+
+## Phase 14: Convergence
+
+- [X] T099 **HIGH** 把 T098 的「所有应监听面板入站同时消失」重启旁证从持续电平改为一次性、可持久恢复的
+  边沿事件：`internal/application/reconciliation_service.go` 不得在同一批缺失入站尚未恢复期间，每轮都以
+  `SuspectedRestart=true` 重复推进 `capability_generation`、反复使刚完成的模板能力验证失效。优先利用每条
+  分配已持久化的 `ObservedPresent`（或同等强度的持久化事件标记）识别「此前至少一条已确认存在 → 本轮所有
+  期望入站均缺失」的转换；首次转换仍须立即推进世代并触发门禁，后续持续缺失轮次保持同一世代，而入站恢复
+  后再次整体消失必须作为新的事件再次推进。补充应用/集成回归，至少连续执行两轮不 drain 的对账并断言首轮
+  仅推进一次、第二轮不再 revalidate，再覆盖恢复后第二次整体消失；保留显式 unavailable→reachable 每个独立
+  重连事件只推进一次、同进程 ±1 秒抖动不推进以及固定 Xray 快速重启契约，更新验证证据并重跑固定 Xray
+  v26.3.27 的完整 `make check` per FR-005 / FR-029 / T089 / T094 / T098 (partial)

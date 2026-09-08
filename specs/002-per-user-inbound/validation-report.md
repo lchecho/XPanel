@@ -82,6 +82,16 @@ SC-001、SC-002、SC-010 的人工验收（T076）待执行。**
 | T087 轮换故障契约 | `internal/worker/synchronizer_rotation_test.go` 覆盖 5 个边界：四次变更 RPC 之前各一次崩溃，外加「四次 RPC 全部成功、ConfirmSync 之前崩溃」（用 store 包装器注入），每个边界都断言确实被命中。`tests/contract/xray/rotation_app_test.go` 用真实 service + synchronizer 驱动真实 Xray，在四次变更 RPC **成功之后**的每个边界崩溃、回收租约、重放：每次 RPC 后校验端口在听且入站有客户端，恢复后以真实 SS2022 握手证明新凭证可用、旧凭证被拒，最终只剩原不可变统计身份、过渡身份不进连接信息、上行计数不回退 | 通过 |
 | T083 契约稳定性 | 端口池基址改到临时端口范围之下并逐个绑定校验，采集断言前用 `convergeAll` 等待全部分配收敛；`XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 go test ./tests/contract/xray -count=1` 连续 5 次全绿，随后整条 `make check` `exit=0`，运行后连续三次 `pgrep` 均无残留 Xray 进程 | 通过 |
 
+### Phase 14（2026-09-07）
+
+| 任务 | 证据 | 结果 |
+|---|---|---|
+| T099 重启旁证改为边沿 | 「本应监听的面板入站全部消失」由电平改为边沿：判据取自已持久化的上一轮观察结果（`dedicated_inbounds.observed_present`，本轮观察在其后的循环才写入），只有「此前至少一条确认在监听 → 本轮全部缺失」这个转换才算事件。入站迟迟未重建时后续轮次保持同一世代，不再反复作废刚跑完的门禁；入站恢复后再次整体消失作为新事件重新推进。判据全部来自库中状态，面板自身重启也不丢失 | 通过 |
+| 边沿语义回归 | `TestSameEpochRestartIsCaughtByVanishedInbounds` 扩为：首轮推进一次 → 连续两轮不 drain 断言世代不变且不再 revalidate → drain 恢复后再次整体消失，断言作为新事件再次推进；`TestObservedReconnectTriggersConservativeRevalidation` 补充「每个独立重连只推进一次」的后续两轮断言；同进程 ±1 秒抖动不推进与固定 Xray 快速重启契约保持不变 | 通过 |
+
+门禁：`go test ./... -count=1` 全绿；`XRAY_BIN=<v26.3.27> XPANEL_REQUIRE_CONTRACT=1 go test ./tests/contract/xray -count=1`
+真实复跑全绿（121.98s，非缓存）；整条 `make check` `exit=0`；运行后连续三次 `pgrep` 均无残留 Xray 进程。
+
 ### Phase 13（2026-09-07）
 
 | 任务 | 证据 | 结果 |

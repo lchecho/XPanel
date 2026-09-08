@@ -97,9 +97,15 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 	}
 
 	// 「本应监听的面板入站全部消失」是换进程的强信号：重启会清空全部运行时入站，
-	// 而这个信号不会被 boot epoch 的秒级量化吞掉（T098）。外部误删也会命中它，
-	// 但那同样值得重跑一次能力门禁，代价很小。
-	expectedListening, actuallyListening := 0, 0
+	// 而这个信号不会被 boot epoch 的秒级量化吞掉（T098）。
+	//
+	// AI-LOCK：它必须是**边沿**而不是电平（T099）。入站迟迟没被重建时，电平会让每一轮对账都推进世代、
+	// 把刚跑完的能力门禁再次作废，陷入无意义的反复验证。判据取自已持久化的上一轮观察结果
+	// （dedicated_inbounds.observed_present，本轮的观察在后面的循环里才写入）：
+	// 只有「此前至少有一条确认在监听 → 本轮全部缺失」这个转换才算一次事件。
+	// 入站恢复后再次整体消失会重新满足该转换，因此仍会作为新事件推进；
+	// 判据全部来自库中状态，面板自身重启也不会丢失。
+	expectedListening, actuallyListening, previouslyListening := 0, 0, 0
 	for _, record := range users {
 		if !record.Allocation.DesiredPresent(record.User) {
 			continue
@@ -108,8 +114,11 @@ func (s *ReconciliationService) ReconcileOnce(ctx context.Context) (ReconcileSum
 		if remoteInbounds[record.Inbound.Inbound.InboundTag] {
 			actuallyListening++
 		}
+		if observed := record.Inbound.Inbound.ObservedPresent; observed != nil && *observed {
+			previouslyListening++
+		}
 	}
-	vanished := expectedListening > 0 && actuallyListening == 0
+	vanished := expectedListening > 0 && actuallyListening == 0 && previouslyListening > 0
 	// 先推进能力世代（它独占维护锚点 epoch），再记录健康状态，否则健康写入会把锚点覆盖成本轮观测值，
 	// 让「与锚点比较」永远得不出重启结论。
 	generation, _, err := s.store.AdvanceCapabilityGeneration(ctx, ports.CapabilitySignal{

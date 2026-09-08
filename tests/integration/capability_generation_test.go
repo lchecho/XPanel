@@ -177,6 +177,18 @@ func TestObservedReconnectTriggersConservativeRevalidation(t *testing.T) {
 		t.Fatalf("generation did not advance across a reconnect: %d → %d",
 			beforeInstance.CapabilityGeneration, instance.CapabilityGeneration)
 	}
+	// 每个独立的重连事件只推进一次：后续对账（没有新的重连）不得再推进。
+	for i := 0; i < 2; i++ {
+		app.Clock.Advance(15 * time.Second)
+		if again := app.ReconcileOnce(); again.Revalidated != 0 || again.Reconnected {
+			t.Fatalf("round %d treated a steady connection as a new reconnect: %#v", i, again)
+		}
+		current, _ := app.Store.ManagedInstance(context.Background())
+		if current.CapabilityGeneration != instance.CapabilityGeneration {
+			t.Fatalf("round %d advanced the generation without a new reconnect: %d → %d", i,
+				instance.CapabilityGeneration, current.CapabilityGeneration)
+		}
+	}
 	// 重新验证在同一轮内完成，模板重新绑定到新世代。
 	after, _ := app.Store.Template(context.Background(), templateID)
 	if after.Template.Compatibility != domain.CompatibilityCompatible ||
@@ -220,5 +232,38 @@ func TestSameEpochRestartIsCaughtByVanishedInbounds(t *testing.T) {
 	after, _ := app.Store.Template(context.Background(), templateID)
 	if after.Template.ValidatedGeneration == before.Template.ValidatedGeneration {
 		t.Fatalf("template evidence survived a same-epoch restart: %#v", after.Template)
+	}
+
+	// T099：这是一次**边沿**事件。入站还没被重建（这里刻意不 drain）时继续对账，
+	// 世代必须保持不变，刚跑完的能力门禁不能被反复作废。
+	for i := 0; i < 2; i++ {
+		app.Clock.Advance(15 * time.Second)
+		summary := app.ReconcileOnce()
+		if summary.Revalidated != 0 {
+			t.Fatalf("round %d re-invalidated while the inbounds were still missing: %#v", i, summary)
+		}
+		current, _ := app.Store.ManagedInstance(context.Background())
+		if current.CapabilityGeneration != instance.CapabilityGeneration {
+			t.Fatalf("round %d advanced the generation again: %d → %d", i,
+				instance.CapabilityGeneration, current.CapabilityGeneration)
+		}
+	}
+
+	// 入站恢复之后再次整体消失，是一次新的事件，必须再次推进。
+	app.Drain()
+	if summary := app.ReconcileOnce(); summary.Revalidated != 0 {
+		t.Fatalf("reconcile after recovery invalidated again: %#v", summary)
+	}
+	recovered, _ := app.Store.ManagedInstance(context.Background())
+	epoch = app.Adapter.BootEpoch
+	app.Adapter.Restart()
+	app.Adapter.BootEpoch = epoch
+	if summary := app.ReconcileOnce(); summary.Revalidated != 1 {
+		t.Fatalf("a second disappearance after recovery was not treated as a new event: %#v", summary)
+	}
+	final, _ := app.Store.ManagedInstance(context.Background())
+	if final.CapabilityGeneration <= recovered.CapabilityGeneration {
+		t.Fatalf("generation did not advance on the second disappearance: %d → %d",
+			recovered.CapabilityGeneration, final.CapabilityGeneration)
 	}
 }
